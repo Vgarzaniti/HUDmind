@@ -21,7 +21,7 @@ if __package__ is None or __package__ == "":
 
 from typing import Any
 
-from src.ai.providers import ProviderFailoverRouter, _generate_local_cpu_tactical_tip
+from src.ai.providers import ProviderFailoverRouter
 from src.capture.base import CapturedFrame, CaptureStrategy
 from src.capture.mss_capture import MSSCaptureStrategy, VideoMockCaptureStrategy
 from src.capture.observer import ScreenObserver
@@ -543,7 +543,7 @@ class GameCopilotOrchestrator:
                 continue
 
             inf_ms = (time.perf_counter() - t_inf_start) * 1000.0
-            intervened = await self._handle_coach_response(response, profile)
+            intervened = await self._handle_coach_response(response, profile, force_now=force_now)
             self.metrics.record_inference(
                 inf_ms,
                 intervened=intervened,
@@ -554,19 +554,25 @@ class GameCopilotOrchestrator:
         self,
         response: CoachResponse | None,
         profile: GameProfile,
+        *,
+        force_now: bool = False,
     ) -> bool:
         """Apply InterventionStateMachine rules, deduplicate, and dispatch overlay + voice."""
         if response is not None and response.match_context.strip():
             self._memory.record_context(response.match_context)
 
-        if response is not None and response.is_actionable and self._memory.is_repetitive(response):
-            logger.debug("Consejo repetitivo detectado (%r); rotando a eje táctico fresco.", response.overlay_text)
-            response = _generate_local_cpu_tactical_tip(
-                profile,
-                "",
-                self._memory.format_prompt_context(),
-                self._settings.coach_mode,
+        if (
+            not force_now
+            and response is not None
+            and response.is_actionable
+            and self._memory.is_repetitive(response)
+        ):
+            logger.debug(
+                "Consejo repetitivo suprimido (%r); manteniendo silencio natural.",
+                response.overlay_text,
             )
+            self._state_machine.finish_analysis(None)
+            return False
 
         should_deliver = self._state_machine.finish_analysis(response)
         if not should_deliver or response is None:

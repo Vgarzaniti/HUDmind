@@ -29,7 +29,6 @@ ProviderKind = Literal[
     "openrouter",
     "pollinations",
     "airforce",
-    "local_cpu",
     "ollama",
     "custom",
 ]
@@ -137,16 +136,6 @@ PROVIDER_PRESETS: dict[ProviderKind, ProviderPreset] = {
         requires_api_key=False,
         is_free_tier=True,
         hint="Pool gratuito comunitario sin API key ni login (Mistral Nemo / Large / Codestral).",
-    ),
-    "local_cpu": ProviderPreset(
-        kind="local_cpu",
-        display_name="HUDMind Spatial Vision CPU (Gratis SIN LOGIN · 0ms)",
-        default_model="hudmind-spatial-v2",
-        suggested_models=["hudmind-spatial-v2"],
-        default_base_url="http://localhost:11434/v1",
-        requires_api_key=False,
-        is_free_tier=True,
-        hint="Analizador visual espacial en CPU (0ms, sin internet, detecta compañeros, rivales, HUD y movimiento).",
     ),
     "ollama": ProviderPreset(
         kind="ollama",

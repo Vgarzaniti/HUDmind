@@ -236,10 +236,10 @@ async def test_auto_free_fallback_appends_keyless_providers_and_rotates_silently
     # User only configured 1 keyed account: auto fallback appends the 10-model keyless free pool
     keyed = [ProviderAccount(id="user-key-1", label="Mi Key 1", provider="gemini", api_key="AIzaKey12345", priority=1)]
     expanded = build_auto_free_fallback_accounts(keyed)
-    assert len(expanded) == 11  # 1 user key + 10 free no-login models
+    assert len(expanded) == 11  # 1 user key + 10 free no-login AI models
     assert expanded[0].provider == "gemini"
     assert expanded[1].provider == "pollinations"
-    assert expanded[-1].provider == "local_cpu"
+    assert expanded[-1].provider == "ollama"
 
     expected = CoachResponse(
         should_intervene=True,
