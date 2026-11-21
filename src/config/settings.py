@@ -25,37 +25,60 @@ LanguageCode = Literal["es", "en"]
 OverlayTheme = Literal["cyber-dark", "minimal-glass", "high-contrast", "matrix-green", "tactical-amber"]
 TokenEfficiencyMode = Literal["eco", "balanced", "high"]
 
-# Matches standard Google API keys (e.g. AIza...) to prevent accidental leakage in logs
-_GOOGLE_API_KEY_RE = re.compile(r"AIza[0-9A-Za-z_\-]{20,}")
+# Multi-provider secret detection patterns (ISO/IEC 27001 / OWASP CWE-532)
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"AIza[0-9A-Za-z_\-]{20,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"sk-(?:proj-|ant-|or-v1-)?[0-9A-Za-z_\-]{16,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"gsk_[0-9A-Za-z_\-]{16,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"(?i)(Bearer\s+)[0-9A-Za-z._\-]{12,}"), r"\1[REDACTED_TOKEN]"),
+    (re.compile(r"(?i)([?&](?:api_)?key=)[^&\s\"']+"), r"\1[REDACTED_API_KEY]"),
+)
+
+
+def redact_secrets_in_text(text: str, secrets: tuple[str, ...] = ()) -> str:
+    """Redact known API key patterns and explicit secret values from an arbitrary string."""
+    sanitized = text
+    for pattern, replacement in _SECRET_PATTERNS:
+        sanitized = pattern.sub(replacement, sanitized)
+    for secret in secrets:
+        clean = secret.strip()
+        if len(clean) >= 4 and clean in sanitized:
+            sanitized = sanitized.replace(clean, "[REDACTED_SECRET]")
+    return sanitized
 
 
 class SecretRedactingFilter(logging.Filter):
-    """Logging filter that redacts configured secrets and Google API key patterns (ISO 27001)."""
+    """Logging filter that redacts configured secrets and multi-provider API key patterns."""
 
     def __init__(self, secrets: tuple[str, ...] = ()) -> None:
         super().__init__()
-        self._secrets = tuple(s for s in secrets if s and len(s) >= 8)
+        self._secrets = tuple(s.strip() for s in secrets if s and len(s.strip()) >= 4)
 
     def _redact(self, text: str) -> str:
-        sanitized = _GOOGLE_API_KEY_RE.sub("[REDACTED_API_KEY]", text)
-        for secret in self._secrets:
-            if secret in sanitized:
-                sanitized = sanitized.replace(secret, "[REDACTED_SECRET]")
-        return sanitized
+        return redact_secrets_in_text(text, self._secrets)
+
+    def _redact_arg(self, arg: object) -> object:
+        if isinstance(arg, str):
+            return self._redact(arg)
+        try:
+            text = str(arg)
+        except Exception:
+            return arg
+        redacted = self._redact(text)
+        return redacted if redacted != text else arg
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.msg, str):
             record.msg = self._redact(record.msg)
+        elif record.msg is not None:
+            record.msg = self._redact(str(record.msg))
         if record.args:
             if isinstance(record.args, dict):
-                record.args = {
-                    k: self._redact(v) if isinstance(v, str) else v
-                    for k, v in record.args.items()
-                }
+                record.args = {k: self._redact_arg(v) for k, v in record.args.items()}
             elif isinstance(record.args, tuple):
-                record.args = tuple(
-                    self._redact(arg) if isinstance(arg, str) else arg for arg in record.args
-                )
+                record.args = tuple(self._redact_arg(arg) for arg in record.args)
+        if record.exc_text:
+            record.exc_text = self._redact(record.exc_text)
         return True
 
 
@@ -334,8 +357,10 @@ def configure_logging(
     else:
         for handler in root_logger.handlers:
             handler.setLevel(level)
-            if not any(isinstance(f, SecretRedactingFilter) for f in handler.filters):
-                handler.addFilter(redactor)
+            for existing in list(handler.filters):
+                if isinstance(existing, SecretRedactingFilter):
+                    handler.removeFilter(existing)
+            handler.addFilter(redactor)
 
     if enable_file_logging and log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)

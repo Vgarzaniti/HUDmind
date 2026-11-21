@@ -27,10 +27,12 @@ class ScreenObserver:
         strategy: CaptureStrategy,
         target_fps: float = 1.0,
         should_capture: Callable[[], bool] | None = None,
+        on_capture_ms: Callable[[float], None] | None = None,
     ) -> None:
         self._strategy = strategy
         self._target_fps = max(0.1, target_fps)
         self._should_capture = should_capture
+        self._on_capture_ms = on_capture_ms
         self._subscribers: dict[str, asyncio.Queue[CapturedFrame]] = {}
         self._task: asyncio.Task[None] | None = None
         self._running = False
@@ -44,6 +46,10 @@ class ScreenObserver:
     @property
     def target_fps(self) -> float:
         return self._target_fps
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused
 
     @property
     def published_count(self) -> int:
@@ -90,10 +96,13 @@ class ScreenObserver:
 
     def publish(self, frame: CapturedFrame) -> None:
         """Push a frame to all subscribers using Drop-Oldest semantics."""
-        for name, queue in self._subscribers.items():
+        multi_sub = len(self._subscribers) > 1
+        for idx, (name, queue) in enumerate(self._subscribers.items()):
             if queue.full():
                 try:
-                    queue.get_nowait()
+                    stale = queue.get_nowait()
+                    with contextlib.suppress(Exception):
+                        stale.image.close()
                     self._dropped_count += 1
                     logger.debug(
                         "Drop-Oldest: frame obsoleto descartado para suscriptor '%s'",
@@ -101,9 +110,22 @@ class ScreenObserver:
                     )
                 except asyncio.QueueEmpty:
                     pass
+            item = (
+                CapturedFrame(
+                    image=frame.image.copy(),
+                    timestamp=frame.timestamp,
+                    wall_time=frame.wall_time,
+                    frame_id=frame.frame_id,
+                    source=frame.source,
+                )
+                if (multi_sub and idx > 0)
+                else frame
+            )
             try:
-                queue.put_nowait(frame)
+                queue.put_nowait(item)
             except asyncio.QueueFull:
+                with contextlib.suppress(Exception):
+                    item.image.close()
                 self._dropped_count += 1
 
         self._published_count += 1
@@ -155,8 +177,12 @@ class ScreenObserver:
                     self._skipped_by_gate_count += 1
                 else:
                     try:
+                        t_cap = time.perf_counter()
                         frame = await asyncio.to_thread(self._strategy.capture_frame)
+                        cap_ms = (time.perf_counter() - t_cap) * 1000.0
                         if frame is not None:
+                            if self._on_capture_ms is not None:
+                                self._on_capture_ms(cap_ms)
                             self.publish(frame)
                     except asyncio.CancelledError:
                         raise

@@ -15,7 +15,17 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 logger = logging.getLogger(__name__)
 
 _SAFE_GAME_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_HORIZONTAL_RULE_RE = re.compile(r"(?m)^\s*---+\s*$")
+_MULTI_BLANK_RE = re.compile(r"\n{3,}")
 _MAX_PROMPT_BYTES = 512 * 1024  # 512 KB ceiling per markdown profile document
+
+
+def compact_markdown(text: str) -> str:
+    """Strip decorative horizontal rules and excess blank lines to save ~15-20% tokens."""
+    no_rules = _HORIZONTAL_RULE_RE.sub("", text)
+    lines = [line.rstrip() for line in no_rules.splitlines()]
+    joined = "\n".join(lines).strip()
+    return _MULTI_BLANK_RE.sub("\n\n", joined)
 
 # Optional Windows-only imports for active foreground window detection
 if sys.platform == "win32":
@@ -103,17 +113,28 @@ class GameProfile(BaseModel):
         total_chars = len(self.system_prompt) + len(self.knowledge_base)
         return max(1, total_chars // 4)
 
+    @property
+    def compact_system_prompt(self) -> str:
+        """Token-optimized system prompt with decorative markdown rules stripped."""
+        return compact_markdown(self.system_prompt)
+
+    @property
+    def compact_knowledge_base(self) -> str:
+        """Token-optimized knowledge base with decorative markdown rules stripped."""
+        return compact_markdown(self.knowledge_base)
+
 
 class ForegroundProcessDetector:
     """Detects the executable name (.exe) of the currently focused Windows window.
 
-    Caches the resolved process name per foreground HWND for a short TTL (1.0s)
-    to minimize repeated `OpenProcess` / `psutil.Process` kernel lookups.
+    Caches the resolved process name per immutable `(HWND, PID)` pair so repeated
+    focus checks while gaming avoid redundant `OpenProcess` kernel syscalls.
     """
 
     def __init__(self, cache_ttl_seconds: float = 1.0) -> None:
         self._cache_ttl = cache_ttl_seconds
         self._cached_hwnd: int = 0
+        self._cached_pid: int = 0
         self._cached_exe: str | None = None
         self._cached_at: float = 0.0
         if not _WIN32_AVAILABLE:
@@ -135,6 +156,7 @@ class ForegroundProcessDetector:
             hwnd = int(win32gui.GetForegroundWindow())
             if not hwnd:
                 self._cached_hwnd = 0
+                self._cached_pid = 0
                 self._cached_exe = None
                 return None
 
@@ -146,14 +168,25 @@ class ForegroundProcessDetector:
             if pid <= 0:
                 return None
 
+            # If (HWND, PID) pair is unchanged, reuse cached exe name without OpenProcess syscall
+            if (
+                hwnd == self._cached_hwnd
+                and pid == self._cached_pid
+                and self._cached_exe is not None
+            ):
+                self._cached_at = now
+                return self._cached_exe
+
             process = psutil.Process(pid)
             exe_name = str(process.name())
             self._cached_hwnd = hwnd
+            self._cached_pid = int(pid)
             self._cached_exe = exe_name
             self._cached_at = now
             return exe_name
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             self._cached_hwnd = 0
+            self._cached_pid = 0
             self._cached_exe = None
             return None
         except Exception as exc:

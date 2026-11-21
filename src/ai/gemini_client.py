@@ -11,13 +11,22 @@ from typing import Any
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from src.config.settings import AppSettings
-from src.pipeline.schemas import CoachResponse
+from src.pipeline.schemas import CoachResponse, UrgencyLevel
 from src.profiles.loader import GameProfile
 
 logger = logging.getLogger(__name__)
+
+
+class _CoachWireSchema(BaseModel):
+    """Compact wire schema without verbose field descriptions (~95 fewer uncached tokens/frame)."""
+
+    should_intervene: bool
+    urgency: UrgencyLevel
+    overlay_text: str
+    voice_line: str
 
 _FRAME_ANALYSIS_PROMPT = (
     "Analizá este frame actual del juego usando las reglas y anclajes del HUD provistos. "
@@ -130,6 +139,18 @@ class GeminiCoachClient:
                 profile.estimated_tokens,
             )
 
+            # Skip network call on real Gemini API if below 1,024-token Context Caching minimum
+            if isinstance(self._client, genai.Client) and profile.estimated_tokens < 1024:
+                logger.info(
+                    "Perfil '%s' (~%d tokens < 1024 mín. de Context Cache); "
+                    "usando directamente modo estándar inline sin desperdiciar llamada HTTP.",
+                    profile.manifest.game_id,
+                    profile.estimated_tokens,
+                )
+                self._cache_name = None
+                self._using_cache = False
+                return False
+
             try:
                 cached = await asyncio.wait_for(
                     self._client.aio.caches.create(
@@ -203,22 +224,26 @@ class GeminiCoachClient:
         voice_language: str = "es",
     ) -> CoachResponse | None:
         """Analyze a single compressed game frame and return a structured CoachResponse."""
-        self.last_error_code = None
-        self.last_error_message = ""
         if self.is_circuit_open:
             logger.debug("Circuit Breaker abierto; omitiendo llamada a Gemini.")
             return None
 
-        # Renew cache proactively if close to TTL expiration
+        self.last_error_code = None
+        self.last_error_message = ""
+
+        # Renew cache proactively if close to TTL expiration (proportional to TTL to avoid thrashing)
+        lead_time = min(60.0, self._settings.cache_ttl_seconds * 0.2)
         if (
             self._using_cache
             and self._cache_expires_at > 0
-            and time.monotonic() >= (self._cache_expires_at - 60.0)
+            and time.monotonic() >= (self._cache_expires_at - lead_time)
         ):
             logger.info("Context Cache próximo a expirar; renovando sesión...")
             await self.prepare_session(profile)
 
-        for attempt in range(self._max_retries + 1):
+        inline_fallback_retried = False
+        attempt = 0
+        while attempt <= self._max_retries:
             try:
                 response = await asyncio.wait_for(
                     self._invoke_model(
@@ -233,7 +258,11 @@ class GeminiCoachClient:
                     timeout=self._settings.gemini_timeout_seconds,
                 )
                 parsed = self._parse_response(response)
-                self._record_success()
+                if parsed is None:
+                    self.last_error_code = 422
+                    self.last_error_message = "Respuesta vacía o JSON inválido"
+                else:
+                    self._record_success()
                 return parsed
 
             except genai_errors.APIError as exc:
@@ -246,13 +275,15 @@ class GeminiCoachClient:
                     return None
 
                 # If cached content expired or became invalid mid-session, drop cache and retry inline
-                if self._using_cache and code in (400, 404):
+                # immediately without consuming a retry attempt (works even when max_retries=0).
+                if self._using_cache and code in (400, 404) and not inline_fallback_retried:
                     logger.warning(
                         "Context Cache inválido/expirado (HTTP %s). Cambiando a fallback inline.",
                         code,
                     )
                     self._using_cache = False
                     self._cache_name = None
+                    inline_fallback_retried = True
                     continue
 
                 # Transient rate limits / server overload -> bounded exponential backoff
@@ -265,6 +296,7 @@ class GeminiCoachClient:
                         self._max_retries + 1,
                         delay,
                     )
+                    attempt += 1
                     await asyncio.sleep(delay)
                     continue
 
@@ -282,6 +314,7 @@ class GeminiCoachClient:
                         attempt + 1,
                         self._max_retries + 1,
                     )
+                    attempt += 1
                     continue
                 logger.error("Timeout persistente en inferencia Gemini; frame descartado.")
                 self._record_failure()
@@ -326,8 +359,8 @@ class GeminiCoachClient:
             prompt_parts.append(recent_history.strip())
         prompt_text = "\n\n".join(prompt_parts)
 
-        max_out = {"eco": 120, "balanced": 160, "high": 220}.get(
-            self._settings.token_efficiency_mode, 160
+        max_out = {"eco": 85, "balanced": 115, "high": 150}.get(
+            self._settings.token_efficiency_mode, 115
         )
         # Disable hidden internal thinking tokens on Gemini 2.5 Flash for sub-second latency
         # and ~70-85% lower output token consumption on real-time coaching frames.
@@ -343,24 +376,24 @@ class GeminiCoachClient:
                 max_output_tokens=max_out,
                 thinking_config=thinking_cfg,
                 response_mime_type="application/json",
-                response_schema=CoachResponse,
+                response_schema=_CoachWireSchema,
             )
             contents: list[types.Part | str] = [
                 image_part,
                 prompt_text,
             ]
         else:
-            # Standard fallback mode: send system prompt + knowledge base inline
+            # Standard fallback mode: send system prompt + compact knowledge base inline
             config = types.GenerateContentConfig(
                 system_instruction=profile.system_prompt,
                 temperature=self._settings.gemini_temperature,
                 max_output_tokens=max_out,
                 thinking_config=thinking_cfg,
                 response_mime_type="application/json",
-                response_schema=CoachResponse,
+                response_schema=_CoachWireSchema,
             )
             contents = [
-                f"# Knowledge Base: {profile.manifest.display_name}\n\n{profile.knowledge_base}",
+                f"# Knowledge Base: {profile.manifest.display_name}\n\n{profile.compact_knowledge_base}",
                 image_part,
                 prompt_text,
             ]
@@ -377,6 +410,8 @@ class GeminiCoachClient:
         parsed = getattr(response, "parsed", None)
         if isinstance(parsed, CoachResponse):
             return parsed
+        if isinstance(parsed, _CoachWireSchema):
+            return CoachResponse.model_validate(parsed.model_dump())
 
         try:
             raw_text = (getattr(response, "text", None) or "").strip()

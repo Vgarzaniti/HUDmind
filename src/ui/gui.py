@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import ctypes
 import logging
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -21,7 +21,14 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Any
 
-from src.config.settings import AppSettings, OverlayPosition, OverlayTheme
+from pydantic import ValidationError
+
+from src.config.settings import (
+    AppSettings,
+    OverlayPosition,
+    OverlayTheme,
+    redact_secrets_in_text,
+)
 from src.config.user_store import (
     PROVIDER_PRESETS,
     ProviderAccount,
@@ -33,6 +40,7 @@ from src.config.user_store import (
 )
 from src.output.overlay import (
     OVERLAY_THEME_PALETTES,
+    _configure_win32_user32,
     _ensure_tcl_tk_env,
     enable_windows_dpi_awareness,
 )
@@ -233,6 +241,11 @@ class AccountEditorDialog(tk.Toplevel):
             messagebox.showwarning("Campos requeridos", "Completá Nombre y Modelo.", parent=self)
             return
 
+        try:
+            prio = max(1, min(999, int(self._var_priority.get())))
+        except (tk.TclError, ValueError):
+            prio = 10
+
         kind_raw = self._var_provider.get()
         kind: ProviderKind = kind_raw if kind_raw in PROVIDER_PRESETS else "gemini"  # type: ignore[assignment]
         kwargs: dict[str, Any] = {
@@ -241,13 +254,17 @@ class AccountEditorDialog(tk.Toplevel):
             "api_key": self._var_api_key.get().strip(),
             "model": model,
             "base_url": self._var_base_url.get().strip(),
-            "priority": int(self._var_priority.get()),
+            "priority": prio,
             "enabled": bool(self._var_enabled.get()),
         }
         if self._existing_id:
             kwargs["id"] = self._existing_id
 
-        self.result = ProviderAccount(**kwargs)
+        try:
+            self.result = ProviderAccount(**kwargs)
+        except ValidationError as exc:
+            messagebox.showerror("Configuración inválida", str(exc), parent=self)
+            return
         self.destroy()
 
 
@@ -657,7 +674,13 @@ class HUDMindGUI:
             row=5, column=0, sticky="w", **pad
         )
         ttk.Scale(
-            grid, from_=-20, to=40, variable=self._var_tts_rate, orient="horizontal", length=220
+            grid,
+            from_=-20,
+            to=40,
+            variable=self._var_tts_rate,
+            orient="horizontal",
+            length=220,
+            command=lambda v: self._var_tts_rate.set(int(round(float(v)))),
         ).grid(row=5, column=1, sticky="w", **pad)
         tk.Label(grid, textvariable=self._var_tts_rate, bg=_BG_CARD, fg=_ACCENT).grid(
             row=5, column=2, sticky="w", **pad
@@ -856,8 +879,24 @@ class HUDMindGUI:
         if not keep_current or not self._var_tts_voice.get().strip():
             self._var_tts_voice.set(voices[0])
 
+    @staticmethod
+    def _safe_int(var: tk.IntVar, default: int, low: int, high: int) -> int:
+        try:
+            val = int(var.get())
+        except (tk.TclError, ValueError):
+            return default
+        return max(low, min(high, val))
+
+    @staticmethod
+    def _safe_float(var: tk.DoubleVar, default: float, low: float, high: float) -> float:
+        try:
+            val = float(var.get())
+        except (tk.TclError, ValueError):
+            return default
+        return max(low, min(high, val))
+
     def _build_settings_from_ui(self) -> AppSettings:
-        rate_val = int(self._var_tts_rate.get())
+        rate_val = self._safe_int(self._var_tts_rate, 10, -20, 40)
         rate_str = f"+{rate_val}%" if rate_val >= 0 else f"{rate_val}%"
         return self._settings.model_copy(
             update={
@@ -869,19 +908,25 @@ class HUDMindGUI:
                 "tts_engine": self._var_tts_engine.get(),
                 "tts_voice": self._var_tts_voice.get().strip() or "es-AR-TomasNeural",
                 "tts_rate": rate_str,
-                "tts_volume": round(float(self._var_tts_volume.get()), 2),
+                "tts_volume": round(self._safe_float(self._var_tts_volume, 0.9, 0.0, 1.0), 2),
                 "overlay_theme": self._var_overlay_theme.get(),
                 "overlay_position": self._var_overlay_pos.get(),
-                "overlay_opacity": round(float(self._var_overlay_opacity.get()), 2),
-                "overlay_width": int(self._var_overlay_width.get()),
-                "overlay_duration_seconds": round(float(self._var_overlay_duration.get()), 1),
+                "overlay_opacity": round(
+                    self._safe_float(self._var_overlay_opacity, 0.9, 0.25, 1.0), 2
+                ),
+                "overlay_width": self._safe_int(self._var_overlay_width, 440, 260, 700),
+                "overlay_duration_seconds": round(
+                    self._safe_float(self._var_overlay_duration, 6.0, 1.0, 30.0), 1
+                ),
                 "overlay_font_family": self._var_overlay_font.get(),
-                "overlay_font_size": int(self._var_overlay_font_size.get()),
+                "overlay_font_size": self._safe_int(self._var_overlay_font_size, 12, 9, 20),
                 "token_efficiency_mode": self._var_token_mode.get(),
                 "image_format": self._var_image_format.get(),
-                "image_compression_quality": int(self._var_image_quality.get()),
-                "capture_monitor": int(self._var_monitor.get()),
-                "min_inference_interval_seconds": round(float(self._var_min_interval.get()), 1),
+                "image_compression_quality": self._safe_int(self._var_image_quality, 78, 30, 95),
+                "capture_monitor": self._safe_int(self._var_monitor, 1, 0, 8),
+                "min_inference_interval_seconds": round(
+                    self._safe_float(self._var_min_interval, 2.5, 0.5, 60.0), 1
+                ),
                 "low_process_priority": bool(self._var_low_priority.get()),
                 "enable_file_logging": bool(self._var_file_log.get()),
             }
@@ -897,6 +942,22 @@ class HUDMindGUI:
         except Exception as exc:
             messagebox.showerror("Error guardando", str(exc), parent=self._root)
             return False
+
+    def _insert_or_update_account(
+        self,
+        target: ProviderAccount,
+        replace_index: int | None = None,
+    ) -> None:
+        """Insert or update an account while respecting explicit user-chosen priority."""
+        if replace_index is not None:
+            del self._accounts[replace_index]
+        desired = max(1, target.priority)
+        for existing in self._accounts:
+            if existing.priority >= desired:
+                existing.priority += 1
+        self._accounts.append(target)
+        self._refresh_accounts_tree()
+        self._save_all()
 
     def _refresh_accounts_tree(self) -> None:
         self._accounts.sort(key=lambda a: (a.priority, a.label.lower()))
@@ -932,9 +993,7 @@ class HUDMindGUI:
         dlg = AccountEditorDialog(self._root, default_priority=len(self._accounts) + 1)
         self._root.wait_window(dlg)
         if dlg.result is not None:
-            self._accounts.append(dlg.result)
-            self._refresh_accounts_tree()
-            self._save_all()
+            self._insert_or_update_account(dlg.result)
 
     def _quick_add_preset(self, kind: ProviderKind) -> None:
         preset = PROVIDER_PRESETS[kind]
@@ -947,9 +1006,7 @@ class HUDMindGUI:
                 priority=len(self._accounts) + 1,
                 enabled=True,
             )
-            self._accounts.append(acc)
-            self._refresh_accounts_tree()
-            self._save_all()
+            self._insert_or_update_account(acc)
             return
         draft = ProviderAccount(
             label=preset.display_name,
@@ -962,9 +1019,7 @@ class HUDMindGUI:
         dlg = AccountEditorDialog(self._root, account=draft)
         self._root.wait_window(dlg)
         if dlg.result is not None:
-            self._accounts.append(dlg.result)
-            self._refresh_accounts_tree()
-            self._save_all()
+            self._insert_or_update_account(dlg.result)
 
     def _edit_account(self) -> None:
         idx = self._selected_account_index()
@@ -973,9 +1028,7 @@ class HUDMindGUI:
         dlg = AccountEditorDialog(self._root, account=self._accounts[idx])
         self._root.wait_window(dlg)
         if dlg.result is not None:
-            self._accounts[idx] = dlg.result
-            self._refresh_accounts_tree()
-            self._save_all()
+            self._insert_or_update_account(dlg.result, replace_index=idx)
 
     def _move_account(self, delta: int) -> None:
         idx = self._selected_account_index()
@@ -1014,17 +1067,28 @@ class HUDMindGUI:
     def _test_selected_account(self) -> None:
         idx = self._selected_account_index()
         if idx is None:
-            messagebox.showinfo("Probar conexión", "Seleccioná una cuenta de la lista.", parent=self._root)
+            messagebox.showinfo(
+                "Probar conexión", "Seleccioná una cuenta de la lista.", parent=self._root
+            )
             return
         acc = self._accounts[idx]
+        # Build settings on main Tkinter thread before spawning worker thread (thread-safe Tcl)
+        cfg = self._build_settings_from_ui()
         self._var_status.set(f"Probando conexión con '{acc.label}'...")
 
         def _worker() -> None:
             from src.ai.providers import create_provider_adapter
 
-            adapter = create_provider_adapter(acc, self._build_settings_from_ui())
-            ok, msg = asyncio.run(adapter.test_connection())
-            self._root.after(0, lambda: self._on_test_result(acc.label, ok, msg))
+            async def _run_test() -> tuple[bool, str]:
+                adapter = create_provider_adapter(acc, cfg)
+                try:
+                    return await adapter.test_connection()
+                finally:
+                    await adapter.close_session()
+
+            ok, raw_msg = asyncio.run(_run_test())
+            safe_msg = redact_secrets_in_text(raw_msg, (acc.api_key,))
+            self._root.after(0, lambda: self._on_test_result(acc.label, ok, safe_msg))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1050,11 +1114,14 @@ class HUDMindGUI:
             async def _play() -> None:
                 svc = VoiceService(settings=cfg, enabled=True)
                 await svc.start()
-                svc.enqueue(sample)
-                await asyncio.sleep(4.0)
-                await svc.stop()
+                try:
+                    svc.enqueue(sample)
+                    await svc.wait_until_idle(timeout=12.0)
+                finally:
+                    await svc.stop()
 
             asyncio.run(_play())
+            self._root.after(0, lambda: self._var_status.set("✓ Prueba de voz completada."))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1138,15 +1205,16 @@ class HUDMindGUI:
             x, y = (sw - w) // 2, 28
         win.geometry(f"{w}x{req_h}+{max(0, x)}+{max(0, y)}")
 
-        # Apply click-through on Windows
+        # Apply click-through on Windows using 64-bit safe ctypes signatures
         if sys.platform == "win32":
             with contextlib.suppress(Exception):
-                user32 = ctypes.windll.user32
-                raw_hwnd = win.winfo_id()
-                parent = user32.GetParent(raw_hwnd)
-                hwnd = parent if parent else raw_hwnd
-                style = user32.GetWindowLongW(hwnd, -20)
-                user32.SetWindowLongW(hwnd, -20, style | 0x00080000 | 0x00000020 | 0x08000000)
+                user32 = _configure_win32_user32()
+                if user32 is not None:
+                    raw_hwnd = win.winfo_id()
+                    parent = user32.GetParent(raw_hwnd)
+                    hwnd = parent if parent else raw_hwnd
+                    style = user32.GetWindowLongW(hwnd, -20)
+                    user32.SetWindowLongW(hwnd, -20, style | 0x00080000 | 0x00000020 | 0x08000000)
 
         self._preview_win = win
         self._preview_after_id = self._root.after(
@@ -1183,8 +1251,12 @@ class HUDMindGUI:
             cmd.append("--dry-run")
 
         if detach_and_close:
-            creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if sys.platform == "win32" else 0
+            self._stop_coach(wait_seconds=2.0)
+            creationflags = (
+                getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if sys.platform == "win32" else 0
+            )
             subprocess.Popen(cmd, creationflags=creationflags)
+            self._close_preview()
             self._root.destroy()
             return
 
@@ -1194,8 +1266,12 @@ class HUDMindGUI:
         self._append_log(f"Iniciando: {' '.join(cmd)}\n")
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
-        self._process = subprocess.Popen(
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+        proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1205,14 +1281,14 @@ class HUDMindGUI:
             env=env,
             creationflags=creationflags,
         )
+        self._process = proc
         self._btn_start.configure(state="disabled")
         self._btn_stop.configure(state="normal")
         self._var_status.set("Coach ACTIVO en segundo plano.")
-        threading.Thread(target=self._read_process_output, daemon=True).start()
+        threading.Thread(target=self._read_process_output, args=(proc,), daemon=True).start()
 
-    def _read_process_output(self) -> None:
-        proc = self._process
-        if proc is None or proc.stdout is None:
+    def _read_process_output(self, proc: subprocess.Popen[str]) -> None:
+        if proc.stdout is None:
             return
         for line in proc.stdout:
             with contextlib.suppress(queue.Full):
@@ -1220,17 +1296,40 @@ class HUDMindGUI:
         code = proc.wait()
         with contextlib.suppress(queue.Full):
             self._log_queue.put_nowait(f"\n[Proceso finalizado con código {code}]\n")
-        self._root.after(0, self._on_process_stopped)
+        self._root.after(0, lambda: self._on_process_stopped(proc))
 
-    def _on_process_stopped(self) -> None:
+    def _on_process_stopped(self, proc: subprocess.Popen[str]) -> None:
+        if proc is not self._process:
+            return
         self._btn_start.configure(state="normal")
         self._btn_stop.configure(state="disabled")
         self._var_status.set("Coach detenido — 0% CPU en reposo.")
 
-    def _stop_coach(self) -> None:
-        if self._process is not None and self._process.poll() is None:
-            self._process.terminate()
-            self._var_status.set("Deteniendo coach...")
+    def _stop_coach(self, wait_seconds: float = 0.0) -> None:
+        proc = self._process
+        if proc is None or proc.poll() is not None:
+            return
+        self._var_status.set("Deteniendo coach...")
+
+        def _graceful_terminate(target: subprocess.Popen[str], timeout_s: float) -> None:
+            if sys.platform == "win32" and hasattr(signal, "CTRL_BREAK_EVENT"):
+                with contextlib.suppress(Exception):
+                    target.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                with contextlib.suppress(Exception):
+                    target.terminate()
+            try:
+                target.wait(timeout=max(0.5, timeout_s))
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(Exception):
+                    target.terminate()
+                with contextlib.suppress(Exception):
+                    target.wait(timeout=1.0)
+
+        if wait_seconds > 0:
+            _graceful_terminate(proc, wait_seconds)
+        else:
+            threading.Thread(target=_graceful_terminate, args=(proc, 2.5), daemon=True).start()
 
     def _append_log(self, text: str) -> None:
         self._txt_logs.configure(state="normal")
@@ -1243,16 +1342,19 @@ class HUDMindGUI:
         self._txt_logs.configure(state="disabled")
 
     def _poll_logs(self) -> None:
+        chunks: list[str] = []
         try:
-            while True:
-                line = self._log_queue.get_nowait()
-                self._append_log(line)
+            while len(chunks) < 60:
+                chunks.append(self._log_queue.get_nowait())
         except queue.Empty:
             pass
-        self._root.after(150, self._poll_logs)
+        if chunks:
+            self._append_log("".join(chunks))
+        active = self._process is not None and self._process.poll() is None
+        self._root.after(150 if active else 450, self._poll_logs)
 
     def _on_close(self) -> None:
-        self._stop_coach()
+        self._stop_coach(wait_seconds=2.0)
         self._close_preview()
         self._root.destroy()
 

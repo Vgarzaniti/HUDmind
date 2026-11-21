@@ -13,24 +13,22 @@ import base64
 import contextlib
 import json
 import logging
-import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import aiohttp
 from pydantic import SecretStr, ValidationError
 
 from src.ai.gemini_client import GeminiCoachClient, build_language_instruction
-from src.config.settings import AppSettings
+from src.config.settings import AppSettings, redact_secrets_in_text
 from src.config.user_store import ProviderAccount
 from src.pipeline.schemas import CoachResponse
 from src.profiles.loader import GameProfile
 
 logger = logging.getLogger(__name__)
-
-_JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 _JSON_SCHEMA_REMINDER = (
     'Respond ONLY with valid JSON matching exactly: '
@@ -51,37 +49,53 @@ class ProviderCallResult:
 
 
 def extract_coach_response_from_text(raw_text: str) -> CoachResponse | None:
-    """Parse JSON (even if wrapped in markdown code fences) into CoachResponse."""
+    """Parse JSON (even if surrounded by prose or markdown fences) into CoachResponse."""
     text = raw_text.strip()
     if not text:
         return None
-    if text.startswith("```"):
-        match = _JSON_BLOCK_RE.search(text)
-        if match:
-            text = match.group(0)
-    try:
+
+    # 1. Fast path: pure JSON string
+    with contextlib.suppress(ValidationError, json.JSONDecodeError):
         return CoachResponse.model_validate_json(text)
-    except ValidationError:
-        match = _JSON_BLOCK_RE.search(text)
-        if match:
-            with contextlib.suppress(ValidationError, json.JSONDecodeError):
-                return CoachResponse.model_validate_json(match.group(0))
-        logger.warning("Respuesta JSON no válida del proveedor: %r", raw_text[:200])
-        return None
+
+    # 2. Scan candidate '{' positions using non-greedy raw_decode
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    while start != -1:
+        with contextlib.suppress(json.JSONDecodeError, ValidationError):
+            obj, _ = decoder.raw_decode(text, start)
+            if isinstance(obj, dict):
+                return CoachResponse.model_validate(obj)
+        start = text.find("{", start + 1)
+
+    logger.warning("Respuesta JSON no válida del proveedor: %r", raw_text[:200])
+    return None
 
 
-def _compose_user_prompt(
+def _compose_static_system_prompt(profile: GameProfile) -> str:
+    """Combine compact system prompt and knowledge base into a static prefix (>1024 tokens).
+
+    Placing all static game rules in the system block enables Automatic Prefix Caching
+    in OpenAI/Ollama and Ephemeral Prompt Caching in Anthropic Claude (up to 90% discount).
+    """
+    return (
+        f"{profile.compact_system_prompt}\n\n"
+        f"# Knowledge Base: {profile.manifest.display_name}\n\n"
+        f"{profile.compact_knowledge_base}"
+    )
+
+
+def _compose_dynamic_turn_prompt(
     *,
-    profile: GameProfile,
     recent_history: str,
     force_advice: bool,
     text_language: str,
     voice_language: str,
     include_json_reminder: bool = True,
 ) -> str:
+    """Build the minimal per-frame dynamic prompt."""
     parts = [
-        f"# Knowledge Base: {profile.manifest.display_name}\n\n{profile.knowledge_base}",
-        "Analizá este frame actual del juego usando los anclajes del HUD y las reglas provistas.",
+        "Analizá este frame actual del juego usando los anclajes del HUD y las reglas del sistema.",
         build_language_instruction(text_language, voice_language),
     ]
     if force_advice:
@@ -140,7 +154,7 @@ class GeminiProviderAdapter(BaseAIProvider):
                 "default_model": account.model,
             }
         )
-        # Single fast retry inside failover pool so rotation to backup accounts stays snappy
+        # Single fast try inside failover pool so rotation to backup accounts stays snappy
         self._client = GeminiCoachClient(derived, max_retries=0)
 
     async def prepare_session(self, profile: GameProfile) -> bool:
@@ -177,20 +191,27 @@ class GeminiProviderAdapter(BaseAIProvider):
         )
 
     async def test_connection(self) -> tuple[bool, str]:
-        if not self.account.api_key.strip():
+        api_key = self.account.api_key.strip()
+        if not api_key:
             return False, "Falta API Key de Gemini."
         try:
-            url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{self.account.model}?key={self.account.api_key.strip()}"
-            )
+            safe_model = quote(self.account.model.strip(), safe="-_.")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{safe_model}"
+            headers = {"x-goog-api-key": api_key, "User-Agent": "HUDMind/0.4.0"}
             timeout = aiohttp.ClientTimeout(total=8)
-            async with aiohttp.ClientSession(timeout=timeout) as session, session.get(url) as r:
+            async with (
+                aiohttp.ClientSession(
+                    timeout=timeout,
+                    cookie_jar=aiohttp.DummyCookieJar(),
+                ) as session,
+                session.get(url, headers=headers) as r,
+            ):
                 if r.status == 200:
                     return True, f"OK — Modelo '{self.account.model}' verificado."
                 return False, f"HTTP {r.status} al verificar API key / modelo."
         except Exception as exc:
-            return False, f"Error de red: {exc}"
+            safe_err = redact_secrets_in_text(str(exc), (api_key,))
+            return False, f"Error de red: {safe_err}"
 
     async def close_session(self) -> None:
         await self._client.close_session()
@@ -206,11 +227,14 @@ class OpenAICompatibleProvider(BaseAIProvider):
     def _get_session(self) -> aiohttp.ClientSession:
         if self._http is None or self._http.closed:
             timeout = aiohttp.ClientTimeout(total=self._settings.gemini_timeout_seconds)
-            self._http = aiohttp.ClientSession(timeout=timeout)
+            self._http = aiohttp.ClientSession(
+                timeout=timeout,
+                cookie_jar=aiohttp.DummyCookieJar(),
+            )
         return self._http
 
     def _build_headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json", "User-Agent": "HUDMind/0.4"}
+        headers = {"Content-Type": "application/json", "User-Agent": "HUDMind/0.4.0"}
         key = self.account.api_key.strip()
         if key:
             headers["Authorization"] = f"Bearer {key}"
@@ -235,28 +259,33 @@ class OpenAICompatibleProvider(BaseAIProvider):
             return ProviderCallResult(error_code=400, error_message="Base URL vacía")
 
         b64 = base64.b64encode(image_bytes).decode("ascii")
-        user_prompt = _compose_user_prompt(
-            profile=profile,
+        system_content = _compose_static_system_prompt(profile)
+        user_prompt = _compose_dynamic_turn_prompt(
             recent_history=recent_history,
             force_advice=force_advice,
             text_language=text_language,
             voice_language=voice_language,
         )
 
-        max_tokens = {"eco": 120, "balanced": 160, "high": 220}.get(
-            self._settings.token_efficiency_mode, 160
+        max_tokens = {"eco": 85, "balanced": 115, "high": 150}.get(
+            self._settings.token_efficiency_mode, 115
         )
+        image_url_obj: dict[str, str] = {"url": f"data:{mime_type};base64,{b64}"}
+        if self.account.provider in ("openai", "pollinations"):
+            is_eco_mode = self._settings.token_efficiency_mode in ("eco",)
+            image_url_obj["detail"] = "low" if is_eco_mode else "auto"
+
         payload: dict[str, object] = {
             "model": self.account.model,
             "temperature": self._settings.gemini_temperature,
             "max_tokens": max_tokens,
             "messages": [
-                {"role": "system", "content": profile.system_prompt},
+                {"role": "system", "content": system_content},
                 {
                     "role": "user",
                     "content": [
                         {"type": "text", "text": user_prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}},
+                        {"type": "image_url", "image_url": image_url_obj},
                     ],
                 },
             ],
@@ -276,7 +305,9 @@ class OpenAICompatibleProvider(BaseAIProvider):
                         quota_or_auth_failure=resp.status in (401, 402, 403, 429),
                     )
                 data = await resp.json()
-                content = data["choices"][0]["message"]["content"]
+                choices = data.get("choices") or []
+                first_msg = choices[0].get("message", {}) if choices else {}
+                content = first_msg.get("content") or ""
                 parsed = extract_coach_response_from_text(str(content))
                 if parsed is None:
                     return ProviderCallResult(error_code=422, error_message="JSON inválido")
@@ -293,14 +324,18 @@ class OpenAICompatibleProvider(BaseAIProvider):
         try:
             timeout = aiohttp.ClientTimeout(total=8)
             async with (
-                aiohttp.ClientSession(timeout=timeout) as session,
+                aiohttp.ClientSession(
+                    timeout=timeout,
+                    cookie_jar=aiohttp.DummyCookieJar(),
+                ) as session,
                 session.get(f"{base_url}/models", headers=self._build_headers()) as r,
             ):
                 if r.status == 200:
                     return True, f"OK — Endpoint {base_url} accesible."
                 return False, f"HTTP {r.status} en {base_url}/models."
         except Exception as exc:
-            return False, f"No se pudo conectar a {base_url}: {exc}"
+            safe_err = redact_secrets_in_text(str(exc), (self.account.api_key,))
+            return False, f"No se pudo conectar a {base_url}: {safe_err}"
 
     async def close_session(self) -> None:
         if self._http is not None and not self._http.closed:
@@ -309,7 +344,7 @@ class OpenAICompatibleProvider(BaseAIProvider):
 
 
 class AnthropicClaudeProvider(BaseAIProvider):
-    """Async vision adapter for Anthropic Claude Messages API."""
+    """Async vision adapter for Anthropic Claude Messages API with Ephemeral Prompt Caching."""
 
     def __init__(self, account: ProviderAccount, settings: AppSettings) -> None:
         super().__init__(account, settings)
@@ -318,7 +353,10 @@ class AnthropicClaudeProvider(BaseAIProvider):
     def _get_session(self) -> aiohttp.ClientSession:
         if self._http is None or self._http.closed:
             timeout = aiohttp.ClientTimeout(total=self._settings.gemini_timeout_seconds)
-            self._http = aiohttp.ClientSession(timeout=timeout)
+            self._http = aiohttp.ClientSession(
+                timeout=timeout,
+                cookie_jar=aiohttp.DummyCookieJar(),
+            )
         return self._http
 
     def _build_headers(self) -> dict[str, str]:
@@ -326,6 +364,7 @@ class AnthropicClaudeProvider(BaseAIProvider):
             "Content-Type": "application/json",
             "x-api-key": self.account.api_key.strip(),
             "anthropic-version": "2023-06-01",
+            "User-Agent": "HUDMind/0.4.0",
         }
 
     async def analyze_frame(
@@ -341,21 +380,27 @@ class AnthropicClaudeProvider(BaseAIProvider):
     ) -> ProviderCallResult:
         base_url = self.account.resolved_base_url() or "https://api.anthropic.com/v1"
         b64 = base64.b64encode(image_bytes).decode("ascii")
-        user_prompt = _compose_user_prompt(
-            profile=profile,
+        system_content = _compose_static_system_prompt(profile)
+        user_prompt = _compose_dynamic_turn_prompt(
             recent_history=recent_history,
             force_advice=force_advice,
             text_language=text_language,
             voice_language=voice_language,
         )
-        max_tokens = {"eco": 120, "balanced": 160, "high": 220}.get(
-            self._settings.token_efficiency_mode, 160
+        max_tokens = {"eco": 85, "balanced": 115, "high": 150}.get(
+            self._settings.token_efficiency_mode, 115
         )
         payload = {
             "model": self.account.model,
             "max_tokens": max_tokens,
             "temperature": self._settings.gemini_temperature,
-            "system": profile.system_prompt,
+            "system": [
+                {
+                    "type": "text",
+                    "text": system_content,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
             "messages": [
                 {
                     "role": "user",
@@ -400,20 +445,25 @@ class AnthropicClaudeProvider(BaseAIProvider):
             return ProviderCallResult(error_code=503, error_message=str(exc))
 
     async def test_connection(self) -> tuple[bool, str]:
-        if not self.account.api_key.strip():
+        api_key = self.account.api_key.strip()
+        if not api_key:
             return False, "Falta API Key de Anthropic Claude."
         base_url = self.account.resolved_base_url() or "https://api.anthropic.com/v1"
         try:
             timeout = aiohttp.ClientTimeout(total=8)
             async with (
-                aiohttp.ClientSession(timeout=timeout) as session,
+                aiohttp.ClientSession(
+                    timeout=timeout,
+                    cookie_jar=aiohttp.DummyCookieJar(),
+                ) as session,
                 session.get(f"{base_url}/models", headers=self._build_headers()) as r,
             ):
                 if r.status == 200:
                     return True, "OK — API Key de Anthropic verificada."
                 return False, f"HTTP {r.status} en Anthropic API."
         except Exception as exc:
-            return False, f"Error de conexión: {exc}"
+            safe_err = redact_secrets_in_text(str(exc), (api_key,))
+            return False, f"Error de conexión: {safe_err}"
 
     async def close_session(self) -> None:
         if self._http is not None and not self._http.closed:
@@ -479,9 +529,14 @@ class ProviderFailoverRouter:
         )
 
     async def prepare_session(self, profile: GameProfile) -> bool:
-        """Warm up the primary provider (e.g. Gemini Context Caching)."""
-        self._active_profile = profile
+        """Warm up the primary provider and clean up any previously prepared sessions."""
+        for prov in self._providers:
+            if prov.account.id in self._prepared_ids:
+                with contextlib.suppress(Exception):
+                    await prov.close_session()
         self._prepared_ids.clear()
+        self._active_profile = profile
+
         if not self._providers:
             logger.error("No hay cuentas IA habilitadas en el pool de proveedores.")
             return False
@@ -552,8 +607,12 @@ class ProviderFailoverRouter:
                         self._on_failover(prev_label, acc.label)
                 return result.response
 
-            # Determine cooldown based on failure type
+            # Do not penalize or rotate provider on transient empty/malformed output (422)
             code = result.error_code
+            if code == 422:
+                logger.debug("Proveedor '%s' devolvió salida no estructurada (422).", acc.label)
+                return None
+
             if code in (401, 402, 403):
                 cooldown_s = 600.0
                 reason = f"auth/créditos (HTTP {code})"

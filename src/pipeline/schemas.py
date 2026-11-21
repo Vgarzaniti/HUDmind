@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -76,16 +77,19 @@ class InterventionStateMachine:
         self._last_urgency: UrgencyLevel | None = None
         self._total_analyses: int = 0
         self._total_interventions: int = 0
+        self._lock = threading.Lock()
 
     @property
     def state(self) -> InterventionState:
-        """Return current state (automatically clearing expired cooldown lazily)."""
-        return self._state
+        """Return current lifecycle state."""
+        with self._lock:
+            return self._state
 
     @property
     def is_busy(self) -> bool:
         """Return True while an analysis or output delivery is actively in progress."""
-        return self._state in (InterventionState.ANALYZING, InterventionState.DELIVERING)
+        with self._lock:
+            return self._state in (InterventionState.ANALYZING, InterventionState.DELIVERING)
 
     @property
     def total_analyses(self) -> int:
@@ -117,67 +121,74 @@ class InterventionStateMachine:
     ) -> tuple[bool, str]:
         """Evaluate whether a new frame is allowed to enter Gemini inference."""
         current = time.monotonic() if now is None else now
+        with self._lock:
+            if self._state in (InterventionState.ANALYZING, InterventionState.DELIVERING):
+                return False, f"state={self._state.value}"
 
-        if self.is_busy:
-            return False, f"state={self._state.value}"
+            since_intervention = self.seconds_since_last_intervention(current)
+            if since_intervention < cooldown_seconds:
+                remaining = cooldown_seconds - since_intervention
+                return False, f"intervention cooldown ({remaining:.1f}s remaining)"
 
-        since_intervention = self.seconds_since_last_intervention(current)
-        if since_intervention < cooldown_seconds:
-            remaining = cooldown_seconds - since_intervention
-            return False, f"intervention cooldown ({remaining:.1f}s remaining)"
+            if self._state == InterventionState.COOLDOWN:
+                self._state = InterventionState.IDLE
 
-        if self._state == InterventionState.COOLDOWN:
-            self._state = InterventionState.IDLE
+            since_analysis = self.seconds_since_last_analysis(current)
+            if since_analysis < min_inference_interval:
+                remaining = min_inference_interval - since_analysis
+                return False, f"min inference interval ({remaining:.1f}s remaining)"
 
-        since_analysis = self.seconds_since_last_analysis(current)
-        if since_analysis < min_inference_interval:
-            remaining = min_inference_interval - since_analysis
-            return False, f"min inference interval ({remaining:.1f}s remaining)"
-
-        return True, "ok"
+            return True, "ok"
 
     def begin_analysis(self, now: float | None = None) -> None:
         """Transition into ANALYZING state."""
         current = time.monotonic() if now is None else now
-        self._state = InterventionState.ANALYZING
-        self._last_analysis_time = current
-        self._total_analyses += 1
+        with self._lock:
+            self._state = InterventionState.ANALYZING
+            self._last_analysis_time = current
+            self._total_analyses += 1
 
     def finish_analysis(self, response: CoachResponse | None) -> bool:
         """Transition after Gemini returns a response.
 
         Returns True if an actionable intervention should now be delivered.
         """
-        if response is not None and response.is_actionable:
-            self._state = InterventionState.DELIVERING
-            self._last_urgency = response.urgency
-            return True
+        with self._lock:
+            if response is not None and response.is_actionable:
+                self._state = InterventionState.DELIVERING
+                self._last_urgency = response.urgency
+                return True
 
-        self._state = InterventionState.IDLE
-        return False
+            self._state = InterventionState.IDLE
+            return False
 
     def complete_delivery(self, now: float | None = None) -> None:
         """Mark intervention delivery complete and enter COOLDOWN."""
         current = time.monotonic() if now is None else now
-        self._last_intervention_time = current
-        self._total_interventions += 1
-        self._state = InterventionState.COOLDOWN
+        with self._lock:
+            self._last_intervention_time = current
+            self._total_interventions += 1
+            self._state = InterventionState.COOLDOWN
+            total = self._total_interventions
+            urgency = self._last_urgency
         logger.debug(
             "StateMachine -> COOLDOWN (total_interventions=%d, urgency=%s)",
-            self._total_interventions,
-            self._last_urgency,
+            total,
+            urgency,
         )
 
     def abort_analysis(self) -> None:
         """Recover cleanly to IDLE if an inference call raises an error."""
-        self._state = InterventionState.IDLE
+        with self._lock:
+            self._state = InterventionState.IDLE
 
     def reset(self) -> None:
         """Reset all timers and states (e.g., when switching active game profile)."""
-        self._state = InterventionState.IDLE
-        self._last_analysis_time = 0.0
-        self._last_intervention_time = 0.0
-        self._last_urgency = None
+        with self._lock:
+            self._state = InterventionState.IDLE
+            self._last_analysis_time = 0.0
+            self._last_intervention_time = 0.0
+            self._last_urgency = None
 
 
 @dataclass(frozen=True, slots=True)

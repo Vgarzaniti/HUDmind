@@ -133,35 +133,45 @@ Para detener limpiamente el copiloto en cualquier momento, presioná `Ctrl + C`.
 ```text
 .
 ├── .env.example                 # Plantilla de variables de entorno
-├── .gitignore                   # Ignora .env, cachés de Python, venvs y logs
+├── .gitignore                   # Ignora .env, config/accounts.json, venvs y logs
+├── HUDMind.bat                  # Lanzador directo en Windows para la GUI
+├── LICENSE                      # Licencia MIT
+├── pyproject.toml               # Empaquetado CLI (hudmind) y configuración QA (ruff, mypy, pytest)
 ├── requirements.txt             # Dependencias Python
 ├── README.md                    # Esta guía
+├── .github/workflows/ci.yml     # Pipeline CI automatizado (GitHub Actions)
 ├── docs/
-│   ├── architecture.md          # Arquitectura Event-Driven, patrones y flujo de datos
+│   ├── srs.md                   # Especificación de Requisitos (ISO/IEC/IEEE 29148)
+│   ├── architecture.md          # Arquitectura Event-Driven y ADRs (ISO/IEC/IEEE 42010)
+│   ├── test_plan_ieee29119.md   # Plan de pruebas, RTM y benchmarks (ISO/IEC/IEEE 29119)
 │   └── game_profiles_guide.md   # Cómo crear nuevos "cartuchos" de juegos
 ├── profiles/
-│   └── example_cs2/             # Perfil completo de ejemplo (Counter-Strike 2)
-│       ├── manifest.json
-│       ├── system_prompt.md
-│       └── knowledge_base.md
-└── src/
-    ├── main.py                  # Orquestador principal asyncio y CLI
-    ├── config/
-    │   └── settings.py          # Configuración tipada con pydantic-settings
-    ├── capture/
-    │   ├── base.py              # Interfaz CaptureStrategy y modelos de frame
-    │   ├── mss_capture.py       # MSSCaptureStrategy + VideoMockCaptureStrategy
-    │   └── observer.py          # ScreenObserver (Pub/Sub asíncrono Drop-Oldest)
-    ├── pipeline/
-    │   ├── filters.py           # Chain of Responsibility (Focus, pHash, Cooldown, Resize)
-    │   └── schemas.py           # Structured Outputs (Pydantic) + State Machine
-    ├── profiles/
-    │   └── loader.py            # Detector de .exe en primer plano y cargador de perfiles
-    ├── ai/
-    │   └── gemini_client.py     # Context Caching, fallback automático e inferencia multimodal
-    └── output/
-        ├── overlay.py           # Overlay transparente click-through (Win32 + Tkinter)
-        └── tts.py               # Motor TTS desacoplado (EdgeTTS / Pyttsx3) + reproducción async
+│   ├── example_cs2/             # Perfil completo Counter-Strike 2
+│   └── example_valorant/        # Perfil completo VALORANT
+├── src/
+│   ├── main.py                  # Orquestador principal asyncio, diagnóstico y CLI
+│   ├── config/
+│   │   ├── settings.py          # Configuración tipada, redacción de secretos y telemetría
+│   │   ├── user_store.py        # Persistencia local atómica (0o600) de cuentas IA y preferencias
+│   │   └── hotkeys.py           # Hotkeys globales Win32 RegisterHotKey (F9 / F10)
+│   ├── capture/
+│   │   ├── base.py              # Interfaz CaptureStrategy y modelos de frame
+│   │   ├── mss_capture.py       # MSSCaptureStrategy (zero-copy) + VideoMock + DXCam
+│   │   └── observer.py          # ScreenObserver (Pub/Sub Drop-Oldest + compuerta pre-captura)
+│   ├── pipeline/
+│   │   ├── filters.py           # Chain of Responsibility (Focus, Cooldown, pHash, Resize/Eco)
+│   │   └── schemas.py           # Structured Outputs, State Machine y memoria anti-repetición
+│   ├── profiles/
+│   │   └── loader.py            # Detector de .exe ((HWND, PID) cache) y cargador de perfiles
+│   ├── ai/
+│   │   ├── gemini_client.py     # Context Caching, thinking_budget=0 e inferencia Gemini
+│   │   └── providers.py         # Enrutador Multi-IA (Gemini, ChatGPT, Claude, Groq, OpenRouter, Ollama)
+│   ├── output/
+│   │   ├── overlay.py           # Overlay transparente click-through (5 temas + DPI Aware v2)
+│   │   └── tts.py               # Motor TTS desacoplado (EdgeTTS / Pyttsx3 / Piper)
+│   └── ui/
+│       └── gui.py               # Centro de Control Gráfico nativo ultra-ligero (Tkinter/ttk)
+└── tests/                       # Suite de 26 pruebas unitarias, seguridad e integración
 ```
 
 ---

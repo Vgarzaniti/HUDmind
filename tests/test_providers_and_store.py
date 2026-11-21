@@ -5,9 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+from pydantic import ValidationError
+
 from src.ai.gemini_client import build_language_instruction
 from src.ai.providers import (
     BaseAIProvider,
+    GeminiProviderAdapter,
     ProviderCallResult,
     ProviderFailoverRouter,
     extract_coach_response_from_text,
@@ -106,13 +110,93 @@ async def test_failover_router_rotates_on_quota_429_to_second_account() -> None:
 
 
 def test_extract_json_handles_markdown_fences_and_language_directive() -> None:
-    fenced = '```json\n{"should_intervene": true, "urgency": "medium", "overlay_text": "Use flash", "voice_line": "Flash before peeking."}\n```'
+    fenced = 'Note: {not valid json}\n```json\n{"should_intervene": true, "urgency": "medium", "overlay_text": "Use flash", "voice_line": "Flash before peeking."}\n```'
     parsed = extract_coach_response_from_text(fenced)
     assert parsed is not None
     assert parsed.overlay_text == "Use flash"
 
     mixed = build_language_instruction("en", "es")
     assert "English" in mixed and "Spanish" in mixed
+
+
+def test_provider_account_ssrf_and_https_validation() -> None:
+    # Local loopback HTTP is allowed for Ollama / LM Studio
+    local = ProviderAccount(
+        label="Ollama",
+        provider="ollama",
+        base_url="http://localhost:11434/v1",
+    )
+    assert local.resolved_base_url() == "http://localhost:11434/v1"
+
+    # Remote cleartext HTTP must be rejected (CWE-319)
+    with pytest.raises(ValidationError):
+        ProviderAccount(
+            label="Insecure Remote",
+            provider="custom",
+            base_url="http://api.remote-llm.example.com/v1",
+        )
+
+    # Cloud metadata / link-local SSRF must be rejected (CWE-918)
+    with pytest.raises(ValidationError):
+        ProviderAccount(
+            label="SSRF Metadata",
+            provider="custom",
+            base_url="http://169.254.169.254/latest/meta-data",
+        )
+
+    # Non-HTTP scheme must be rejected
+    with pytest.raises(ValidationError):
+        ProviderAccount(
+            label="File Scheme",
+            provider="custom",
+            base_url="file:///etc/passwd",
+        )
+
+
+async def test_gemini_test_connection_uses_header_and_never_exposes_key_in_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_urls: list[str] = []
+    captured_headers: list[dict[str, str]] = []
+
+    class _FakeResponse:
+        status = 200
+
+        async def __aenter__(self) -> _FakeResponse:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            pass
+
+    class _FakeSession:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeSession:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            pass
+
+        def get(self, url: str, headers: dict[str, str] | None = None) -> _FakeResponse:
+            captured_urls.append(url)
+            captured_headers.append(headers or {})
+            return _FakeResponse()
+
+    import aiohttp
+
+    secret_key = "AIzaSySecretKeyNeverInUrl999999"
+    acc = ProviderAccount(label="Gem", provider="gemini", api_key=secret_key, model="gemini-2.5-flash")
+    adapter = GeminiProviderAdapter(acc, AppSettings())
+    monkeypatch.setattr(aiohttp, "ClientSession", _FakeSession)
+    ok, msg = await adapter.test_connection()
+    await adapter.close_session()
+
+    assert ok is True and "gemini-2.5-flash" in msg
+    assert len(captured_urls) == 1
+    assert secret_key not in captured_urls[0]
+    assert "?key=" not in captured_urls[0]
+    assert captured_headers[0].get("x-goog-api-key") == secret_key
 
 
 def test_user_store_saves_and_reloads_accounts_and_preferences(tmp_path: Path) -> None:

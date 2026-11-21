@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
+import stat
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from src.config.settings import AppSettings
 
 logger = logging.getLogger(__name__)
+
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_BLOCKED_HOSTS = {"0.0.0.0", "169.254.169.254", "metadata.google.internal"}  # noqa: S104
 
 ProviderKind = Literal[
     "gemini",
@@ -142,6 +149,27 @@ class ProviderAccount(BaseModel):
     enabled: bool = Field(default=True)
     priority: int = Field(default=10, ge=1, le=999)
 
+    @field_validator("base_url")
+    @classmethod
+    def validate_safe_base_url(cls, value: str) -> str:
+        """Enforce HTTPS for remote endpoints and block SSRF / link-local targets (CWE-918/319)."""
+        clean = value.strip()
+        if not clean:
+            return ""
+        parsed = urlparse(clean)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("base_url debe comenzar con https:// o http:// y tener un host válido.")
+        if parsed.username or parsed.password:
+            raise ValueError("base_url no debe contener credenciales embebidas.")
+        host = parsed.hostname.lower()
+        if host in _BLOCKED_HOSTS or host.startswith("169.254."):
+            raise ValueError(f"Host bloqueado por seguridad (SSRF protection): {host}")
+        if parsed.scheme == "http" and host not in _LOOPBACK_HOSTS:
+            raise ValueError(
+                f"Endpoints remotos ({host}) requieren https:// para proteger tu API Key."
+            )
+        return clean.rstrip("/")
+
     def resolved_base_url(self) -> str:
         if self.base_url.strip():
             return self.base_url.strip().rstrip("/")
@@ -230,12 +258,26 @@ def load_accounts(settings: AppSettings) -> list[ProviderAccount]:
     return accounts
 
 
-def save_accounts(path: Path, accounts: list[ProviderAccount]) -> None:
-    """Persist provider accounts locally (file is gitignored for ISO 27001 safety)."""
+def _atomic_write_json(path: Path, data: Any, *, restrict_permissions: bool = False) -> None:
+    """Atomically write JSON via a temp file and optionally apply owner-only 0o600 permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    serialized = json.dumps(data, indent=2, ensure_ascii=False)
+    tmp_path.write_text(serialized, encoding="utf-8")
+    if restrict_permissions:
+        with contextlib.suppress(OSError):
+            os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+    os.replace(tmp_path, path)
+    if restrict_permissions:
+        with contextlib.suppress(OSError):
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+
+
+def save_accounts(path: Path, accounts: list[ProviderAccount]) -> None:
+    """Persist provider accounts locally (gitignored, atomic write + 0o600 permissions)."""
     ordered = sorted(accounts, key=lambda a: (a.priority, a.label.lower()))
     payload = [acc.model_dump() for acc in ordered]
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_json(path, payload, restrict_permissions=True)
 
 
 def load_effective_settings() -> AppSettings:
@@ -259,8 +301,7 @@ def load_effective_settings() -> AppSettings:
 
 
 def save_user_settings(settings: AppSettings) -> None:
-    """Persist non-secret GUI preferences to `user_config.json`."""
+    """Persist non-secret GUI preferences atomically to `user_config.json`."""
     path = settings.user_config_file
-    path.parent.mkdir(parents=True, exist_ok=True)
     data = {key: getattr(settings, key) for key in _PERSISTED_SETTING_KEYS}
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_json(path, data, restrict_permissions=False)

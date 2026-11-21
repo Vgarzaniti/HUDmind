@@ -73,8 +73,11 @@ class MSSCaptureStrategy(CaptureStrategy):
             monitor = monitors[idx]
 
             raw = sct.grab(monitor)
-            # Zero-disk conversion from BGRA bytes to RGB PIL Image in RAM
-            image = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+            # Zero-copy buffer protocol from raw.raw (bytearray) to RGB PIL Image:
+            # avoids raw.bgra which allocates an extra 8.3MB (1080p) / 33MB (4K) bytes() copy.
+            buf = raw.raw if hasattr(raw, "raw") else raw.bgra
+            image = Image.frombytes("RGB", raw.size, bytes(buf) if not isinstance(buf, (bytes, bytearray, memoryview)) else buf, "raw", "BGRX")
+            del raw
 
             if self._capture_degraded:
                 logger.info("Captura MSS recuperada correctamente.")

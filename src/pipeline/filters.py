@@ -255,7 +255,9 @@ class FilterPipeline:
         self.phash_filter = PerceptualHashFilter()
         self.cooldown_filter = CooldownFilter(state_machine, min_inference_interval)
         is_eco = efficiency_mode == "eco"
-        eco_cap = (960, 540) if is_eco else None
+        # 896x504 keeps height <= 512px (halving 512x512 vision tiles from 4 to 2)
+        # and aligns exactly to 28px/14px ViT patches (Qwen2.5-VL, Gemma-3, Llama-Vision).
+        eco_cap = (896, 504) if is_eco else None
         effective_quality = min(compression_quality, 72) if is_eco else compression_quality
         self.image_optimizer = ImageOptimizer(
             quality=effective_quality,
@@ -263,10 +265,10 @@ class FilterPipeline:
             max_resolution_cap=eco_cap,
         )
 
-        # Chain: Focus -> pHash -> Cooldown -> Resize/Compress
+        # Chain: Focus (O(1)) -> Cooldown (O(1)) -> pHash -> Resize/Compress
         (
-            self.focus_filter.set_next(self.phash_filter)
-            .set_next(self.cooldown_filter)
+            self.focus_filter.set_next(self.cooldown_filter)
+            .set_next(self.phash_filter)
             .set_next(self.image_optimizer)
         )
 

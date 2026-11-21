@@ -7,7 +7,12 @@ import logging
 import pytest
 from pydantic import ValidationError
 
-from src.config.settings import AppSettings, RuntimeMetrics, SecretRedactingFilter
+from src.config.settings import (
+    AppSettings,
+    RuntimeMetrics,
+    SecretRedactingFilter,
+    configure_logging,
+)
 from src.pipeline.schemas import CoachResponse, InterventionState, InterventionStateMachine
 
 
@@ -91,23 +96,52 @@ def test_state_machine_full_lifecycle() -> None:
 def test_secret_redacting_filter_iso27001() -> None:
     fake_secret = "MY_SUPER_SECRET_TOKEN_987654"
     fake_google_key = "AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz123456"
-    redactor = SecretRedactingFilter(secrets=(fake_secret,))
+    fake_openai_key = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz123456"
+    fake_groq_key = "gsk_AbCdEfGhIjKlMnOpQrStUvWxYz123456"
+    redactor = SecretRedactingFilter(secrets=(fake_secret, "shortKey"))
 
+    # Pass an Exception instance in args (not a plain str) + query string key
+    exc = RuntimeError(
+        f"Failed https://example.com?key={fake_google_key} with {fake_openai_key} "
+        f"and {fake_groq_key} and Bearer secretBearerToken123456 and shortKey"
+    )
     record = logging.LogRecord(
         name="test",
-        level=logging.INFO,
+        level=logging.ERROR,
         pathname=__file__,
         lineno=1,
-        msg="API key leaked: %s and raw %s",
-        args=(fake_secret, fake_google_key),
+        msg="API error: %s | raw=%s",
+        args=(exc, fake_secret),
         exc_info=None,
     )
     assert redactor.filter(record) is True
     rendered = record.getMessage()
-    assert fake_secret not in rendered
-    assert fake_google_key not in rendered
+    for leaked in (
+        fake_secret,
+        fake_google_key,
+        fake_openai_key,
+        fake_groq_key,
+        "secretBearerToken123456",
+        "shortKey",
+    ):
+        assert leaked not in rendered
     assert "[REDACTED_SECRET]" in rendered
     assert "[REDACTED_API_KEY]" in rendered
+    assert "[REDACTED_TOKEN]" in rendered
+
+    # Verify configure_logging replaces previous SecretRedactingFilter when new secrets arrive
+    configure_logging("INFO", secrets=("initialSecret111",))
+    configure_logging("INFO", secrets=("updatedSecret222",))
+    root_filters = [
+        f
+        for h in logging.getLogger().handlers
+        for f in h.filters
+        if isinstance(f, SecretRedactingFilter)
+    ]
+    assert root_filters
+    probe = logging.LogRecord("t", logging.INFO, __file__, 1, "val=%s", ("updatedSecret222",), None)
+    root_filters[0].filter(probe)
+    assert "updatedSecret222" not in probe.getMessage()
 
 
 def test_runtime_metrics_snapshot() -> None:

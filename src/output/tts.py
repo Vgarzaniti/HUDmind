@@ -9,7 +9,6 @@ import logging
 import os
 import subprocess
 import threading
-import time
 from abc import ABC, abstractmethod
 
 # Keep stdout clean when pygame initializes its audio mixer
@@ -23,16 +22,17 @@ logger = logging.getLogger(__name__)
 class AudioPlayer:
     """Non-blocking in-memory audio player backed by `pygame.mixer`."""
 
+    _MIXER_LOCK = threading.Lock()
+
     def __init__(self, volume: float = 0.9) -> None:
         self._volume = max(0.0, min(1.0, volume))
         self._initialized = False
-        self._lock = threading.Lock()
         self._stop_flag = threading.Event()
 
     def _ensure_mixer(self) -> bool:
         if self._initialized:
             return True
-        with self._lock:
+        with self._MIXER_LOCK:
             if self._initialized:
                 return True
             try:
@@ -56,7 +56,7 @@ class AudioPlayer:
 
         self._stop_flag.clear()
         stream = io.BytesIO(audio_bytes)
-        with self._lock:
+        with self._MIXER_LOCK:
             try:
                 pygame.mixer.music.load(stream, namehint=fmt)
                 pygame.mixer.music.set_volume(self._volume)
@@ -65,34 +65,40 @@ class AudioPlayer:
                 logger.error("Error reproduciendo audio (%s): %s", fmt, exc)
                 return
 
-        while pygame.mixer.music.get_busy() and not self._stop_flag.is_set():
-            time.sleep(0.05)
+        try:
+            while not self._stop_flag.is_set():
+                with self._MIXER_LOCK:
+                    busy = bool(pygame.mixer.get_init() and pygame.mixer.music.get_busy())
+                if not busy:
+                    break
+                self._stop_flag.wait(0.05)
+        finally:
+            with self._MIXER_LOCK, contextlib.suppress(Exception):
+                if pygame.mixer.get_init():
+                    pygame.mixer.music.unload()
 
     def stop(self) -> None:
         """Stop active playback immediately."""
         self._stop_flag.set()
         if not self._initialized:
             return
-        try:
+        with self._MIXER_LOCK, contextlib.suppress(Exception):
             import pygame  # type: ignore[import-untyped]
 
             if pygame.mixer.get_init():
                 pygame.mixer.music.stop()
-        except Exception:
-            pass
 
     def close(self) -> None:
         """Release audio device cleanly."""
         self.stop()
-        if self._initialized:
-            try:
-                import pygame  # type: ignore[import-untyped]
+        with self._MIXER_LOCK:
+            if self._initialized:
+                with contextlib.suppress(Exception):
+                    import pygame  # type: ignore[import-untyped]
 
-                if pygame.mixer.get_init():
-                    pygame.mixer.quit()
-            except Exception:
-                pass
-            self._initialized = False
+                    if pygame.mixer.get_init():
+                        pygame.mixer.quit()
+                self._initialized = False
 
 
 class TTSEngine(ABC):
@@ -125,7 +131,13 @@ class Pyttsx3TTSEngine(TTSEngine):
 
     def _speak_blocking(self, text: str) -> None:
         with self._lock:
+            com_initialized = False
             try:
+                with contextlib.suppress(Exception):
+                    import comtypes  # type: ignore[import-untyped]
+
+                    comtypes.CoInitialize()
+                    com_initialized = True
                 import pyttsx3  # type: ignore[import-untyped]
 
                 engine = pyttsx3.init()
@@ -136,6 +148,12 @@ class Pyttsx3TTSEngine(TTSEngine):
                 engine.stop()
             except Exception as exc:
                 logger.error("Error en Pyttsx3TTSEngine: %s", exc)
+            finally:
+                if com_initialized:
+                    with contextlib.suppress(Exception):
+                        import comtypes
+
+                        comtypes.CoUninitialize()
 
     async def speak(self, text: str) -> None:
         await asyncio.to_thread(self._speak_blocking, text)
@@ -317,6 +335,13 @@ class VoiceService:
                 raise
             except Exception as exc:
                 logger.error("Error inesperado en VoiceService: %s", exc)
+
+    async def wait_until_idle(self, timeout: float = 15.0) -> None:
+        """Wait until all queued voice lines have finished speaking."""
+        if not self._enabled or not self._running:
+            return
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._queue.join(), timeout=timeout)
 
     async def stop(self) -> None:
         self._running = False

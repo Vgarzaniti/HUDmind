@@ -8,6 +8,7 @@ import contextlib
 import ctypes
 import logging
 import platform
+import signal
 import sys
 import time
 from pathlib import Path
@@ -94,6 +95,7 @@ class GameCopilotOrchestrator:
             strategy=self._capture_strategy,
             target_fps=1.0,
             should_capture=self._should_capture_now,
+            on_capture_ms=self.metrics.record_capture,
         )
 
         # 4. Intervention State Machine + Anti-Repetition Memory + Filter Pipeline
@@ -147,13 +149,18 @@ class GameCopilotOrchestrator:
         self._force_analysis_pending = False
 
     def _should_capture_now(self) -> bool:
-        """Pre-capture gate: skip BitBlt/GPU capture & 6MB RAM allocation while in cooldown."""
-        if self._user_paused or self._active_profile is None:
+        """Pre-capture gate: skip BitBlt/GPU capture & 6MB RAM allocation while in cooldown or unfocused."""
+        profile = self._active_profile
+        if self._user_paused or profile is None:
             return False
+        if not self._test_mode:
+            active_exe = self._profile_loader.detector.get_foreground_executable()
+            if not profile.matches_process(active_exe):
+                return False
         if self._force_analysis_pending:
             return not self._state_machine.is_busy
         allowed, _ = self._state_machine.can_analyze(
-            cooldown_seconds=self._active_profile.manifest.cooldown_seconds,
+            cooldown_seconds=profile.manifest.cooldown_seconds,
             min_inference_interval=self._settings.min_inference_interval_seconds,
         )
         return allowed
@@ -340,7 +347,7 @@ class GameCopilotOrchestrator:
     async def _deactivate_profile(self) -> None:
         """Pause capture when no supported game is focused."""
         async with self._profile_lock:
-            if self._active_profile is None:
+            if self._active_profile is None or self._observer.is_paused:
                 return
             logger.info(
                 "Juego '%s' ya no está en primer plano; pausando captura.",
@@ -380,53 +387,67 @@ class GameCopilotOrchestrator:
                 raise
 
             profile = self._active_profile
-            if profile is None or self._user_paused:
-                continue
-
-            force_now = self._force_analysis_pending
-            if force_now:
-                self._force_analysis_pending = False
-
-            if force_now:
-                if self._state_machine.is_busy:
-                    continue
-                t_filter_start = time.perf_counter()
-                raw_ctx = FrameContext(frame=frame, profile=profile, test_mode=True)
-                filtered = await asyncio.to_thread(
-                    self._filter_pipeline.image_optimizer.handle,
-                    raw_ctx,
-                )
-                filter_ms = (time.perf_counter() - t_filter_start) * 1000.0
-            else:
-                # Fast O(1) short-circuit in event loop: skip thread-pool handoff & pHash
-                # while Gemini is busy, in intervention cooldown, or within min interval.
-                can_run, _ = self._state_machine.can_analyze(
-                    cooldown_seconds=profile.manifest.cooldown_seconds,
-                    min_inference_interval=self._settings.min_inference_interval_seconds,
-                )
-                if not can_run:
-                    self.metrics.record_filter(0.0, passed=False)
+            filtered: FrameContext | None = None
+            filter_ms = 0.0
+            force_now = False
+            try:
+                if profile is None or self._user_paused:
                     continue
 
-                # Run deterministic CPU Chain of Responsibility off the event loop
-                t_filter_start = time.perf_counter()
-                filtered = await asyncio.to_thread(
-                    self._filter_pipeline.run,
-                    frame,
-                    profile,
-                    self._test_mode,
-                )
-                filter_ms = (time.perf_counter() - t_filter_start) * 1000.0
+                if self._force_analysis_pending:
+                    if self._state_machine.is_busy:
+                        # Keep F10 request pending until active inference finishes
+                        continue
+                    self._force_analysis_pending = False
+                    force_now = True
+
+                if force_now:
+                    t_filter_start = time.perf_counter()
+                    raw_ctx = FrameContext(
+                        frame=frame,
+                        profile=profile,
+                        test_mode=self._test_mode,
+                    )
+                    # Always enforce FocusFilter so F10 never captures private non-game windows
+                    if not self._filter_pipeline.focus_filter._process(raw_ctx):
+                        filter_ms = (time.perf_counter() - t_filter_start) * 1000.0
+                        self.metrics.record_filter(filter_ms, passed=False)
+                        continue
+
+                    def _prepare_forced_frame(ctx: FrameContext) -> FrameContext | None:
+                        self._filter_pipeline.phash_filter._process(ctx)
+                        return self._filter_pipeline.image_optimizer.handle(ctx)
+
+                    filtered = await asyncio.to_thread(_prepare_forced_frame, raw_ctx)
+                    filter_ms = (time.perf_counter() - t_filter_start) * 1000.0
+                else:
+                    # Fast O(1) short-circuit in event loop: skip thread-pool handoff & pHash
+                    # while Gemini is busy, in intervention cooldown, or within min interval.
+                    can_run, _ = self._state_machine.can_analyze(
+                        cooldown_seconds=profile.manifest.cooldown_seconds,
+                        min_inference_interval=self._settings.min_inference_interval_seconds,
+                    )
+                    if not can_run:
+                        self.metrics.record_filter(0.0, passed=False)
+                        continue
+
+                    # Run deterministic CPU Chain of Responsibility off the event loop
+                    t_filter_start = time.perf_counter()
+                    filtered = await asyncio.to_thread(
+                        self._filter_pipeline.run,
+                        frame,
+                        profile,
+                        self._test_mode,
+                    )
+                    filter_ms = (time.perf_counter() - t_filter_start) * 1000.0
+            finally:
+                # Raw PIL frame is no longer needed once encoded_bytes is built or frame is dropped
+                with contextlib.suppress(Exception):
+                    frame.image.close()
 
             if filtered is None or filtered.encoded_bytes is None:
                 self.metrics.record_filter(filter_ms, passed=False)
-                with contextlib.suppress(Exception):
-                    frame.image.close()
                 continue
-
-            # Raw PIL frame is no longer needed once encoded_bytes is built — release RAM immediately
-            with contextlib.suppress(Exception):
-                frame.image.close()
 
             # Frame passed pipeline (or manual F10 request)
             if filtered.phash is not None:
@@ -781,6 +802,15 @@ def main(argv: list[str] | None = None) -> int:
         enable_hotkeys=False if args.no_hotkeys else None,
         accounts=ready_accounts,
     )
+
+    def _handle_stop_signal(_signum: int, _frame: Any) -> None:
+        orchestrator.request_stop()
+
+    for sig_name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            with contextlib.suppress(Exception):
+                signal.signal(sig, _handle_stop_signal)
 
     try:
         asyncio.run(orchestrator.run(max_runtime_seconds=args.max_runtime))

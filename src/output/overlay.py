@@ -363,7 +363,8 @@ class TransparentOverlay:
             root.deiconify()
             root.attributes("-topmost", True)
             position_window()
-            apply_win32_click_through()
+            if not self._click_through_verified:
+                apply_win32_click_through()
 
             duration_ms = int((msg.duration_seconds or self._default_duration) * 1000)
             hide_after_id[0] = root.after(duration_ms, hide_card)
@@ -381,14 +382,14 @@ class TransparentOverlay:
                     display_card(item)
             except queue.Empty:
                 pass
-            # Adaptive polling: 120ms while hidden (low wakeups), 50ms while visible
-            next_delay = 50 if hide_after_id[0] is not None else 120
+            # Adaptive polling: 220ms while hidden (ultra-low wakeups), 50ms while visible
+            next_delay = 50 if hide_after_id[0] is not None else 220
             root.after(next_delay, poll_queue)
 
         # Apply click-through immediately upon Tk window creation
         apply_win32_click_through()
         self._ready_event.set()
-        root.after(120, poll_queue)
+        root.after(220, poll_queue)
         root.mainloop()
         with contextlib.suppress(Exception):
             root.destroy()
