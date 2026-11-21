@@ -1,0 +1,290 @@
+"""Game profile loader and Windows active foreground process detector."""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import sys
+import time
+from pathlib import Path
+
+import psutil
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
+logger = logging.getLogger(__name__)
+
+_SAFE_GAME_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_MAX_PROMPT_BYTES = 512 * 1024  # 512 KB ceiling per markdown profile document
+
+# Optional Windows-only imports for active foreground window detection
+if sys.platform == "win32":
+    try:
+        import win32gui  # type: ignore[import-untyped]
+        import win32process  # type: ignore[import-untyped]
+
+        _WIN32_AVAILABLE = True
+    except ImportError:
+        win32gui = None
+        win32process = None
+        _WIN32_AVAILABLE = False
+else:
+    win32gui = None
+    win32process = None
+    _WIN32_AVAILABLE = False
+
+
+class GameManifest(BaseModel):
+    """Validated schema for profiles/<game_name>/manifest.json (ISO/IEC 25010 Integrity)."""
+
+    game_id: str = Field(..., min_length=1, max_length=64, description="Unique profile identifier.")
+    display_name: str = Field(..., min_length=1, max_length=120, description="Game title.")
+    process_names: list[str] = Field(
+        ...,
+        min_length=1,
+        description="Executable names (.exe) that trigger this profile.",
+    )
+    capture_fps: float = Field(default=1.0, gt=0.0, le=30.0)
+    phash_threshold: int = Field(default=8, ge=0, le=64)
+    cooldown_seconds: float = Field(default=10.0, ge=0.0, le=300.0)
+    max_resolution: tuple[int, int] = Field(default=(1280, 720))
+    language: str = Field(default="es", min_length=2, max_length=16)
+    notes: str = Field(default="", max_length=500)
+
+    @field_validator("game_id")
+    @classmethod
+    def validate_safe_game_id(cls, value: str) -> str:
+        if not _SAFE_GAME_ID_RE.match(value):
+            raise ValueError(
+                "game_id debe contener únicamente minúsculas, dígitos, '-' o '_' (sin rutas)."
+            )
+        return value
+
+    @field_validator("process_names")
+    @classmethod
+    def validate_process_names(cls, names: list[str]) -> list[str]:
+        cleaned = [n.strip() for n in names if n.strip()]
+        if not cleaned:
+            raise ValueError("process_names debe incluir al menos un nombre de ejecutable válido.")
+        for name in cleaned:
+            if "/" in name or "\\" in name or ".." in name:
+                raise ValueError(f"Nombre de proceso inválido: {name!r}")
+        return cleaned
+
+    @field_validator("max_resolution")
+    @classmethod
+    def validate_resolution(cls, value: tuple[int, int]) -> tuple[int, int]:
+        width, height = value
+        if not (320 <= width <= 3840 and 240 <= height <= 2160):
+            raise ValueError(
+                f"max_resolution fuera de rango seguro (320x240 .. 3840x2160): {value}"
+            )
+        return value
+
+
+class GameProfile(BaseModel):
+    """Fully loaded game cartridge (manifest + system prompt + knowledge base)."""
+
+    manifest: GameManifest
+    system_prompt: str
+    knowledge_base: str
+    profile_dir: Path
+
+    def matches_process(self, executable_name: str | None) -> bool:
+        """Case-insensitive check against the profile's registered process names."""
+        if not executable_name:
+            return False
+        normalized = executable_name.strip().lower()
+        return any(proc.strip().lower() == normalized for proc in self.manifest.process_names)
+
+    @property
+    def estimated_tokens(self) -> int:
+        """Rough character-based token estimate (~4 chars/token) for diagnostics."""
+        total_chars = len(self.system_prompt) + len(self.knowledge_base)
+        return max(1, total_chars // 4)
+
+
+class ForegroundProcessDetector:
+    """Detects the executable name (.exe) of the currently focused Windows window.
+
+    Caches the resolved process name per foreground HWND for a short TTL (1.0s)
+    to minimize repeated `OpenProcess` / `psutil.Process` kernel lookups.
+    """
+
+    def __init__(self, cache_ttl_seconds: float = 1.0) -> None:
+        self._cache_ttl = cache_ttl_seconds
+        self._cached_hwnd: int = 0
+        self._cached_exe: str | None = None
+        self._cached_at: float = 0.0
+        if not _WIN32_AVAILABLE:
+            logger.warning(
+                "pywin32 no disponible o plataforma distinta de Windows; "
+                "la detección automática de ventana en primer plano queda deshabilitada."
+            )
+
+    @property
+    def is_supported(self) -> bool:
+        return _WIN32_AVAILABLE
+
+    def get_foreground_executable(self) -> str | None:
+        """Return the .exe name of the foreground window, or None if unavailable."""
+        if not _WIN32_AVAILABLE or win32gui is None or win32process is None:
+            return None
+
+        try:
+            hwnd = int(win32gui.GetForegroundWindow())
+            if not hwnd:
+                self._cached_hwnd = 0
+                self._cached_exe = None
+                return None
+
+            now = time.monotonic()
+            if hwnd == self._cached_hwnd and (now - self._cached_at) < self._cache_ttl:
+                return self._cached_exe
+
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid <= 0:
+                return None
+
+            process = psutil.Process(pid)
+            exe_name = str(process.name())
+            self._cached_hwnd = hwnd
+            self._cached_exe = exe_name
+            self._cached_at = now
+            return exe_name
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            self._cached_hwnd = 0
+            self._cached_exe = None
+            return None
+        except Exception as exc:
+            logger.debug("Error obteniendo proceso en primer plano: %s", exc)
+            return None
+
+
+class GameProfileLoader:
+    """Loads game profile cartridges dynamically from disk and matches active processes."""
+
+    REQUIRED_FILES = ("manifest.json", "system_prompt.md", "knowledge_base.md")
+
+    def __init__(
+        self,
+        profiles_dir: Path,
+        process_detector: ForegroundProcessDetector | None = None,
+    ) -> None:
+        self._profiles_dir = profiles_dir
+        self._detector = process_detector or ForegroundProcessDetector()
+        self._profiles: dict[str, GameProfile] = {}
+        self._process_index: dict[str, GameProfile] = {}
+        self.reload()
+
+    @property
+    def detector(self) -> ForegroundProcessDetector:
+        return self._detector
+
+    def reload(self) -> dict[str, GameProfile]:
+        """Scan profiles directory and load all valid game cartridges."""
+        self._profiles.clear()
+        self._process_index.clear()
+
+        if not self._profiles_dir.exists():
+            logger.warning("Directorio de perfiles no encontrado: %s", self._profiles_dir.resolve())
+            return {}
+
+        base_resolved = self._profiles_dir.resolve()
+        for entry in sorted(self._profiles_dir.iterdir()):
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+
+            # Guard against symlink escapes outside profiles_dir (CWE-22)
+            try:
+                entry.resolve().relative_to(base_resolved)
+            except ValueError:
+                logger.warning("Ignorando ruta de perfil fuera de directorio base: %s", entry)
+                continue
+
+            profile = self._load_single_profile(entry)
+            if profile is None:
+                continue
+
+            self._profiles[profile.manifest.game_id] = profile
+            for proc_name in profile.manifest.process_names:
+                self._process_index[proc_name.strip().lower()] = profile
+
+        logger.info(
+            "Perfiles cargados (%d): %s",
+            len(self._profiles),
+            ", ".join(self._profiles.keys()) or "(ninguno)",
+        )
+        return dict(self._profiles)
+
+    def _load_single_profile(self, folder: Path) -> GameProfile | None:
+        """Validate and load a single profile folder."""
+        missing = [fname for fname in self.REQUIRED_FILES if not (folder / fname).is_file()]
+        if missing:
+            logger.warning(
+                "Ignorando perfil incompleto '%s' (faltan: %s)",
+                folder.name,
+                ", ".join(missing),
+            )
+            return None
+
+        try:
+            prompt_path = folder / "system_prompt.md"
+            kb_path = folder / "knowledge_base.md"
+            if (
+                prompt_path.stat().st_size > _MAX_PROMPT_BYTES
+                or kb_path.stat().st_size > _MAX_PROMPT_BYTES
+            ):
+                logger.warning("Perfil '%s' excede el límite de tamaño de documento.", folder.name)
+                return None
+
+            raw_manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+            manifest = GameManifest.model_validate(raw_manifest)
+            system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+            knowledge_base = kb_path.read_text(encoding="utf-8").strip()
+
+            if not system_prompt or not knowledge_base:
+                logger.warning(
+                    "Perfil '%s' tiene system_prompt.md o knowledge_base.md vacío.",
+                    folder.name,
+                )
+                return None
+
+            return GameProfile(
+                manifest=manifest,
+                system_prompt=system_prompt,
+                knowledge_base=knowledge_base,
+                profile_dir=folder,
+            )
+        except (json.JSONDecodeError, ValidationError, OSError) as exc:
+            logger.error("Error cargando perfil '%s': %s", folder.name, exc)
+            return None
+
+    def list_profiles(self) -> list[GameProfile]:
+        """Return all loaded profiles."""
+        return list(self._profiles.values())
+
+    def get_by_id(self, game_id: str) -> GameProfile | None:
+        """Retrieve a profile by its validated game_id (rejects path traversal inputs)."""
+        if not game_id or "/" in game_id or "\\" in game_id or ".." in game_id:
+            logger.warning("Identificador de perfil rechazado por seguridad: %r", game_id)
+            return None
+
+        if game_id in self._profiles:
+            return self._profiles[game_id]
+        for profile in self._profiles.values():
+            if profile.profile_dir.name.lower() == game_id.lower():
+                return profile
+        return None
+
+    def get_for_process(self, executable_name: str | None) -> GameProfile | None:
+        """Match a running executable name against registered game profiles."""
+        if not executable_name:
+            return None
+        return self._process_index.get(executable_name.strip().lower())
+
+    def detect_active_profile(self) -> tuple[str | None, GameProfile | None]:
+        """Inspect foreground window and return (executable_name, matching_profile)."""
+        exe_name = self._detector.get_foreground_executable()
+        profile = self.get_for_process(exe_name)
+        return exe_name, profile
