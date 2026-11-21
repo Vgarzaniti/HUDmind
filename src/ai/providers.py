@@ -243,10 +243,13 @@ class OpenAICompatibleProvider(BaseAIProvider):
             voice_language=voice_language,
         )
 
+        max_tokens = {"eco": 120, "balanced": 160, "high": 220}.get(
+            self._settings.token_efficiency_mode, 160
+        )
         payload: dict[str, object] = {
             "model": self.account.model,
             "temperature": self._settings.gemini_temperature,
-            "max_tokens": 220,
+            "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": profile.system_prompt},
                 {
@@ -345,9 +348,12 @@ class AnthropicClaudeProvider(BaseAIProvider):
             text_language=text_language,
             voice_language=voice_language,
         )
+        max_tokens = {"eco": 120, "balanced": 160, "high": 220}.get(
+            self._settings.token_efficiency_mode, 160
+        )
         payload = {
             "model": self.account.model,
-            "max_tokens": 240,
+            "max_tokens": max_tokens,
             "temperature": self._settings.gemini_temperature,
             "system": profile.system_prompt,
             "messages": [

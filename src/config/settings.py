@@ -23,6 +23,7 @@ TTSEngineType = Literal["edge", "pyttsx3", "piper"]
 ImageFormatType = Literal["jpeg", "webp"]
 LanguageCode = Literal["es", "en"]
 OverlayTheme = Literal["cyber-dark", "minimal-glass", "high-contrast", "matrix-green", "tactical-amber"]
+TokenEfficiencyMode = Literal["eco", "balanced", "high"]
 
 # Matches standard Google API keys (e.g. AIza...) to prevent accidental leakage in logs
 _GOOGLE_API_KEY_RE = re.compile(r"AIza[0-9A-Za-z_\-]{20,}")
@@ -265,6 +266,14 @@ class AppSettings(BaseSettings):
     image_format: ImageFormatType = Field(
         default="jpeg",
         description="Encoded image format ('jpeg' = lowest CPU ~2.4ms; 'webp' = smallest bandwidth).",
+    )
+    token_efficiency_mode: TokenEfficiencyMode = Field(
+        default="balanced",
+        description="Token/resolution profile: 'eco' (540p, lowest tokens), 'balanced' (720p), 'high'.",
+    )
+    low_process_priority: bool = Field(
+        default=True,
+        description="Run coach at Windows BELOW_NORMAL priority to protect game 1% low FPS.",
     )
 
     # --- Profiles & Logging ---

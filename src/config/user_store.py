@@ -188,6 +188,8 @@ _PERSISTED_SETTING_KEYS = (
     "min_inference_interval_seconds",
     "image_compression_quality",
     "image_format",
+    "token_efficiency_mode",
+    "low_process_priority",
     "enable_file_logging",
     "log_level",
 )

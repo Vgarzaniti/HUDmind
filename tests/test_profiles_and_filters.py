@@ -142,3 +142,17 @@ def test_filter_chain_focus_phash_cooldown_and_resize() -> None:
     assert jpeg_ctx is not None and jpeg_ctx.mime_type == "image/jpeg"
     webp_ctx = ImageOptimizer(quality=75, prefer_webp=True).handle(f_ctx)
     assert webp_ctx is not None and webp_ctx.mime_type == "image/webp"
+
+    # Verify eco mode caps 1080p down to <= 960x540 to save ~45% vision tokens
+    eco_pipe = FilterPipeline(
+        detector=detector,
+        state_machine=InterventionStateMachine(),
+        min_inference_interval=0.0,
+        efficiency_mode="eco",
+    )
+    eco_ctx = eco_pipe.run(frame1, profile, test_mode=True)
+    assert eco_ctx is not None and eco_ctx.encoded_bytes is not None
+    import io
+
+    with Image.open(io.BytesIO(eco_ctx.encoded_bytes)) as decoded:
+        assert decoded.width <= 960 and decoded.height <= 540

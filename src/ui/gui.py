@@ -21,7 +21,6 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Any
 
-from src.ai.providers import create_provider_adapter
 from src.config.settings import AppSettings, OverlayPosition, OverlayTheme
 from src.config.user_store import (
     PROVIDER_PRESETS,
@@ -37,7 +36,6 @@ from src.output.overlay import (
     _ensure_tcl_tk_env,
     enable_windows_dpi_awareness,
 )
-from src.output.tts import VoiceService
 from src.profiles.loader import GameProfileLoader
 
 logger = logging.getLogger("hudmind.gui")
@@ -357,10 +355,12 @@ class HUDMindGUI:
         self._var_overlay_font_size = tk.IntVar(value=s.overlay_font_size)
 
         # Performance tab
+        self._var_token_mode = tk.StringVar(value=s.token_efficiency_mode)
         self._var_image_format = tk.StringVar(value=s.image_format)
         self._var_image_quality = tk.IntVar(value=s.image_compression_quality)
         self._var_monitor = tk.IntVar(value=s.capture_monitor)
         self._var_min_interval = tk.DoubleVar(value=s.min_inference_interval_seconds)
+        self._var_low_priority = tk.BooleanVar(value=s.low_process_priority)
         self._var_hotkeys = tk.BooleanVar(value=s.enable_hotkeys)
         self._var_file_log = tk.BooleanVar(value=s.enable_file_logging)
         self._var_status = tk.StringVar(value="Listo — 0% CPU en reposo.")
@@ -773,10 +773,27 @@ class HUDMindGUI:
     def _build_perf_tab(self) -> None:
         grid = tk.Frame(self._tab_perf, bg=_BG_CARD)
         grid.pack(fill="x", anchor="n")
-        pad: dict[str, Any] = {"padx": 8, "pady": 8}
+        pad: dict[str, Any] = {"padx": 8, "pady": 7}
+
+        tk.Label(grid, text="Modo ahorro de tokens:", bg=_BG_CARD, fg=_FG_TEXT).grid(
+            row=0, column=0, sticky="w", **pad
+        )
+        ttk.Combobox(
+            grid,
+            textvariable=self._var_token_mode,
+            values=["eco", "balanced", "high"],
+            state="readonly",
+            width=14,
+        ).grid(row=0, column=1, sticky="w", **pad)
+        tk.Label(
+            grid,
+            text="eco = 540p (~45% menos tokens) | balanced = 720p | high = máximo detalle",
+            bg=_BG_CARD,
+            fg=_ACCENT,
+        ).grid(row=0, column=2, sticky="w", **pad)
 
         tk.Label(grid, text="Formato de imagen en RAM:", bg=_BG_CARD, fg=_FG_TEXT).grid(
-            row=0, column=0, sticky="w", **pad
+            row=1, column=0, sticky="w", **pad
         )
         ttk.Combobox(
             grid,
@@ -784,46 +801,52 @@ class HUDMindGUI:
             values=["jpeg", "webp"],
             state="readonly",
             width=14,
-        ).grid(row=0, column=1, sticky="w", **pad)
+        ).grid(row=1, column=1, sticky="w", **pad)
         tk.Label(
             grid,
             text="jpeg = mínimo CPU (~2ms) | webp = mínimo ancho de banda",
             bg=_BG_CARD,
             fg=_FG_MUTED,
-        ).grid(row=0, column=2, sticky="w", **pad)
+        ).grid(row=1, column=2, sticky="w", **pad)
 
         tk.Label(grid, text="Calidad compresión (40–90):", bg=_BG_CARD, fg=_FG_TEXT).grid(
-            row=1, column=0, sticky="w", **pad
+            row=2, column=0, sticky="w", **pad
         )
         ttk.Spinbox(
             grid, from_=40, to=90, increment=5, textvariable=self._var_image_quality, width=8
-        ).grid(row=1, column=1, sticky="w", **pad)
+        ).grid(row=2, column=1, sticky="w", **pad)
 
         tk.Label(grid, text="Monitor a capturar (1=principal):", bg=_BG_CARD, fg=_FG_TEXT).grid(
-            row=2, column=0, sticky="w", **pad
+            row=3, column=0, sticky="w", **pad
         )
         ttk.Spinbox(grid, from_=0, to=4, textvariable=self._var_monitor, width=8).grid(
-            row=2, column=1, sticky="w", **pad
+            row=3, column=1, sticky="w", **pad
         )
 
         tk.Label(grid, text="Intervalo mínimo entre consultas (s):", bg=_BG_CARD, fg=_FG_TEXT).grid(
-            row=3, column=0, sticky="w", **pad
+            row=4, column=0, sticky="w", **pad
         )
         ttk.Spinbox(
             grid, from_=1.0, to=20.0, increment=0.5, textvariable=self._var_min_interval, width=8
-        ).grid(row=3, column=1, sticky="w", **pad)
+        ).grid(row=4, column=1, sticky="w", **pad)
+
+        ttk.Checkbutton(
+            grid,
+            text="Prioridad Windows BELOW_NORMAL (protege 1% low FPS del juego)",
+            variable=self._var_low_priority,
+        ).grid(row=5, column=0, columnspan=3, sticky="w", **pad)
 
         ttk.Checkbutton(
             grid,
             text="Habilitar hotkeys globales nativos (F9 Pausar / F10 Analizar ahora)",
             variable=self._var_hotkeys,
-        ).grid(row=4, column=0, columnspan=3, sticky="w", **pad)
+        ).grid(row=6, column=0, columnspan=3, sticky="w", **pad)
 
         ttk.Checkbutton(
             grid,
             text="Guardar archivo de auditoría rotativo en logs/copilot.log",
             variable=self._var_file_log,
-        ).grid(row=5, column=0, columnspan=3, sticky="w", **pad)
+        ).grid(row=7, column=0, columnspan=3, sticky="w", **pad)
 
     # ------------------------------------------------------------------ Actions
     def _sync_voice_presets(self, keep_current: bool = False) -> None:
@@ -854,10 +877,12 @@ class HUDMindGUI:
                 "overlay_duration_seconds": round(float(self._var_overlay_duration.get()), 1),
                 "overlay_font_family": self._var_overlay_font.get(),
                 "overlay_font_size": int(self._var_overlay_font_size.get()),
+                "token_efficiency_mode": self._var_token_mode.get(),
                 "image_format": self._var_image_format.get(),
                 "image_compression_quality": int(self._var_image_quality.get()),
                 "capture_monitor": int(self._var_monitor.get()),
                 "min_inference_interval_seconds": round(float(self._var_min_interval.get()), 1),
+                "low_process_priority": bool(self._var_low_priority.get()),
                 "enable_file_logging": bool(self._var_file_log.get()),
             }
         )
@@ -995,6 +1020,8 @@ class HUDMindGUI:
         self._var_status.set(f"Probando conexión con '{acc.label}'...")
 
         def _worker() -> None:
+            from src.ai.providers import create_provider_adapter
+
             adapter = create_provider_adapter(acc, self._build_settings_from_ui())
             ok, msg = asyncio.run(adapter.test_connection())
             self._root.after(0, lambda: self._on_test_result(acc.label, ok, msg))
@@ -1018,6 +1045,8 @@ class HUDMindGUI:
         self._var_status.set(f"Reproduciendo prueba de voz ({cfg.tts_engine}: {cfg.tts_voice})...")
 
         def _worker() -> None:
+            from src.output.tts import VoiceService
+
             async def _play() -> None:
                 svc = VoiceService(settings=cfg, enabled=True)
                 await svc.start()

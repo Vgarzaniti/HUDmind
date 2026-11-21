@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import ctypes
 import logging
 import platform
 import sys
@@ -32,6 +34,19 @@ from src.pipeline.schemas import CoachResponse, InterventionMemory, Intervention
 from src.profiles.loader import GameProfile, GameProfileLoader
 
 logger = logging.getLogger("copilot.main")
+
+_BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+
+
+def set_below_normal_priority() -> None:
+    """Lower Windows process CPU priority so the active game always keeps 1% low FPS priority."""
+    if sys.platform != "win32":
+        return
+    with contextlib.suppress(Exception):
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetCurrentProcess()
+        if kernel32.SetPriorityClass(handle, _BELOW_NORMAL_PRIORITY_CLASS):
+            logger.debug("Prioridad de proceso Windows establecida en BELOW_NORMAL.")
 
 
 class GameCopilotOrchestrator:
@@ -74,8 +89,12 @@ class GameCopilotOrchestrator:
         else:
             self._capture_strategy = MSSCaptureStrategy(monitor_index=settings.capture_monitor)
 
-        # 3. Screen Observer (Async Pub-Sub with Drop-Oldest)
-        self._observer = ScreenObserver(strategy=self._capture_strategy, target_fps=1.0)
+        # 3. Screen Observer (Async Pub-Sub with Drop-Oldest + Pre-Capture GPU/CPU Gate)
+        self._observer = ScreenObserver(
+            strategy=self._capture_strategy,
+            target_fps=1.0,
+            should_capture=self._should_capture_now,
+        )
 
         # 4. Intervention State Machine + Anti-Repetition Memory + Filter Pipeline
         self._state_machine = InterventionStateMachine()
@@ -86,6 +105,7 @@ class GameCopilotOrchestrator:
             min_inference_interval=settings.min_inference_interval_seconds,
             compression_quality=settings.image_compression_quality,
             image_format=settings.image_format,
+            efficiency_mode=settings.token_efficiency_mode,
         )
 
         # 5. Output Channels & Non-Intrusive Windows Global Hotkeys
@@ -125,6 +145,18 @@ class GameCopilotOrchestrator:
         self._stop_event = asyncio.Event()
         self._user_paused = False
         self._force_analysis_pending = False
+
+    def _should_capture_now(self) -> bool:
+        """Pre-capture gate: skip BitBlt/GPU capture & 6MB RAM allocation while in cooldown."""
+        if self._user_paused or self._active_profile is None:
+            return False
+        if self._force_analysis_pending:
+            return not self._state_machine.is_busy
+        allowed, _ = self._state_machine.can_analyze(
+            cooldown_seconds=self._active_profile.manifest.cooldown_seconds,
+            min_inference_interval=self._settings.min_inference_interval_seconds,
+        )
+        return allowed
 
     def _on_provider_failover(self, previous_label: str, new_label: str) -> None:
         """Notify user discreetly when quota rotation switches to a backup AI account."""
@@ -388,7 +420,13 @@ class GameCopilotOrchestrator:
 
             if filtered is None or filtered.encoded_bytes is None:
                 self.metrics.record_filter(filter_ms, passed=False)
+                with contextlib.suppress(Exception):
+                    frame.image.close()
                 continue
+
+            # Raw PIL frame is no longer needed once encoded_bytes is built — release RAM immediately
+            with contextlib.suppress(Exception):
+                frame.image.close()
 
             # Frame passed pipeline (or manual F10 request)
             if filtered.phash is not None:
@@ -718,6 +756,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.health_check:
         return run_health_check(settings)
+
+    if settings.low_process_priority:
+        set_below_normal_priority()
 
     ready_accounts = [a for a in accounts if a.is_ready()]
     if not args.dry_run and not ready_accounts:

@@ -326,11 +326,22 @@ class GeminiCoachClient:
             prompt_parts.append(recent_history.strip())
         prompt_text = "\n\n".join(prompt_parts)
 
+        max_out = {"eco": 120, "balanced": 160, "high": 220}.get(
+            self._settings.token_efficiency_mode, 160
+        )
+        # Disable hidden internal thinking tokens on Gemini 2.5 Flash for sub-second latency
+        # and ~70-85% lower output token consumption on real-time coaching frames.
+        thinking_cfg = (
+            types.ThinkingConfig(thinking_budget=0) if "2.5" in self._model.lower() else None
+        )
+
         if self._using_cache and self._cache_name:
             # IMPORTANT: Do NOT pass system_instruction when cached_content is set
             config = types.GenerateContentConfig(
                 cached_content=self._cache_name,
                 temperature=self._settings.gemini_temperature,
+                max_output_tokens=max_out,
+                thinking_config=thinking_cfg,
                 response_mime_type="application/json",
                 response_schema=CoachResponse,
             )
@@ -343,6 +354,8 @@ class GeminiCoachClient:
             config = types.GenerateContentConfig(
                 system_instruction=profile.system_prompt,
                 temperature=self._settings.gemini_temperature,
+                max_output_tokens=max_out,
+                thinking_config=thinking_cfg,
                 response_mime_type="application/json",
                 response_schema=CoachResponse,
             )

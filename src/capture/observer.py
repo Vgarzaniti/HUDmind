@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from collections.abc import Callable
 
 from src.capture.base import CapturedFrame, CaptureStrategy
 
@@ -25,9 +26,11 @@ class ScreenObserver:
         self,
         strategy: CaptureStrategy,
         target_fps: float = 1.0,
+        should_capture: Callable[[], bool] | None = None,
     ) -> None:
         self._strategy = strategy
         self._target_fps = max(0.1, target_fps)
+        self._should_capture = should_capture
         self._subscribers: dict[str, asyncio.Queue[CapturedFrame]] = {}
         self._task: asyncio.Task[None] | None = None
         self._running = False
@@ -36,6 +39,7 @@ class ScreenObserver:
         self._active_event.set()
         self._published_count = 0
         self._dropped_count = 0
+        self._skipped_by_gate_count = 0
 
     @property
     def target_fps(self) -> float:
@@ -48,6 +52,10 @@ class ScreenObserver:
     @property
     def dropped_count(self) -> int:
         return self._dropped_count
+
+    @property
+    def skipped_by_gate_count(self) -> int:
+        return self._skipped_by_gate_count
 
     def update_fps(self, fps: float) -> None:
         """Dynamically adjust capture cadence when switching active game profiles."""
@@ -126,8 +134,9 @@ class ScreenObserver:
 
         self._strategy.stop()
         logger.info(
-            "ScreenObserver detenido | publicados=%d | descartados(Drop-Oldest)=%d",
+            "ScreenObserver detenido | publicados=%d | omitidos(cooldown/gate)=%d | descartados(Drop-Oldest)=%d",
             self._published_count,
+            self._skipped_by_gate_count,
             self._dropped_count,
         )
 
@@ -141,14 +150,18 @@ class ScreenObserver:
             loop_start = time.monotonic()
 
             if self._subscribers:
-                try:
-                    frame = await asyncio.to_thread(self._strategy.capture_frame)
-                    if frame is not None:
-                        self.publish(frame)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.error("Error inesperado en ciclo de ScreenObserver: %s", exc)
+                if self._should_capture is not None and not self._should_capture():
+                    # Skip BitBlt / GPU-DWM capture & 6MB RAM allocation while in cooldown/busy
+                    self._skipped_by_gate_count += 1
+                else:
+                    try:
+                        frame = await asyncio.to_thread(self._strategy.capture_frame)
+                        if frame is not None:
+                            self.publish(frame)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.error("Error inesperado en ciclo de ScreenObserver: %s", exc)
 
             interval = 1.0 / self._target_fps
             elapsed = time.monotonic() - loop_start

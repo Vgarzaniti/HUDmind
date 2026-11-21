@@ -111,11 +111,15 @@ class PerceptualHashFilter(FrameFilter):
         # Downscale first with area-averaging BOX filter before grayscale conversion:
         # avoids allocating a full-res grayscale buffer (~2MB) and matches pHash 32x32 DCT input.
         dct_size = self._hash_size * 4
-        small = context.frame.image.resize(
-            (dct_size, dct_size),
-            Image.Resampling.BOX,
-        ).convert("L")
-        current_hash = imagehash.phash(small, hash_size=self._hash_size)
+        tiny_rgb = context.frame.image.resize((dct_size, dct_size), Image.Resampling.BOX)
+        try:
+            small_gray = tiny_rgb.convert("L")
+            try:
+                current_hash = imagehash.phash(small_gray, hash_size=self._hash_size)
+            finally:
+                small_gray.close()
+        finally:
+            tiny_rgb.close()
         context.phash = current_hash
 
         if self._last_accepted_hash is None:
@@ -163,10 +167,12 @@ class ImageOptimizer(FrameFilter):
         self,
         quality: int = 78,
         prefer_webp: bool = False,
+        max_resolution_cap: tuple[int, int] | None = None,
     ) -> None:
         super().__init__()
         self._quality = quality
         self._prefer_webp = prefer_webp
+        self._max_resolution_cap = max_resolution_cap
 
     @staticmethod
     def _compute_aspect_size(
@@ -180,23 +186,39 @@ class ImageOptimizer(FrameFilter):
 
     def _process(self, context: FrameContext) -> bool:
         max_w, max_h = context.profile.manifest.max_resolution
+        if self._max_resolution_cap is not None:
+            max_w = min(max_w, self._max_resolution_cap[0])
+            max_h = min(max_h, self._max_resolution_cap[1])
         img = context.frame.image
 
+        created_resized = False
         if img.width > max_w or img.height > max_h:
             # Direct resize avoids the redundant full-frame copy() required by Image.thumbnail()
             target_size = self._compute_aspect_size(img.width, img.height, max_w, max_h)
             resized = img.resize(target_size, Image.Resampling.BILINEAR)
+            created_resized = True
         else:
             resized = img
 
         buffer = io.BytesIO()
-        if self._prefer_webp:
-            try:
-                # method=0 minimizes WebP encoding latency for real-time gaming workloads
-                resized.save(buffer, format="WEBP", quality=self._quality, method=0)
-                context.mime_type = "image/webp"
-            except Exception:
-                buffer = io.BytesIO()
+        try:
+            if self._prefer_webp:
+                try:
+                    # method=0 minimizes WebP encoding latency for real-time gaming workloads
+                    resized.save(buffer, format="WEBP", quality=self._quality, method=0)
+                    context.mime_type = "image/webp"
+                except Exception:
+                    buffer = io.BytesIO()
+                    resized.save(
+                        buffer,
+                        format="JPEG",
+                        quality=self._quality,
+                        optimize=False,
+                        subsampling=2,
+                    )
+                    context.mime_type = "image/jpeg"
+            else:
+                # Baseline JPEG without extra Huffman optimization pass encodes 720p in ~2-4ms
                 resized.save(
                     buffer,
                     format="JPEG",
@@ -205,16 +227,9 @@ class ImageOptimizer(FrameFilter):
                     subsampling=2,
                 )
                 context.mime_type = "image/jpeg"
-        else:
-            # Baseline JPEG without extra Huffman optimization pass encodes 720p in ~2-4ms
-            resized.save(
-                buffer,
-                format="JPEG",
-                quality=self._quality,
-                optimize=False,
-                subsampling=2,
-            )
-            context.mime_type = "image/jpeg"
+        finally:
+            if created_resized:
+                resized.close()
 
         context.encoded_bytes = buffer.getvalue()
         if not context.encoded_bytes:
@@ -234,13 +249,18 @@ class FilterPipeline:
         min_inference_interval: float = 2.5,
         compression_quality: int = 78,
         image_format: str = "jpeg",
+        efficiency_mode: str = "balanced",
     ) -> None:
         self.focus_filter = FocusFilter(detector)
         self.phash_filter = PerceptualHashFilter()
         self.cooldown_filter = CooldownFilter(state_machine, min_inference_interval)
+        is_eco = efficiency_mode == "eco"
+        eco_cap = (960, 540) if is_eco else None
+        effective_quality = min(compression_quality, 72) if is_eco else compression_quality
         self.image_optimizer = ImageOptimizer(
-            quality=compression_quality,
+            quality=effective_quality,
             prefer_webp=(image_format.lower() == "webp"),
+            max_resolution_cap=eco_cap,
         )
 
         # Chain: Focus -> pHash -> Cooldown -> Resize/Compress

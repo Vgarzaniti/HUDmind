@@ -57,3 +57,23 @@ async def test_screen_observer_drop_oldest_and_pause() -> None:
     assert observer.target_fps == 0.1
 
     await observer.stop()
+
+
+async def test_screen_observer_pre_capture_gate_skips_grab_during_cooldown() -> None:
+    mock = VideoMockCaptureStrategy(source_path=None)
+    allow_flag = False
+    observer = ScreenObserver(
+        strategy=mock,
+        target_fps=25.0,
+        should_capture=lambda: allow_flag,
+    )
+    observer.subscribe("consumer")
+    await observer.start()
+    await asyncio.sleep(0.15)
+    assert observer.published_count == 0
+    assert observer.skipped_by_gate_count >= 2
+
+    allow_flag = True
+    await asyncio.sleep(0.12)
+    assert observer.published_count >= 1
+    await observer.stop()
