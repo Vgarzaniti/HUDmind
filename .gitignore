@@ -1,7 +1,9 @@
-# Environment & Secrets (NEVER commit API keys)
+# Environment & Secrets (NEVER commit API keys or local user account configs)
 .env
 .env.local
 .env.*.local
+config/accounts.json
+config/user_config.json
 
 # Python artifacts
 __pycache__/

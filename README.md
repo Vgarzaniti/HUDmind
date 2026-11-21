@@ -54,7 +54,22 @@ ENABLE_OVERLAY=true
 
 ## Cómo Ejecutar
 
-### 1. Modo Normal (Detección Automática de Juego)
+### 0. Panel Gráfico Ligero (GUI — Recomendado)
+
+Hacé doble clic en [HUDMind.bat](HUDMind.bat) o ejecutá:
+
+```powershell
+.\.venv\Scripts\hudmind.exe --gui
+# o: python -m src.main --gui
+```
+
+Desde el panel gráfico podés:
+- **Asociar múltiples cuentas IA con rotación automática por cuota/tokens** (varias cuentas de **Google Gemini**, **ChatGPT / OpenAI**, **Anthropic Claude**, **Groq gratis**, **OpenRouter `:free`**, **Pollinations gratis**, **Ollama Local 100% gratis sin login** y servidores **OpenAI-compatible / LM Studio sin login**).
+- **Cambiar idioma de texto y audio por separado** (`Español` / `English`) y probar la voz al instante.
+- **Personalizar el estilo del overlay** (tema visual, transparencia/opacidad, posición, tipografía, tamaño, ancho, duración) con **vista previa click-through en pantalla**.
+- Usar **"Iniciar y Cerrar GUI (Mínimo RAM)"** para que la interfaz consuma **0 MB** mientras jugás.
+
+### 1. Modo Normal por Consola (Detección Automática de Juego)
 
 Ejecuta el copiloto desde la raíz del proyecto:
 

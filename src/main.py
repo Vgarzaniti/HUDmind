@@ -16,12 +16,15 @@ if __package__ is None or __package__ == "":
     if str(_project_root) not in sys.path:
         sys.path.insert(0, str(_project_root))
 
-from src.ai.gemini_client import GeminiCoachClient
+from typing import Any
+
+from src.ai.providers import ProviderFailoverRouter
 from src.capture.base import CapturedFrame, CaptureStrategy
 from src.capture.mss_capture import MSSCaptureStrategy, VideoMockCaptureStrategy
 from src.capture.observer import ScreenObserver
 from src.config.hotkeys import GlobalHotkeyManager
 from src.config.settings import AppSettings, RuntimeMetrics, configure_logging
+from src.config.user_store import ProviderAccount, load_accounts, load_effective_settings
 from src.output.overlay import TransparentOverlay, enable_windows_dpi_awareness
 from src.output.tts import AudioPlayer, VoiceService
 from src.pipeline.filters import FilterPipeline, FrameContext
@@ -46,7 +49,8 @@ class GameCopilotOrchestrator:
         enable_voice: bool | None = None,
         enable_overlay: bool | None = None,
         enable_hotkeys: bool | None = None,
-        ai_client: GeminiCoachClient | None = None,
+        ai_client: Any | None = None,
+        accounts: list[ProviderAccount] | None = None,
     ) -> None:
         self._settings = settings
         self._test_mode = test_mode
@@ -84,22 +88,16 @@ class GameCopilotOrchestrator:
             image_format=settings.image_format,
         )
 
-        # 5. Gemini Client (Context Caching + Circuit Breaker + Structured Outputs)
-        self._ai_client: GeminiCoachClient | None
-        if ai_client is not None:
-            self._ai_client = ai_client
-        elif dry_run:
-            self._ai_client = None
-        else:
-            self._ai_client = GeminiCoachClient(settings)
-
-        # 6. Output Channels & Non-Intrusive Windows Global Hotkeys
+        # 5. Output Channels & Non-Intrusive Windows Global Hotkeys
         self._overlay = TransparentOverlay(
             enabled=overlay_enabled,
             position=settings.overlay_position,
             width=settings.overlay_width,
             opacity=settings.overlay_opacity,
             default_duration_seconds=settings.overlay_duration_seconds,
+            theme=settings.overlay_theme,
+            font_family=settings.overlay_font_family,
+            font_size=settings.overlay_font_size,
         )
         self._voice = VoiceService(settings=settings, enabled=voice_enabled)
         self._hotkeys = GlobalHotkeyManager(
@@ -108,11 +106,35 @@ class GameCopilotOrchestrator:
             on_analyze_now=self.trigger_on_demand_analysis,
         )
 
+        # 6. Multi-Provider AI Failover Router (Gemini, ChatGPT, Claude, Groq, OpenRouter, Ollama...)
+        self._ai_client: Any | None
+        if ai_client is not None:
+            self._ai_client = ai_client
+        elif dry_run:
+            self._ai_client = None
+        else:
+            resolved_accounts = accounts if accounts is not None else load_accounts(settings)
+            self._ai_client = ProviderFailoverRouter(
+                accounts=resolved_accounts,
+                settings=settings,
+                on_failover=self._on_provider_failover,
+            )
+
         self._active_profile: GameProfile | None = None
         self._profile_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._user_paused = False
         self._force_analysis_pending = False
+
+    def _on_provider_failover(self, previous_label: str, new_label: str) -> None:
+        """Notify user discreetly when quota rotation switches to a backup AI account."""
+        title = self._active_profile.manifest.display_name if self._active_profile else "HUDMind"
+        self._overlay.show_message(
+            text=f"Rotación automática IA: {new_label}",
+            urgency="low",
+            title=title,
+            duration_seconds=3.5,
+        )
 
     async def run(self, max_runtime_seconds: float | None = None) -> None:
         """Start all subsystems and run until interrupted or optional timeout expires."""
@@ -407,6 +429,8 @@ class GameCopilotOrchestrator:
                     profile=profile,
                     recent_history=recent_history,
                     force_advice=force_now,
+                    text_language=self._settings.text_language,
+                    voice_language=self._settings.voice_language,
                 )
             except asyncio.CancelledError:
                 self._state_machine.abort_analysis()
@@ -578,12 +602,14 @@ def run_health_check(settings: AppSettings) -> int:
     else:
         logger.warning("[WARN] pygame.mixer no disponible; TTS usará fallback pyttsx3.")
 
-    # 6. Gemini API Key Check (never prints secret)
-    if settings.has_valid_api_key():
-        logger.info("[OK] GEMINI_API_KEY configurada | modelo=%s", settings.default_model)
+    # 6. AI Provider Pool Check (never prints secrets)
+    accounts = [a for a in load_accounts(settings) if a.is_ready()]
+    if accounts:
+        summary = ", ".join(f"{a.label} ({a.provider}:{a.model})" for a in accounts)
+        logger.info("[OK] Cuentas IA listas (%d): %s", len(accounts), summary)
     else:
         logger.warning(
-            "[WARN] GEMINI_API_KEY no configurada en .env (requerida fuera de --dry-run)."
+            "[WARN] No hay cuentas IA configuradas (configurá .env o usá 'hudmind --gui')."
         )
 
     logger.info("=== Health Check finalizado: %s ===", "PASS" if all_ok else "WITH ERRORS")
@@ -595,6 +621,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="hudmind",
         description="HUDMind — Copiloto / Coach de Videojuegos en Tiempo Real con Gemini API.",
+    )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="Abre la interfaz gráfica ligera de configuración y control de HUDMind.",
     )
     parser.add_argument(
         "--test-mode",
@@ -662,22 +693,38 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint."""
     enable_windows_dpi_awareness()
     args = parse_args(argv)
-    settings = AppSettings()
-    raw_secret = settings.get_api_key_value()
+    settings = load_effective_settings()
+    accounts = load_accounts(settings)
+
+    all_secrets = tuple(
+        s
+        for s in (
+            settings.get_api_key_value(),
+            *(a.api_key.strip() for a in accounts),
+        )
+        if s
+    )
     configure_logging(
         args.log_level or settings.log_level,
-        secrets=(raw_secret,) if raw_secret else (),
+        secrets=all_secrets,
         enable_file_logging=settings.enable_file_logging,
         log_file=settings.log_file,
     )
 
+    if args.gui:
+        from src.ui.gui import launch_gui
+
+        return launch_gui()
+
     if args.health_check:
         return run_health_check(settings)
 
-    if not args.dry_run and not settings.has_valid_api_key():
+    ready_accounts = [a for a in accounts if a.is_ready()]
+    if not args.dry_run and not ready_accounts:
         logger.error(
-            "GEMINI_API_KEY no configurada o conserva el valor de ejemplo. "
-            "Copia '.env.example' a '.env', coloca tu API key real, o ejecuta con '--dry-run'."
+            "No hay cuentas IA configuradas. Abrí el panel gráfico con 'hudmind --gui' "
+            "para agregar cuentas (Gemini, ChatGPT, Claude, Groq, OpenRouter, Ollama sin login), "
+            "o configurá GEMINI_API_KEY en '.env'."
         )
         return 1
 
@@ -691,6 +738,7 @@ def main(argv: list[str] | None = None) -> int:
         enable_voice=False if args.no_voice else None,
         enable_overlay=False if args.no_overlay else None,
         enable_hotkeys=False if args.no_hotkeys else None,
+        accounts=ready_accounts,
     )
 
     try:

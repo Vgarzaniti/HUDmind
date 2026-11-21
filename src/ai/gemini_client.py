@@ -26,6 +26,19 @@ _FRAME_ANALYSIS_PROMPT = (
 )
 
 
+def build_language_instruction(text_language: str = "es", voice_language: str = "es") -> str:
+    """Build explicit language directive supporting independent Spanish/English text & voice."""
+    lang_names = {"es": "Spanish (español natural y conciso)", "en": "English (concise, natural)"}
+    t_name = lang_names.get(text_language, lang_names["es"])
+    v_name = lang_names.get(voice_language, lang_names["es"])
+    if text_language == voice_language:
+        return f"LANGUAGE RULE: Write both overlay_text and voice_line strictly in {t_name}."
+    return (
+        f"LANGUAGE RULE: Write overlay_text strictly in {t_name}, "
+        f"and write voice_line strictly in {v_name}."
+    )
+
+
 class GeminiCoachClient:
     """Manages Gemini Context Caching sessions, fault tolerance, and multimodal inference."""
 
@@ -52,6 +65,8 @@ class GeminiCoachClient:
         self._consecutive_failures: int = 0
         self._circuit_open_until: float = 0.0
         self._auth_failed: bool = False
+        self.last_error_code: int | None = None
+        self.last_error_message: str = ""
 
     @property
     def is_using_cache(self) -> bool:
@@ -184,8 +199,12 @@ class GeminiCoachClient:
         *,
         recent_history: str = "",
         force_advice: bool = False,
+        text_language: str = "es",
+        voice_language: str = "es",
     ) -> CoachResponse | None:
         """Analyze a single compressed game frame and return a structured CoachResponse."""
+        self.last_error_code = None
+        self.last_error_message = ""
         if self.is_circuit_open:
             logger.debug("Circuit Breaker abierto; omitiendo llamada a Gemini.")
             return None
@@ -208,6 +227,8 @@ class GeminiCoachClient:
                         profile,
                         recent_history=recent_history,
                         force_advice=force_advice,
+                        text_language=text_language,
+                        voice_language=voice_language,
                     ),
                     timeout=self._settings.gemini_timeout_seconds,
                 )
@@ -217,6 +238,8 @@ class GeminiCoachClient:
 
             except genai_errors.APIError as exc:
                 code = getattr(exc, "code", None)
+                self.last_error_code = int(code) if isinstance(code, int) else None
+                self.last_error_message = str(exc)
 
                 if code in (401, 403):
                     self._record_failure(fatal_auth=True)
@@ -250,6 +273,8 @@ class GeminiCoachClient:
                 return None
 
             except TimeoutError:
+                self.last_error_code = 408
+                self.last_error_message = "timeout"
                 if attempt < self._max_retries:
                     logger.warning(
                         "Timeout llamando a Gemini (%.1fs, intento %d/%d).",
@@ -266,6 +291,8 @@ class GeminiCoachClient:
                 raise
 
             except Exception as exc:
+                self.last_error_code = 500
+                self.last_error_message = str(exc)
                 logger.error("Error inesperado en inferencia Gemini: %s", exc)
                 self._record_failure()
                 return None
@@ -280,11 +307,16 @@ class GeminiCoachClient:
         *,
         recent_history: str = "",
         force_advice: bool = False,
+        text_language: str = "es",
+        voice_language: str = "es",
     ) -> Any:
         """Execute multimodal generate_content using either Context Cache or inline fallback."""
         image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
 
-        prompt_parts = [_FRAME_ANALYSIS_PROMPT]
+        prompt_parts = [
+            _FRAME_ANALYSIS_PROMPT,
+            build_language_instruction(text_language, voice_language),
+        ]
         if force_advice:
             prompt_parts.append(
                 "SOLICITUD MANUAL DEL JUGADOR (F10): el jugador pidió una lectura táctica "

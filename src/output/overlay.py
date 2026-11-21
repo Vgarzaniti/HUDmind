@@ -13,7 +13,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.config.settings import OverlayPosition
+from src.config.settings import OverlayPosition, OverlayTheme
 from src.pipeline.schemas import UrgencyLevel
 
 logger = logging.getLogger(__name__)
@@ -33,9 +33,15 @@ _URGENCY_STYLES: dict[UrgencyLevel, tuple[str, str]] = {
 }
 
 _TRANSPARENT_KEY = "#010101"
-_CARD_BG = "#0F172A"
-_TEXT_PRIMARY = "#F8FAFC"
-_TEXT_MUTED = "#94A3B8"
+
+# (card_bg, border_color, text_primary, text_muted)
+OVERLAY_THEME_PALETTES: dict[OverlayTheme, tuple[str, str, str, str]] = {
+    "cyber-dark": ("#0F172A", "#334155", "#F8FAFC", "#94A3B8"),
+    "minimal-glass": ("#111827", "#1F2937", "#E5E7EB", "#9CA3AF"),
+    "high-contrast": ("#000000", "#FFFFFF", "#FFFFFF", "#FDE047"),
+    "matrix-green": ("#051B11", "#10B981", "#D1FAE5", "#34D399"),
+    "tactical-amber": ("#1C1408", "#D97706", "#FEF3C7", "#FBBF24"),
+}
 
 
 @dataclass(slots=True)
@@ -113,12 +119,18 @@ class TransparentOverlay:
         width: int = 440,
         opacity: float = 0.90,
         default_duration_seconds: float = 6.0,
+        theme: OverlayTheme = "cyber-dark",
+        font_family: str = "Segoe UI",
+        font_size: int = 12,
     ) -> None:
         self._enabled = enabled
         self._position = position
         self._width = width
         self._opacity = opacity
         self._default_duration = default_duration_seconds
+        self._theme: OverlayTheme = theme
+        self._font_family = font_family
+        self._font_size = font_size
 
         self._cmd_queue: queue.Queue[OverlayMessage | None] = queue.Queue(maxsize=8)
         self._thread: threading.Thread | None = None
@@ -223,23 +235,28 @@ class TransparentOverlay:
         if sys.platform == "win32":
             root.attributes("-transparentcolor", _TRANSPARENT_KEY)
 
+        card_bg, border_color, text_primary, text_muted = OVERLAY_THEME_PALETTES.get(
+            self._theme,
+            OVERLAY_THEME_PALETTES["cyber-dark"],
+        )
+
         # Build sleek dark HUD notification card (WCAG AA+ contrast on dark background)
         card = tk.Frame(
             root,
-            bg=_CARD_BG,
+            bg=card_bg,
             bd=0,
             highlightthickness=1,
-            highlightbackground="#334155",
+            highlightbackground=border_color,
         )
         card.pack(fill="both", expand=True, padx=4, pady=4)
 
         accent_bar = tk.Frame(card, bg="#38BDF8", width=6)
         accent_bar.pack(side="left", fill="y")
 
-        content_frame = tk.Frame(card, bg=_CARD_BG, padx=14, pady=10)
+        content_frame = tk.Frame(card, bg=card_bg, padx=14, pady=10)
         content_frame.pack(side="left", fill="both", expand=True)
 
-        header_frame = tk.Frame(content_frame, bg=_CARD_BG)
+        header_frame = tk.Frame(content_frame, bg=card_bg)
         header_frame.pack(fill="x", anchor="w")
 
         badge_label = tk.Label(
@@ -247,7 +264,7 @@ class TransparentOverlay:
             text="TACTIC",
             bg="#38BDF8",
             fg="#0B1120",
-            font=("Segoe UI", 8, "bold"),
+            font=(self._font_family, max(8, self._font_size - 4), "bold"),
             padx=6,
             pady=1,
         )
@@ -256,9 +273,9 @@ class TransparentOverlay:
         title_label = tk.Label(
             header_frame,
             text="AI COACH",
-            bg=_CARD_BG,
-            fg=_TEXT_MUTED,
-            font=("Segoe UI", 9, "bold"),
+            bg=card_bg,
+            fg=text_muted,
+            font=(self._font_family, max(8, self._font_size - 3), "bold"),
             padx=8,
         )
         title_label.pack(side="left")
@@ -266,9 +283,9 @@ class TransparentOverlay:
         body_label = tk.Label(
             content_frame,
             text="",
-            bg=_CARD_BG,
-            fg=_TEXT_PRIMARY,
-            font=("Segoe UI", 12, "bold"),
+            bg=card_bg,
+            fg=text_primary,
+            font=(self._font_family, self._font_size, "bold"),
             justify="left",
             anchor="w",
             wraplength=max(200, self._width - 48),

@@ -33,6 +33,8 @@ class _MockCoachClient:
         *,
         recent_history: str = "",
         force_advice: bool = False,
+        text_language: str = "es",
+        voice_language: str = "es",
     ) -> CoachResponse | None:
         self.frames_analyzed += 1
         self.received_histories.append(recent_history)

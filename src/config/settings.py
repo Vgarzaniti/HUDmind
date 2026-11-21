@@ -21,6 +21,8 @@ load_dotenv(override=False)
 OverlayPosition = Literal["top-right", "top-left", "bottom-right", "bottom-left", "top-center"]
 TTSEngineType = Literal["edge", "pyttsx3", "piper"]
 ImageFormatType = Literal["jpeg", "webp"]
+LanguageCode = Literal["es", "en"]
+OverlayTheme = Literal["cyber-dark", "minimal-glass", "high-contrast", "matrix-green", "tactical-amber"]
 
 # Matches standard Google API keys (e.g. AIza...) to prevent accidental leakage in logs
 _GOOGLE_API_KEY_RE = re.compile(r"AIza[0-9A-Za-z_\-]{20,}")
@@ -185,6 +187,16 @@ class AppSettings(BaseSettings):
         description="Cooldown period while the circuit breaker is open.",
     )
 
+    # --- Language Settings (Text & Voice independently configurable) ---
+    text_language: LanguageCode = Field(
+        default="es",
+        description="Language for on-screen overlay text ('es' or 'en').",
+    )
+    voice_language: LanguageCode = Field(
+        default="es",
+        description="Language for TTS spoken voice lines ('es' or 'en').",
+    )
+
     # --- Output Channels & Controls ---
     enable_voice: bool = Field(default=True, description="Enable asynchronous TTS output.")
     enable_overlay: bool = Field(default=True, description="Enable click-through overlay.")
@@ -216,7 +228,21 @@ class AppSettings(BaseSettings):
         description="Screen corner/edge where overlay notifications appear.",
     )
     overlay_width: int = Field(default=440, ge=240, le=900)
-    overlay_opacity: float = Field(default=0.90, ge=0.2, le=1.0)
+    overlay_opacity: float = Field(default=0.90, ge=0.25, le=1.0)
+    overlay_theme: OverlayTheme = Field(
+        default="cyber-dark",
+        description="Visual theme preset for the transparent overlay HUD.",
+    )
+    overlay_font_family: str = Field(default="Segoe UI", description="Overlay typography family.")
+    overlay_font_size: int = Field(default=12, ge=9, le=20, description="Overlay body font size.")
+    accounts_file: Path = Field(
+        default=Path("config/accounts.json"),
+        description="Local JSON file storing multi-provider AI accounts (gitignored).",
+    )
+    user_config_file: Path = Field(
+        default=Path("config/user_config.json"),
+        description="Local JSON file storing GUI preferences (gitignored).",
+    )
 
     # --- Capture & Pipeline ---
     capture_monitor: int = Field(
