@@ -9,6 +9,7 @@ or transient server errors.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import io
@@ -969,8 +970,15 @@ class ProviderFailoverRouter:
             p.account.api_key.strip() for p in self._providers if p.account.api_key.strip()
         )
 
+    @staticmethod
+    def _is_fast_cloud_vision(prov: BaseAIProvider) -> bool:
+        acc = prov.account
+        return acc.provider in ("gemini", "groq", "openai", "claude", "openrouter") and bool(
+            acc.api_key.strip()
+        )
+
     async def prepare_session(self, profile: GameProfile) -> bool:
-        """Warm up the primary provider and clean up any previously prepared sessions."""
+        """Warm up the primary provider (and hedge partner if present) and clean old sessions."""
         for prov in self._providers:
             if prov.account.id in self._prepared_ids:
                 with contextlib.suppress(Exception):
@@ -988,9 +996,222 @@ class ProviderFailoverRouter:
         primary = self._providers[0]
         cached = await primary.prepare_session(profile)
         self._prepared_ids.add(primary.account.id)
+        # Pre-warm secondary fast vision hedge partner concurrently (Keep-Alive TLS ready)
+        if (
+            len(self._providers) >= 2
+            and self._is_fast_cloud_vision(primary)
+            and self._is_fast_cloud_vision(self._providers[1])
+        ):
+            secondary = self._providers[1]
+            with contextlib.suppress(Exception):
+                await secondary.prepare_session(profile)
+                self._prepared_ids.add(secondary.account.id)
         self._active_index = 0
         logger.info("Proveedor IA principal activo: %s", self.active_account_label)
         return cached
+
+    def _apply_failure_cooldown(
+        self,
+        prov: BaseAIProvider,
+        code: int | None,
+        call_ms: float,
+        sys_chars: int,
+        eff_mode: str,
+    ) -> None:
+        acc = prov.account
+        used_cache = acc.provider in ("gemini", "claude", "openai")
+        if self._telemetry is not None:
+            self._telemetry.record_ai_call(
+                provider=acc.provider,
+                model=acc.model,
+                account_label=acc.label,
+                system_chars=sys_chars,
+                efficiency_mode=eff_mode,
+                used_cache=used_cache,
+                latency_ms=call_ms,
+                response=None,
+                rate_limited=(code in (402, 429)),
+                failed=(code not in (402, 429)),
+            )
+
+        is_keyless_cloud = acc.provider in ("pollinations", "airforce") and not acc.api_key.strip()
+        if code in (401, 403):
+            cooldown_s = 600.0
+            reason = f"auth/acceso (HTTP {code})"
+        elif code == 402 and is_keyless_cloud:
+            cooldown_s = 45.0
+            reason = "límite gratuito temporal por IP (HTTP 402)"
+        elif code == 402:
+            cooldown_s = 600.0
+            reason = "sin créditos (HTTP 402)"
+        elif code == 429:
+            cooldown_s = 30.0 if is_keyless_cloud else 60.0
+            reason = "cuota / rate limit (HTTP 429)"
+        elif acc.provider == "ollama" and code == 503:
+            cooldown_s = 600.0
+            reason = "Ollama local no está corriendo en localhost:11434 (HTTP 503)"
+        else:
+            cooldown_s = 20.0
+            reason = f"error (HTTP {code})"
+
+        self._cooldown_until[acc.id] = time.monotonic() + cooldown_s
+        logger.warning(
+            "Proveedor '%s' falló por %s -> rotando al siguiente disponible (pausa %.0fs).",
+            acc.label,
+            reason,
+            cooldown_s,
+        )
+
+    def _finalize_success(
+        self,
+        idx: int,
+        prov: BaseAIProvider,
+        response: CoachResponse,
+        call_ms: float,
+        sys_chars: int,
+        eff_mode: str,
+        *,
+        force_advice: bool,
+    ) -> CoachResponse:
+        acc = prov.account
+        used_cache = acc.provider in ("gemini", "claude", "openai")
+        if self._telemetry is not None:
+            self._telemetry.record_ai_call(
+                provider=acc.provider,
+                model=acc.model,
+                account_label=acc.label,
+                system_chars=sys_chars,
+                efficiency_mode=eff_mode,
+                used_cache=used_cache,
+                latency_ms=call_ms,
+                response=response,
+            )
+        if idx != self._active_index:
+            prev_label = self._providers[self._active_index].account.label
+            self._active_index = idx
+            logger.info("Failover completado: '%s' -> '%s'", prev_label, acc.label)
+            if self._on_failover is not None:
+                self._on_failover(prev_label, acc.label)
+
+        # Real-time Freshness Deadline Guard: never speak stale auto-advice after a >2.4s cloud spike
+        if not force_advice and response.should_intervene and call_ms > 2400.0:
+            logger.info(
+                "Consejo automático descartado por latencia alta (%.0fms > 2400ms) [%s].",
+                call_ms,
+                acc.model,
+            )
+            return CoachResponse(
+                should_intervene=False,
+                urgency="low",
+                overlay_text="",
+                voice_line="",
+                match_context=response.match_context,
+            )
+        return response
+
+    async def _try_hedged_vision_pair(
+        self,
+        first: tuple[int, BaseAIProvider],
+        second: tuple[int, BaseAIProvider],
+        *,
+        image_bytes: bytes,
+        mime_type: str,
+        profile: GameProfile,
+        recent_history: str,
+        force_advice: bool,
+        t_lang: str,
+        v_lang: str,
+        sys_chars: int,
+        eff_mode: str,
+        hedge_delay_seconds: float = 0.35,
+    ) -> tuple[bool, CoachResponse | None]:
+        """Staggered Hedged Request Pattern (Jeff Dean's Tail at Scale) across top 2 vision models.
+
+        Fires primary immediately. Only if primary is still pending after `hedge_delay_seconds`,
+        fires the secondary model in parallel and returns whichever completes first with a valid
+        response, cancelling the slower sibling immediately.
+        """
+        idx1, prov1 = first
+        idx2, prov2 = second
+
+        async def _call(idx: int, prov: BaseAIProvider) -> tuple[int, BaseAIProvider, ProviderCallResult, float]:
+            if prov.account.id not in self._prepared_ids and self._active_profile is not None:
+                await prov.prepare_session(self._active_profile)
+                self._prepared_ids.add(prov.account.id)
+            prov._previous_image_bytes = None  # type: ignore[attr-defined]
+            t0 = time.monotonic()
+            res = await prov.analyze_frame(
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                profile=profile,
+                recent_history=recent_history,
+                force_advice=force_advice,
+                text_language=t_lang,
+                voice_language=v_lang,
+            )
+            return idx, prov, res, (time.monotonic() - t0) * 1000.0
+
+        t1 = asyncio.create_task(_call(idx1, prov1), name="hedge-primary")
+        done, _ = await asyncio.wait({t1}, timeout=hedge_delay_seconds)
+        if t1 in done:
+            try:
+                w_idx, w_prov, w_res, w_ms = t1.result()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._apply_failure_cooldown(prov1, 500, hedge_delay_seconds * 1000.0, sys_chars, eff_mode)
+                logger.debug("Hedge primary exception: %s", exc)
+                return False, None
+
+            if w_res.response is not None:
+                return True, self._finalize_success(
+                    w_idx, w_prov, w_res.response, w_ms, sys_chars, eff_mode, force_advice=force_advice
+                )
+            if w_res.error_code == 422:
+                return True, None
+            self._apply_failure_cooldown(w_prov, w_res.error_code, w_ms, sys_chars, eff_mode)
+            return False, None
+
+        # Primary exceeded hedge threshold -> launch secondary in parallel and race!
+        t2 = asyncio.create_task(_call(idx2, prov2), name="hedge-secondary")
+        pending: set[asyncio.Task[tuple[int, BaseAIProvider, ProviderCallResult, float]]] = {t1, t2}
+        try:
+            while pending:
+                finished, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in finished:
+                    try:
+                        w_idx, w_prov, w_res, w_ms = task.result()
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception as exc:
+                        logger.debug("Hedged vision tarea falló: %s", exc)
+                        continue
+                    if w_res.response is not None:
+                        for p in pending:
+                            p.cancel()
+                        if pending:
+                            await asyncio.gather(*pending, return_exceptions=True)
+                        logger.debug(
+                            "Hedged Vision ganador: %s en %.0fms",
+                            w_prov.account.model,
+                            w_ms,
+                        )
+                        return True, self._finalize_success(
+                            w_idx,
+                            w_prov,
+                            w_res.response,
+                            w_ms,
+                            sys_chars,
+                            eff_mode,
+                            force_advice=force_advice,
+                        )
+                    if w_res.error_code != 422:
+                        self._apply_failure_cooldown(w_prov, w_res.error_code, w_ms, sys_chars, eff_mode)
+            return False, None
+        except asyncio.CancelledError:
+            for p in pending:
+                p.cancel()
+            raise
 
     async def analyze_frame(
         self,
@@ -1003,7 +1224,7 @@ class ProviderFailoverRouter:
         text_language: str | None = None,
         voice_language: str | None = None,
     ) -> CoachResponse | None:
-        """Analyze a frame with seamless automatic failover across configured accounts."""
+        """Analyze a frame with sub-second hedged vision racing & seamless automatic failover."""
         if not self._providers:
             return None
 
@@ -1032,50 +1253,85 @@ class ProviderFailoverRouter:
         sys_chars = len(profile.system_prompt) + len(profile.knowledge_base)
         eff_mode = self._settings.token_efficiency_mode
 
-        # Real-time ~40ms Windows 11 Native OCR + Spatial HUD scan (auto-detects Match vs Training vs Menu)
-        live_hud: LiveHUDState | None = None
-        effective_coach_mode: str = self._settings.coach_mode
-        if len(image_bytes) > 64:
-            live_hud = await self._hud_analyzer.analyze(
-                image_bytes,
-                game_id=profile.manifest.game_id,
+        # Sub-second Hedged Vision Race when top 2 healthy candidates are fast cloud vision APIs
+        skip_ids: set[str] = set()
+        if (
+            eff_mode in ("eco", "balanced")
+            and len(candidates) >= 2
+            and self._is_fast_cloud_vision(candidates[0][1])
+            and self._is_fast_cloud_vision(candidates[1][1])
+        ):
+            handled, hedged_resp = await self._try_hedged_vision_pair(
+                candidates[0],
+                candidates[1],
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                profile=profile,
+                recent_history=recent_history,
+                force_advice=force_advice,
+                t_lang=t_lang,
+                v_lang=v_lang,
+                sys_chars=sys_chars,
+                eff_mode=eff_mode,
             )
-            if self._settings.coach_mode == "auto":
-                if live_hud.detected_mode == "menu" and not force_advice:
-                    logger.debug("Menú/Lobby detectado automáticamente por OCR; coach en silencio.")
-                    return CoachResponse(should_intervene=False)
-                effective_coach_mode = (
-                    "training" if live_hud.detected_mode == "training" else "match"
-                )
-                if effective_coach_mode != self._last_detected_mode:
-                    self._last_detected_mode = effective_coach_mode
-                    logger.info(
-                        "Detección automática de modo: %s (OCR=%.0fms, timer=%r, score=%r)",
-                        effective_coach_mode.upper(),
-                        live_hud.ocr_ms,
-                        live_hud.timer_text,
-                        live_hud.score_text,
-                    )
+            if handled:
+                return hedged_resp
+            skip_ids.add(candidates[0][1].account.id)
+            if candidates[1][1].account.id in self._cooldown_until:
+                skip_ids.add(candidates[1][1].account.id)
 
-        # Attach previous frame only if captured recently (<= 6s ago) so Gemini sees real motion!
+        # Attach 2-frame motion sequence only in high-detail mode (saves ~700ms in eco/balanced)
         prev_for_motion = (
             self._previous_frame_bytes
-            if (self._previous_frame_bytes and (now - self._previous_frame_ts) <= 6.0)
+            if (
+                eff_mode == "high"
+                and self._previous_frame_bytes
+                and (now - self._previous_frame_ts) <= 6.0
+            )
             else None
         )
-        self._previous_frame_bytes = image_bytes if len(image_bytes) > 64 else None
-        self._previous_frame_ts = now
+        if eff_mode == "high":
+            self._previous_frame_bytes = image_bytes if len(image_bytes) > 64 else None
+            self._previous_frame_ts = now
 
+        # Lazy WinRT OCR: only computed if we fall back to text-only keyless cloud models (-50ms on Vision!)
+        live_hud: LiveHUDState | None = None
+        ocr_attempted = False
+        effective_coach_mode: str = self._settings.coach_mode
         keyless_cloud_attempts = 0
 
         for idx, prov in candidates:
             acc = prov.account
+            if acc.id in skip_ids:
+                continue
             is_keyless_cloud = acc.provider in ("pollinations", "airforce") and not acc.api_key.strip()
             # Try at most 2 keyless cloud models per frame to stay responsive without long waterfalls
             if is_keyless_cloud and keyless_cloud_attempts >= 2:
                 continue
             if is_keyless_cloud:
                 keyless_cloud_attempts += 1
+                if not ocr_attempted and len(image_bytes) > 64:
+                    ocr_attempted = True
+                    live_hud = await self._hud_analyzer.analyze(
+                        image_bytes,
+                        game_id=profile.manifest.game_id,
+                    )
+                    if self._settings.coach_mode == "auto":
+                        if live_hud.detected_mode == "menu" and not force_advice:
+                            logger.debug("Menú/Lobby detectado automáticamente por OCR; coach en silencio.")
+                            return CoachResponse(should_intervene=False)
+                        effective_coach_mode = (
+                            "training" if live_hud.detected_mode == "training" else "match"
+                        )
+                        if effective_coach_mode != self._last_detected_mode:
+                            self._last_detected_mode = effective_coach_mode
+                            logger.info(
+                                "Detección automática de modo: %s (OCR=%.0fms, timer=%r, score=%r)",
+                                effective_coach_mode.upper(),
+                                live_hud.ocr_ms,
+                                live_hud.timer_text,
+                                live_hud.score_text,
+                            )
 
             if acc.id not in self._prepared_ids and self._active_profile is not None:
                 await prov.prepare_session(self._active_profile)
@@ -1096,27 +1352,17 @@ class ProviderFailoverRouter:
                 voice_language=v_lang,
             )
             call_ms = (time.monotonic() - t_call_start) * 1000.0
-            used_cache = acc.provider in ("gemini", "claude", "openai")
 
             if result.response is not None:
-                if self._telemetry is not None:
-                    self._telemetry.record_ai_call(
-                        provider=acc.provider,
-                        model=acc.model,
-                        account_label=acc.label,
-                        system_chars=sys_chars,
-                        efficiency_mode=eff_mode,
-                        used_cache=used_cache,
-                        latency_ms=call_ms,
-                        response=result.response,
-                    )
-                if idx != self._active_index:
-                    prev_label = self._providers[self._active_index].account.label
-                    self._active_index = idx
-                    logger.info("Failover completado: '%s' -> '%s'", prev_label, acc.label)
-                    if self._on_failover is not None:
-                        self._on_failover(prev_label, acc.label)
-                return result.response
+                return self._finalize_success(
+                    idx,
+                    prov,
+                    result.response,
+                    call_ms,
+                    sys_chars,
+                    eff_mode,
+                    force_advice=force_advice,
+                )
 
             # Do not penalize or rotate provider on transient empty/malformed output (422)
             code = result.error_code
@@ -1124,47 +1370,7 @@ class ProviderFailoverRouter:
                 logger.debug("Proveedor '%s' devolvió salida no estructurada (422).", acc.label)
                 return None
 
-            if self._telemetry is not None:
-                self._telemetry.record_ai_call(
-                    provider=acc.provider,
-                    model=acc.model,
-                    account_label=acc.label,
-                    system_chars=sys_chars,
-                    efficiency_mode=eff_mode,
-                    used_cache=used_cache,
-                    latency_ms=call_ms,
-                    response=None,
-                    rate_limited=(code in (402, 429)),
-                    failed=(code not in (402, 429)),
-                )
-
-            is_keyless_cloud = acc.provider in ("pollinations", "airforce") and not acc.api_key.strip()
-            if code in (401, 403):
-                cooldown_s = 600.0
-                reason = f"auth/acceso (HTTP {code})"
-            elif code == 402 and is_keyless_cloud:
-                cooldown_s = 45.0
-                reason = "límite gratuito temporal por IP (HTTP 402)"
-            elif code == 402:
-                cooldown_s = 600.0
-                reason = "sin créditos (HTTP 402)"
-            elif code == 429:
-                cooldown_s = 30.0 if is_keyless_cloud else 60.0
-                reason = "cuota / rate limit (HTTP 429)"
-            elif acc.provider == "ollama" and code == 503:
-                cooldown_s = 600.0
-                reason = "Ollama local no está corriendo en localhost:11434 (HTTP 503)"
-            else:
-                cooldown_s = 20.0
-                reason = f"error (HTTP {code})"
-
-            self._cooldown_until[acc.id] = time.monotonic() + cooldown_s
-            logger.warning(
-                "Proveedor '%s' falló por %s -> rotando al siguiente disponible (pausa %.0fs).",
-                acc.label,
-                reason,
-                cooldown_s,
-            )
+            self._apply_failure_cooldown(prov, code, call_ms, sys_chars, eff_mode)
 
         logger.error("Todos los proveedores IA del pool fallaron en este frame.")
         return None

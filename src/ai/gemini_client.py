@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
+import json
 import logging
 import random
 import time
 from typing import Any
+from urllib.parse import quote
 
+import aiohttp
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
@@ -85,6 +90,118 @@ def build_coach_mode_instruction(coach_mode: str = "auto") -> str:
     return ""
 
 
+def build_realtime_compact_prompt(
+    profile: GameProfile,
+    *,
+    coach_mode: str = "auto",
+    text_language: str = "es",
+    voice_language: str = "es",
+    recent_history: str = "",
+    force_advice: bool = False,
+) -> str:
+    """Ultra-compact (<140 tokens) prompt for sub-second real-time live vision coaching."""
+    lang_code = (voice_language or text_language or "es").lower()
+    lang_label = "Spanish (español natural, directo, estilo coach en Discord)" if lang_code == "es" else "English (concise Discord coach)"
+    if coach_mode == "training":
+        mode_rule = "Mode=TRAINING: coach mechanics, positioning & consistency like a live trainer."
+    elif coach_mode == "auto":
+        mode_rule = "Auto-detect: if menu/lobby/loading -> NONE; if training/free play -> coach mechanics; if live match -> coach rotation, teammates, economy & clock."
+    else:
+        mode_rule = "Mode=MATCH: coach rotation, teammates, resources & score/clock. If menu -> NONE."
+
+    parts = [
+        f"Live human eSports coach watching {profile.manifest.display_name}. Language: {lang_label}.",
+        mode_rule,
+        "Give 1 improvised macro/positioning/economy callout useful for the next 10-25s (never late split-second reflexes, never textbook/robotic phrasing). Reference 1 real HUD/player detail you see.",
+    ]
+    if profile.custom_rules.strip():
+        parts.append(f"Player rules: {profile.custom_rules.strip()[:260]}")
+    if force_advice:
+        parts.append("PLAYER PRESSED F10: give your best tactical read NOW (do not reply NONE).")
+    if recent_history.strip():
+        # Keep only the newest 4 lines so prompt stays sub-second fast
+        hist_lines = [ln.strip() for ln in recent_history.strip().splitlines() if ln.strip()][-4:]
+        if hist_lines:
+            parts.append("Do NOT repeat: " + " ; ".join(hist_lines))
+    parts.append(
+        "Reply STRICTLY 1 line: H|<max 10 words>|<4-8w HUD state> OR M|<max 10 words>|<4-8w HUD state> OR L|<max 10 words>|<4-8w HUD state> OR NONE."
+    )
+    return "\n".join(parts)
+
+
+def parse_compact_coach_line(raw_text: str) -> CoachResponse | None:
+    """Parse 1-line compact wire protocol (`U|callout|ctx` or `NONE`) into CoachResponse."""
+    text = raw_text.strip()
+    if not text:
+        return None
+
+    # Strip accidental markdown fences
+    if text.startswith("```"):
+        text = "\n".join(
+            ln for ln in text.splitlines() if not ln.strip().startswith("```")
+        ).strip()
+    if not text:
+        return None
+
+    # JSON fallback if model replied with JSON object
+    if text.startswith("{"):
+        with contextlib.suppress(ValidationError, json.JSONDecodeError):
+            return CoachResponse.model_validate_json(text)
+
+    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    if not first_line:
+        return None
+
+    upper = first_line.upper().strip(" .!\"'`")
+    if upper in ("NONE", "NO", "SILENCE", "SKIP", "NULL"):
+        return CoachResponse(should_intervene=False, urgency="low", overlay_text="", voice_line="")
+
+    if "|" in first_line:
+        segs = [s.strip().strip("\"'`") for s in first_line.split("|")]
+        urg_map: dict[str, UrgencyLevel] = {
+            "H": "high",
+            "HIGH": "high",
+            "ALTA": "high",
+            "M": "medium",
+            "MED": "medium",
+            "MEDIUM": "medium",
+            "MEDIA": "medium",
+            "L": "low",
+            "LOW": "low",
+            "BAJA": "low",
+        }
+        urgency = urg_map.get(segs[0].upper())
+        if urgency is not None and len(segs) >= 2:
+            callout = segs[1]
+            if not callout or callout.upper() == "NONE":
+                return CoachResponse(
+                    should_intervene=False, urgency="low", overlay_text="", voice_line=""
+                )
+            ctx = segs[2][:155] if len(segs) >= 3 else ""
+            if len(callout) > 115:
+                callout = callout[:112].rsplit(" ", 1)[0] + "..."
+            return CoachResponse(
+                should_intervene=True,
+                urgency=urgency,
+                overlay_text=callout,
+                voice_line=callout,
+                match_context=ctx,
+            )
+
+    # Graceful fallback: short direct single-line coach sentence
+    cleaned = first_line.strip("\"'` ")
+    if 4 <= len(cleaned) <= 135 and not cleaned.startswith("{"):
+        short = cleaned if len(cleaned) <= 115 else cleaned[:112].rsplit(" ", 1)[0] + "..."
+        return CoachResponse(
+            should_intervene=True,
+            urgency="medium",
+            overlay_text=short,
+            voice_line=cleaned[:175],
+            match_context="",
+        )
+    return None
+
+
 class GeminiCoachClient:
     """Manages Gemini Context Caching sessions, fault tolerance, and multimodal inference."""
 
@@ -106,6 +223,7 @@ class GeminiCoachClient:
         self._cache_expires_at: float = 0.0
         self._using_cache: bool = False
         self._session_lock = asyncio.Lock()
+        self._fast_http: aiohttp.ClientSession | None = None
 
         # Circuit Breaker state (ISO/IEC 25010 Reliability / Fault Tolerance)
         self._consecutive_failures: int = 0
@@ -176,16 +294,21 @@ class GeminiCoachClient:
                 profile.estimated_tokens,
             )
 
-            # Skip network call on real Gemini API if below 1,024-token Context Caching minimum
-            if isinstance(self._client, genai.Client) and profile.estimated_tokens < 1024:
-                logger.info(
-                    "Perfil '%s' (~%d tokens < 1024 mín. de Context Cache); "
-                    "usando directamente modo estándar inline sin desperdiciar llamada HTTP.",
-                    profile.manifest.game_id,
-                    profile.estimated_tokens,
-                )
+            # Sub-second Real-Time Fast Path: skip heavy remote Context Cache in eco/balanced
+            # real-API mode and pre-warm persistent HTTP/TLS Keep-Alive socket instead!
+            if isinstance(self._client, genai.Client) and (
+                self._settings.token_efficiency_mode in ("eco", "balanced")
+                or profile.estimated_tokens < 1024
+            ):
                 self._cache_name = None
                 self._using_cache = False
+                await self._prewarm_fast_http()
+                logger.info(
+                    "Sesión Gemini Ultra-Fast Keep-Alive lista para '%s' (modelo=%s, modo=%s).",
+                    profile.manifest.game_id,
+                    self._model,
+                    self._settings.token_efficiency_mode,
+                )
                 return False
 
             try:
@@ -278,6 +401,17 @@ class GeminiCoachClient:
         ):
             logger.info("Context Cache próximo a expirar; renovando sesión...")
             await self.prepare_session(profile)
+
+        if self._should_use_fast_rest():
+            return await self._analyze_frame_fast_rest(
+                image_bytes=image_bytes,
+                mime_type=mime_type,
+                profile=profile,
+                recent_history=recent_history,
+                force_advice=force_advice,
+                text_language=text_language,
+                voice_language=voice_language,
+            )
 
         inline_fallback_retried = False
         attempt = 0
@@ -499,10 +633,148 @@ class GeminiCoachClient:
             )
             return None
 
+    def _should_use_fast_rest(self) -> bool:
+        """Use persistent aiohttp Keep-Alive + 1-line compact wire protocol for real Gemini calls."""
+        return (
+            isinstance(self._client, genai.Client)
+            and not self._using_cache
+            and self._settings.token_efficiency_mode in ("eco", "balanced")
+        )
+
+    def _get_fast_http(self) -> aiohttp.ClientSession:
+        if self._fast_http is None or self._fast_http.closed:
+            connector = aiohttp.TCPConnector(
+                ttl_dns_cache=300,
+                keepalive_timeout=60,
+                limit=4,
+            )
+            self._fast_http = aiohttp.ClientSession(
+                connector=connector,
+                timeout=aiohttp.ClientTimeout(total=min(6.0, self._settings.gemini_timeout_seconds)),
+                cookie_jar=aiohttp.DummyCookieJar(),
+            )
+        return self._fast_http
+
+    async def _prewarm_fast_http(self) -> None:
+        """Establish TLS + HTTP Keep-Alive socket at session start so frame #1 has zero handshake delay."""
+        api_key = self._settings.get_api_key_value().strip()
+        if not api_key:
+            return
+        safe_model = quote(self._model.strip(), safe="-_.")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{safe_model}"
+        with contextlib.suppress(Exception):
+            session = self._get_fast_http()
+            async with session.get(
+                url,
+                headers={"x-goog-api-key": api_key, "User-Agent": "HUDMind/0.5.0"},
+                timeout=aiohttp.ClientTimeout(total=3.0),
+            ) as resp:
+                await resp.read()
+
+    async def _analyze_frame_fast_rest(
+        self,
+        *,
+        image_bytes: bytes,
+        mime_type: str,
+        profile: GameProfile,
+        recent_history: str,
+        force_advice: bool,
+        text_language: str,
+        voice_language: str,
+    ) -> CoachResponse | None:
+        """Sub-second direct REST Keep-Alive inference using 1-line compact wire protocol."""
+        api_key = self._settings.get_api_key_value().strip()
+        if not api_key:
+            self.last_error_code = 401
+            self.last_error_message = "Falta API key de Gemini"
+            self._record_failure(fatal_auth=True)
+            return None
+
+        safe_model = quote(self._model.strip(), safe="-_.")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{safe_model}:generateContent"
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        prompt = build_realtime_compact_prompt(
+            profile,
+            coach_mode=self._settings.coach_mode,
+            text_language=text_language,
+            voice_language=voice_language,
+            recent_history=recent_history,
+            force_advice=force_advice,
+        )
+        m_low = self._model.lower()
+        gen_cfg: dict[str, Any] = {
+            "temperature": 0.55,
+            "maxOutputTokens": 42,
+            "mediaResolution": "MEDIA_RESOLUTION_LOW",
+        }
+        if "2.5" in m_low:
+            gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
+        elif "3." in m_low or "3-" in m_low:
+            gen_cfg["thinkingConfig"] = {"thinkingLevel": "MINIMAL"}
+
+        payload: dict[str, Any] = {
+            "contents": [
+                {
+                    "parts": [
+                        {"inlineData": {"mimeType": mime_type, "data": b64}},
+                        {"text": prompt},
+                    ]
+                }
+            ],
+            "generationConfig": gen_cfg,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+            "User-Agent": "HUDMind/0.5.0",
+        }
+
+        try:
+            session = self._get_fast_http()
+            req_timeout = aiohttp.ClientTimeout(total=min(5.0, self._settings.gemini_timeout_seconds))
+            async with session.post(url, headers=headers, json=payload, timeout=req_timeout) as resp:
+                if resp.status != 200:
+                    body = (await resp.text())[:220]
+                    self.last_error_code = resp.status
+                    self.last_error_message = body
+                    if resp.status in (401, 403):
+                        self._record_failure(fatal_auth=True)
+                    else:
+                        self._record_failure()
+                    logger.error("Error Gemini Fast REST (HTTP %s): %s", resp.status, body)
+                    return None
+                data = await resp.json()
+                candidates = data.get("candidates") or []
+                parts = (candidates[0].get("content") or {}).get("parts") or [] if candidates else []
+                raw_text = "".join(str(p.get("text", "")) for p in parts if isinstance(p, dict)).strip()
+                parsed = parse_compact_coach_line(raw_text)
+                if parsed is None:
+                    self.last_error_code = 422
+                    self.last_error_message = f"Salida compacta no válida: {raw_text[:100]!r}"
+                    return None
+                self._record_success()
+                return parsed
+        except TimeoutError:
+            self.last_error_code = 408
+            self.last_error_message = "timeout"
+            self._record_failure()
+            return None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.last_error_code = 500
+            self.last_error_message = str(exc)
+            self._record_failure()
+            return None
+
     async def close_session(self) -> None:
-        """Delete active remote Context Cache cleanly."""
+        """Delete active remote Context Cache and close Keep-Alive HTTP pool cleanly."""
         async with self._session_lock:
             await self._delete_active_cache_unlocked()
+            if self._fast_http is not None and not self._fast_http.closed:
+                with contextlib.suppress(Exception):
+                    await self._fast_http.close()
+                self._fast_http = None
             self._active_profile = None
 
     async def _delete_active_cache_unlocked(self) -> None:

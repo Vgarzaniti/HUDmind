@@ -1103,13 +1103,13 @@ class HUDMindGUI:
         ttk.Combobox(
             grid,
             textvariable=self._var_tts_engine,
-            values=["edge", "pyttsx3", "piper"],
+            values=["pyttsx3", "edge", "piper"],
             state="readonly",
             width=18,
         ).grid(row=3, column=1, sticky="w", **pad)
         tk.Label(
             grid,
-            text="edge = neural online | pyttsx3 = offline ultra-liviano",
+            text="pyttsx3 = SAPI5 INSTANTÁNEO (~8ms — Tiempo Real) | edge = neural online (+1-4s red)",
             bg=_BG_CARD,
             fg=_FG_MUTED,
         ).grid(row=3, column=2, sticky="w", **pad)

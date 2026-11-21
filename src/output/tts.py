@@ -7,10 +7,13 @@ import contextlib
 import io
 import logging
 import os
+import queue
 import subprocess
+import sys
 import threading
 from abc import ABC, abstractmethod
 from collections import OrderedDict
+from typing import Any
 
 # Keep stdout clean when pygame initializes its audio mixer
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -117,25 +120,160 @@ class TTSEngine(ABC):
     def stop(self) -> None:  # noqa: B027
         """Interrupt active speech if supported."""
 
+    def close(self) -> None:  # noqa: B027
+        """Release any persistent background resources cleanly."""
+
 
 class Pyttsx3TTSEngine(TTSEngine):
-    """Zero-network offline TTS strategy using Windows SAPI5 via `pyttsx3`."""
+    """Zero-network instant offline TTS (~8ms start) using persistent Windows SAPI5 COM STA.
 
-    def __init__(self, rate_wpm: int = 195, volume: float = 0.9) -> None:
+    Keeps a single pre-warmed `SAPI.SpVoice` instance alive on a dedicated STA thread so
+    speaking a tactical callout never pays the ~970ms COM/pyttsx3 re-initialization penalty
+    or the 1–4s Azure network latency of online TTS. Falls back to `pyttsx3` if SAPI5 COM
+    is unavailable.
+    """
+
+    _SVS_FLAGS_ASYNC = 1
+    _SVS_FPURGE_BEFORE_SPEAK = 2
+
+    def __init__(
+        self,
+        rate_wpm: int = 205,
+        volume: float = 0.9,
+        language: str = "es",
+    ) -> None:
         self._rate_wpm = rate_wpm
         self._volume = max(0.0, min(1.0, volume))
+        self._language = (language or "es").lower()
         self._lock = threading.Lock()
+        self._cmd_queue: queue.Queue[tuple[str, str, threading.Event | None] | None] = queue.Queue()
+        self._worker_thread: threading.Thread | None = None
+        self._sapi_ready = False
+        self._sapi_failed = False
 
     @property
     def name(self) -> str:
-        return "pyttsx3(offline)"
+        return f"sapi5-instant({self._language})" if self._sapi_ready else f"pyttsx3-offline({self._language})"
 
-    def _speak_blocking(self, text: str) -> None:
+    def _sapi_rate(self) -> int:
+        # Map WPM (~150..240) to SAPI5 Rate (-10..+10); 205 WPM -> +2 (snappy Discord coach)
+        return max(-4, min(6, round((self._rate_wpm - 175) / 15)))
+
+    def _ensure_sapi_worker(self) -> bool:
+        if sys.platform != "win32" or self._sapi_failed:
+            return False
+        with self._lock:
+            if self._worker_thread is not None and self._worker_thread.is_alive():
+                return self._sapi_ready
+            ready_ev = threading.Event()
+            self._worker_thread = threading.Thread(
+                target=self._sapi_sta_loop,
+                args=(ready_ev,),
+                name="sapi5-instant-tts",
+                daemon=True,
+            )
+            self._worker_thread.start()
+        ready_ev.wait(timeout=3.0)
+        return self._sapi_ready
+
+    def _select_best_voice(self, sp_voice: Any) -> None:
+        with contextlib.suppress(Exception):
+            tokens = sp_voice.GetVoices()
+            count = int(tokens.Count)
+            want_es = self._language.startswith("es")
+            best_token = None
+            best_score = -1
+            for i in range(count):
+                tok = tokens.Item(i)
+                desc = str(tok.GetDescription()).lower()
+                score = 0
+                if want_es:
+                    if "sabina" in desc or "es-mx" in desc or "spanish (mexico)" in desc:
+                        score = 100
+                    elif "raul" in desc or "pablo" in desc or "es-ar" in desc or "es-419" in desc:
+                        score = 95
+                    elif "helena" in desc or "spanish" in desc or "español" in desc:
+                        score = 80
+                else:
+                    if "zira" in desc or "david" in desc or "en-us" in desc:
+                        score = 100
+                    elif "english" in desc:
+                        score = 80
+                if score > best_score:
+                    best_score = score
+                    best_token = tok
+            if best_token is not None and best_score > 0:
+                sp_voice.Voice = best_token
+
+    def _sapi_sta_loop(self, ready_ev: threading.Event) -> None:
+        com_initialized = False
+        sp_voice: Any = None
+        try:
+            import comtypes  # type: ignore[import-untyped]
+            import comtypes.client  # type: ignore[import-untyped]
+
+            comtypes.CoInitialize()
+            com_initialized = True
+            sp_voice = comtypes.client.CreateObject("SAPI.SpVoice")
+            self._select_best_voice(sp_voice)
+            sp_voice.Rate = self._sapi_rate()
+            sp_voice.Volume = int(round(self._volume * 100))
+            # Silent pre-warm so the first live tactical callout starts in ~8ms
+            sp_voice.Speak("", self._SVS_FLAGS_ASYNC | self._SVS_FPURGE_BEFORE_SPEAK)
+            self._sapi_ready = True
+        except Exception as exc:
+            logger.debug("SAPI5 persistente no disponible (%s); usando pyttsx3 fallback.", exc)
+            self._sapi_failed = True
+            self._sapi_ready = False
+            ready_ev.set()
+            if com_initialized:
+                with contextlib.suppress(Exception):
+                    import comtypes
+
+                    comtypes.CoUninitialize()
+            return
+
+        ready_ev.set()
+        try:
+            while True:
+                item = self._cmd_queue.get()
+                if item is None:
+                    break
+                cmd, text, done_ev = item
+                try:
+                    if sp_voice is not None:
+                        if cmd == "speak" and text:
+                            sp_voice.Speak(
+                                text,
+                                self._SVS_FLAGS_ASYNC | self._SVS_FPURGE_BEFORE_SPEAK,
+                            )
+                        elif cmd == "stop":
+                            sp_voice.Speak(
+                                "",
+                                self._SVS_FLAGS_ASYNC | self._SVS_FPURGE_BEFORE_SPEAK,
+                            )
+                except Exception as exc:
+                    logger.error("Error en SAPI5 instantáneo: %s", exc)
+                finally:
+                    if done_ev is not None:
+                        done_ev.set()
+        finally:
+            if sp_voice is not None:
+                with contextlib.suppress(Exception):
+                    sp_voice.Speak("", self._SVS_FLAGS_ASYNC | self._SVS_FPURGE_BEFORE_SPEAK)
+            if com_initialized:
+                with contextlib.suppress(Exception):
+                    import comtypes
+
+                    comtypes.CoUninitialize()
+            self._sapi_ready = False
+
+    def _speak_fallback_blocking(self, text: str) -> None:
         with self._lock:
             com_initialized = False
             try:
                 with contextlib.suppress(Exception):
-                    import comtypes  # type: ignore[import-untyped]
+                    import comtypes
 
                     comtypes.CoInitialize()
                     com_initialized = True
@@ -148,7 +286,7 @@ class Pyttsx3TTSEngine(TTSEngine):
                 engine.runAndWait()
                 engine.stop()
             except Exception as exc:
-                logger.error("Error en Pyttsx3TTSEngine: %s", exc)
+                logger.error("Error en Pyttsx3TTSEngine fallback: %s", exc)
             finally:
                 if com_initialized:
                     with contextlib.suppress(Exception):
@@ -156,8 +294,27 @@ class Pyttsx3TTSEngine(TTSEngine):
 
                         comtypes.CoUninitialize()
 
+    def _speak_blocking(self, text: str) -> None:
+        if self._ensure_sapi_worker():
+            done_ev = threading.Event()
+            self._cmd_queue.put(("speak", text, done_ev))
+            done_ev.wait(timeout=2.0)
+            return
+        self._speak_fallback_blocking(text)
+
     async def speak(self, text: str) -> None:
         await asyncio.to_thread(self._speak_blocking, text)
+
+    def stop(self) -> None:
+        if self._sapi_ready:
+            self._cmd_queue.put(("stop", "", None))
+
+    def close(self) -> None:
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            self._cmd_queue.put(None)
+            self._worker_thread.join(timeout=1.5)
+            self._worker_thread = None
+        self._sapi_ready = False
 
 
 class EdgeTTSEngine(TTSEngine):
@@ -309,7 +466,10 @@ class PiperTTSEngine(TTSEngine):
 
 def create_tts_engine(settings: AppSettings, player: AudioPlayer) -> TTSEngine:
     """Factory that instantiates the configured TTSEngine strategy."""
-    offline_fallback = Pyttsx3TTSEngine(volume=settings.tts_volume)
+    offline_fallback = Pyttsx3TTSEngine(
+        volume=settings.tts_volume,
+        language=settings.voice_language,
+    )
 
     if settings.tts_engine == "pyttsx3":
         return offline_fallback
@@ -347,6 +507,9 @@ class VoiceService:
         if not self._enabled or self._running:
             return
         self._running = True
+        # Pre-warm persistent offline SAPI5 STA worker so first live callout starts in ~8ms
+        if isinstance(self._engine, Pyttsx3TTSEngine):
+            await asyncio.to_thread(self._engine._ensure_sapi_worker)
         self._worker_task = asyncio.create_task(self._worker_loop(), name="tts-worker-loop")
         logger.info("VoiceService iniciado | motor=%s", self._engine.name)
 
@@ -391,5 +554,6 @@ class VoiceService:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_task
             self._worker_task = None
+        self._engine.close()
         self._player.close()
         logger.info("VoiceService detenido.")

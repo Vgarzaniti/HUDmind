@@ -268,14 +268,24 @@ class FilterPipeline:
             cooldown_multiplier=cooldown_multiplier,
         )
         is_eco = efficiency_mode == "eco"
-        # 896x504 keeps height <= 512px (halving 512x512 vision tiles from 4 to 2)
-        # and aligns exactly to 28px/14px ViT patches (Qwen2.5-VL, Gemma-3, Llama-Vision).
-        eco_cap = (896, 504) if is_eco else None
-        effective_quality = min(compression_quality, 72) if is_eco else compression_quality
+        is_balanced = efficiency_mode == "balanced"
+        # Sub-second vision payload sizing:
+        # - eco (Real-Time): 512x288 JPEG q58 (~4-6 KB, ~2ms encode, minimal ViT tiles)
+        # - balanced: 640x360 JPEG q68 (~10-15 KB, crisp HUD numbers + sub-second speed)
+        # - high: full profile max resolution (e.g., 1280x720)
+        if is_eco:
+            res_cap: tuple[int, int] | None = (512, 288)
+            effective_quality = min(compression_quality, 58)
+        elif is_balanced:
+            res_cap = (640, 360)
+            effective_quality = min(compression_quality, 68)
+        else:
+            res_cap = None
+            effective_quality = compression_quality
         self.image_optimizer = ImageOptimizer(
             quality=effective_quality,
             prefer_webp=(image_format.lower() == "webp"),
-            max_resolution_cap=eco_cap,
+            max_resolution_cap=res_cap,
         )
 
         # Chain: Focus (O(1)) -> Cooldown (O(1)) -> pHash -> Resize/Compress

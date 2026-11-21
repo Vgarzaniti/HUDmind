@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from src.ai.gemini_client import build_language_instruction
+from src.ai.gemini_client import build_language_instruction, parse_compact_coach_line
 from src.ai.providers import (
     BaseAIProvider,
     GeminiProviderAdapter,
@@ -370,3 +370,68 @@ async def test_realtime_hud_ocr_auto_detects_match_training_menu_and_events() ->
     img_train.save(buf2, format="JPEG")
     st2 = await analyzer.analyze(buf2.getvalue(), game_id="rocket_league")
     assert st2.detected_mode == "training"
+
+
+def test_parse_compact_coach_line_handles_wire_protocol_none_and_json() -> None:
+    none_resp = parse_compact_coach_line("NONE")
+    assert none_resp is not None and none_resp.should_intervene is False
+
+    high_resp = parse_compact_coach_line("H|Rotá segundo palo, tenés 18 de boost|1-2 00:45 boost 18")
+    assert high_resp is not None
+    assert high_resp.should_intervene is True
+    assert high_resp.urgency == "high"
+    assert "18 de boost" in high_resp.overlay_text
+    assert high_resp.match_context == "1-2 00:45 boost 18"
+
+    med_resp = parse_compact_coach_line("M|Agarrá pads chicos y mantené presión")
+    assert med_resp is not None and med_resp.urgency == "medium"
+
+
+async def test_hedged_vision_racing_beats_slow_primary_spike() -> None:
+    import asyncio
+
+    profile = GameProfileLoader(Path("profiles")).get_by_id("rocket_league")
+    assert profile is not None
+
+    acc1 = ProviderAccount(
+        id="fast-1", label="Gemini Primary", provider="gemini", api_key="key-12345678", model="gemini-2.5-flash", priority=1
+    )
+    acc2 = ProviderAccount(
+        id="fast-2", label="Gemini Hedge", provider="gemini", api_key="key-12345678", model="gemini-3.5-flash-lite", priority=2
+    )
+    fast_resp = CoachResponse(
+        should_intervene=True,
+        urgency="high",
+        overlay_text="Cuidá segundo palo",
+        voice_line="Cuidá segundo palo",
+    )
+
+    class _DelayedStub(BaseAIProvider):
+        def __init__(self, account: ProviderAccount, settings: AppSettings, delay: float, resp: CoachResponse) -> None:
+            super().__init__(account, settings)
+            self._delay = delay
+            self._resp = resp
+
+        async def analyze_frame(self, *args: Any, **kwargs: Any) -> ProviderCallResult:
+            await asyncio.sleep(self._delay)
+            return ProviderCallResult(response=self._resp)
+
+        async def test_connection(self) -> tuple[bool, str]:
+            return True, "ok"
+
+    delays = {"fast-1": 1.2, "fast-2": 0.03}
+    router = ProviderFailoverRouter(
+        accounts=[acc1, acc2],
+        settings=AppSettings(token_efficiency_mode="eco"),
+        provider_factory=lambda acc, cfg: _DelayedStub(acc, cfg, delays[acc.id], fast_resp),
+        auto_free_fallback=False,
+    )
+    await router.prepare_session(profile)
+    t0 = asyncio.get_running_loop().time()
+    result = await router.analyze_frame(b"jpeg", "image/jpeg", profile)
+    elapsed = asyncio.get_running_loop().time() - t0
+
+    assert result == fast_resp
+    # Must finish right after the 0.35s hedge delay + 0.03s secondary (< 0.7s, NOT 1.2s!)
+    assert elapsed < 0.75
+    await router.close_session()
