@@ -2441,6 +2441,8 @@ class HUDMindGUI:
         self._append_log(f"Iniciando: {' '.join(cmd)}\n")
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         creationflags = 0
         if sys.platform == "win32":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(

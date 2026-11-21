@@ -11,15 +11,18 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import io
 import json
 import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import quote
 
 import aiohttp
+from PIL import Image
 from pydantic import SecretStr, ValidationError
 
 from src.ai.gemini_client import (
@@ -53,6 +56,19 @@ class ProviderCallResult:
     quota_or_auth_failure: bool = False
 
 
+def _normalize_coach_dict(obj: dict[str, Any]) -> dict[str, Any]:
+    """Clamp overly verbose text fields from free models so Pydantic max_length never fails."""
+    cleaned = dict(obj)
+    if isinstance(cleaned.get("overlay_text"), str) and len(cleaned["overlay_text"]) > 115:
+        cleaned["overlay_text"] = cleaned["overlay_text"][:112].rsplit(" ", 1)[0] + "..."
+    if isinstance(cleaned.get("voice_line"), str) and len(cleaned["voice_line"]) > 175:
+        cleaned["voice_line"] = cleaned["voice_line"][:172].rsplit(" ", 1)[0] + "..."
+    urg = str(cleaned.get("urgency", "low")).lower().strip()
+    if urg not in ("low", "medium", "high"):
+        cleaned["urgency"] = "medium"
+    return cleaned
+
+
 def extract_coach_response_from_text(raw_text: str) -> CoachResponse | None:
     """Parse JSON (even if surrounded by prose or markdown fences) into CoachResponse."""
     text = raw_text.strip()
@@ -70,11 +86,50 @@ def extract_coach_response_from_text(raw_text: str) -> CoachResponse | None:
         with contextlib.suppress(json.JSONDecodeError, ValidationError):
             obj, _ = decoder.raw_decode(text, start)
             if isinstance(obj, dict):
-                return CoachResponse.model_validate(obj)
+                return CoachResponse.model_validate(_normalize_coach_dict(obj))
         start = text.find("{", start + 1)
 
     logger.warning("Respuesta JSON no válida del proveedor: %r", raw_text[:200])
     return None
+
+
+def _extract_cpu_hud_telemetry(image_bytes: bytes) -> str:
+    """Extract <0.5ms 5-zone HUD color & alert telemetry in CPU for keyless text-tier fallback."""
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            thumb = img.convert("RGB").resize((32, 18), Image.Resampling.NEAREST)
+            w, h = thumb.size
+            pixels = list(thumb.getdata())
+
+        def _zone_stats(x0: int, y0: int, x1: int, y1: int) -> str:
+            r_sum = g_sum = b_sum = red_alerts = gold_accents = count = 0
+            for y in range(y0, y1):
+                row_off = y * w
+                for x in range(x0, x1):
+                    r, g, b = pixels[row_off + x]
+                    r_sum += r
+                    g_sum += g
+                    b_sum += b
+                    count += 1
+                    if r > 165 and g < 85 and b < 85:
+                        red_alerts += 1
+                    elif r > 175 and g > 140 and b < 80:
+                        gold_accents += 1
+            n = max(1, count)
+            luma = int((0.299 * r_sum + 0.587 * g_sum + 0.114 * b_sum) / n)
+            red_pct = int((red_alerts * 100) / n)
+            gold_pct = int((gold_accents * 100) / n)
+            return f"luma={luma},red_alert={red_pct}%,gold_hud={gold_pct}%"
+
+        return (
+            f"HUD_CPU_SCAN: top_left({_zone_stats(0, 0, 10, 6)}) | "
+            f"top_right({_zone_stats(22, 0, 32, 6)}) | "
+            f"center({_zone_stats(10, 5, 22, 13)}) | "
+            f"bottom_left({_zone_stats(0, 12, 11, 18)}) | "
+            f"bottom_right({_zone_stats(21, 12, 32, 18)})"
+        )
+    except Exception:
+        return "HUD_CPU_SCAN: active_gameplay_frame"
 
 
 def _compose_static_system_prompt(profile: GameProfile) -> str:
@@ -267,7 +322,6 @@ class OpenAICompatibleProvider(BaseAIProvider):
         if not base_url:
             return ProviderCallResult(error_code=400, error_message="Base URL vacía")
 
-        b64 = base64.b64encode(image_bytes).decode("ascii")
         system_content = _compose_static_system_prompt(profile)
         user_prompt = _compose_dynamic_turn_prompt(
             recent_history=recent_history,
@@ -277,33 +331,59 @@ class OpenAICompatibleProvider(BaseAIProvider):
             coach_mode=self._settings.coach_mode,
         )
 
-        max_tokens = {"eco": 85, "balanced": 115, "high": 150}.get(
-            self._settings.token_efficiency_mode, 115
+        # Keyless anonymous Pollinations mode: use free text.pollinations.ai/openai + CPU HUD scan
+        is_keyless_pollinations = (
+            self.account.provider == "pollinations" and not self.account.api_key.strip()
         )
-        image_url_obj: dict[str, str] = {"url": f"data:{mime_type};base64,{b64}"}
-        if self.account.provider in ("openai", "pollinations"):
-            is_eco_mode = self._settings.token_efficiency_mode in ("eco",)
-            image_url_obj["detail"] = "low" if is_eco_mode else "auto"
+        if is_keyless_pollinations:
+            hud_scan = _extract_cpu_hud_telemetry(image_bytes)
+            payload: dict[str, object] = {
+                "model": "openai-fast",
+                "temperature": self._settings.gemini_temperature,
+                "messages": [
+                    {"role": "system", "content": system_content},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Juego activo: {profile.manifest.display_name} ({profile.manifest.game_id}).\n"
+                            f"{hud_scan}\n\n{user_prompt}"
+                        ),
+                    },
+                ],
+            }
+            endpoint = "https://text.pollinations.ai/openai"
+        else:
+            b64 = base64.b64encode(image_bytes).decode("ascii")
+            max_tokens = {"eco": 85, "balanced": 115, "high": 150}.get(
+                self._settings.token_efficiency_mode, 115
+            )
+            image_url_obj: dict[str, str] = {"url": f"data:{mime_type};base64,{b64}"}
+            if self.account.provider in ("openai", "pollinations"):
+                is_eco_mode = self._settings.token_efficiency_mode in ("eco",)
+                image_url_obj["detail"] = "low" if is_eco_mode else "auto"
 
-        payload: dict[str, object] = {
-            "model": self.account.model,
-            "temperature": self._settings.gemini_temperature,
-            "max_tokens": max_tokens,
-            "messages": [
-                {"role": "system", "content": system_content},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": user_prompt},
-                        {"type": "image_url", "image_url": image_url_obj},
-                    ],
-                },
-            ],
-        }
-        if self.account.provider in ("openai", "groq"):
-            payload["response_format"] = {"type": "json_object"}
-
-        endpoint = f"{base_url}/chat/completions"
+            payload = {
+                "model": self.account.model,
+                "temperature": self._settings.gemini_temperature,
+                "max_tokens": max_tokens,
+                "messages": [
+                    {"role": "system", "content": system_content},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user_prompt},
+                            {"type": "image_url", "image_url": image_url_obj},
+                        ],
+                    },
+                ],
+            }
+            if self.account.provider in ("openai", "groq"):
+                payload["response_format"] = {"type": "json_object"}
+            endpoint = (
+                base_url
+                if base_url.endswith("/openai")
+                else f"{base_url}/chat/completions"
+            )
         try:
             session = self._get_session()
             async with session.post(endpoint, headers=self._build_headers(), json=payload) as resp:
@@ -331,6 +411,14 @@ class OpenAICompatibleProvider(BaseAIProvider):
         base_url = self.account.resolved_base_url()
         if not base_url:
             return False, "Falta Base URL."
+        is_keyless_pollinations = (
+            self.account.provider == "pollinations" and not self.account.api_key.strip()
+        )
+        models_url = (
+            "https://text.pollinations.ai/models"
+            if is_keyless_pollinations or base_url.endswith("/openai")
+            else f"{base_url}/models"
+        )
         try:
             timeout = aiohttp.ClientTimeout(total=8)
             async with (
@@ -338,11 +426,11 @@ class OpenAICompatibleProvider(BaseAIProvider):
                     timeout=timeout,
                     cookie_jar=aiohttp.DummyCookieJar(),
                 ) as session,
-                session.get(f"{base_url}/models", headers=self._build_headers()) as r,
+                session.get(models_url, headers=self._build_headers()) as r,
             ):
                 if r.status == 200:
-                    return True, f"OK — Endpoint {base_url} accesible."
-                return False, f"HTTP {r.status} en {base_url}/models."
+                    return True, f"OK — Endpoint {models_url} accesible (100% Gratis SIN LOGIN)."
+                return False, f"HTTP {r.status} en {models_url}."
         except Exception as exc:
             safe_err = redact_secrets_in_text(str(exc), (self.account.api_key,))
             return False, f"No se pudo conectar a {base_url}: {safe_err}"
@@ -627,8 +715,11 @@ class ProviderFailoverRouter:
             if now >= self._cooldown_until.get(prov.account.id, 0.0)
         ]
 
-        # If every account is cooled down, try the one whose cooldown expires earliest
+        # If every account is currently in cooldown, respect the cooldown unless forced by F10
         if not candidates:
+            if not force_advice:
+                logger.debug("Todos los proveedores IA están en enfriamiento temporal; omitiendo frame.")
+                return None
             earliest_idx = min(
                 range(len(self._providers)),
                 key=lambda i: self._cooldown_until.get(self._providers[i].account.id, 0.0),

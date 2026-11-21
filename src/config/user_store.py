@@ -106,13 +106,13 @@ PROVIDER_PRESETS: dict[ProviderKind, ProviderPreset] = {
     ),
     "pollinations": ProviderPreset(
         kind="pollinations",
-        display_name="Pollinations.ai (Gratis)",
-        default_model="openai/gpt-5.4-nano",
-        suggested_models=["openai/gpt-5.4-nano", "openai/gpt-5.4-mini", "openai"],
-        default_base_url="https://gen.pollinations.ai/v1",
+        display_name="Pollinations.ai (Gratis SIN LOGIN)",
+        default_model="openai-fast",
+        suggested_models=["openai-fast", "openai/gpt-5.4-nano", "openai/gpt-5.4-mini"],
+        default_base_url="https://text.pollinations.ai/openai",
         requires_api_key=False,
         is_free_tier=True,
-        hint="Gratis (opcionalmente podés pegar una key gratuita de enter.pollinations.ai/keys para mayor cuota).",
+        hint="100% gratis sin API key ni login (usa telemetría visual HUD en CPU + openai-fast).",
     ),
     "ollama": ProviderPreset(
         kind="ollama",
