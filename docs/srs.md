@@ -1,7 +1,7 @@
 # Especificación de Requisitos de Software (SRS) — ISO/IEC/IEEE 29148
 
 **Proyecto:** HUDMind — Coach Táctico de Videojuegos en Tiempo Real  
-**Versión:** 0.4.0  
+**Versión:** 0.5.0  
 **Estándares de Referencia:** ISO/IEC/IEEE 29148 (Ingeniería de Requisitos), ISO/IEC 25010 (Calidad de Producto de Software), ISO/IEC 27001 (Seguridad de la Información), ISO/IEC/IEEE 42010 (Descripción de Arquitectura), ISO/IEC/IEEE 29119 / IEEE 829 (Pruebas de Software).
 
 ---
@@ -31,11 +31,14 @@
 | **REQ-FUNC-08** | Overlay visual transparente *click-through* personalizable. | Ventana sin bordes, *always-on-top*, `WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, 5 temas visuales, opacidad, fuente y posición configurables. | `src/output/overlay.py` |
 | **REQ-FUNC-09** | Salida de voz asíncrona desacoplada (TTS). | Estrategias intercambiables (`EdgeTTSEngine`, `Pyttsx3TTSEngine`, `PiperTTSEngine`) con lock global de mixer, descarga explícita `unload()` en RAM y cola *Drop-Oldest*. | `src/output/tts.py` |
 | **REQ-FUNC-10** | Modos de operación CLI y diagnóstico de salud. | Soporta `--gui`, `--test-mode`, `--dry-run`, `--health-check`, `--profile`, `--mock-source` y `--mock-synthetic`. | `src/main.py` |
-| **REQ-FUNC-11** | Hotkeys globales Win32 no intrusivos (`F9` / `F10`). | `GlobalHotkeyManager` registra `F9` (pausar/reanudar) y `F10` (análisis inmediato bajo demanda respetando `FocusFilter` y actualizando `pHash`) vía `RegisterHotKey`. | `src/config/hotkeys.py`, `src/main.py` |
+| **REQ-FUNC-11** | Hotkeys globales Win32 no intrusivos y configurables. | `GlobalHotkeyManager` y `parse_hotkey_string` registran teclas y modificadores configurables (`F9`/`F10` por defecto, `F1`–`F12`, `A`–`Z`, `0`–`9`, `NUM0`–`NUM9`, `Ctrl`/`Alt`/`Shift`) vía `RegisterHotKey` con capturador interactivo en la GUI. | `src/config/hotkeys.py`, `src/ui/gui.py` |
 | **REQ-FUNC-12** | Memoria anti-repetición de corto plazo. | `InterventionMemory` conserva las últimas 3 intervenciones (TTL 90s) e inyecta contexto anti-repetición en cada consulta. | `src/pipeline/schemas.py` |
-| **REQ-FUNC-13** | Enrutador Multi-Proveedor IA con rotación automática por cuota. | `ProviderFailoverRouter` coordina múltiples cuentas (`gemini`, `openai`, `claude`, `groq`, `openrouter`, `pollinations`, `ollama`, `custom`) y rota inmediatamente en el mismo frame ante `HTTP 429/402/401/403/5xx`. | `src/ai/providers.py`, `src/config/user_store.py` |
-| **REQ-FUNC-14** | Centro de Control Gráfico Ligero (GUI). | `HUDMindGUI` (`--gui` / `HUDMind.bat`) gestiona cuentas, prioridades, pruebas de conexión, idiomas, estilos con vista previa *click-through* y modo **"Iniciar y Cerrar GUI (0 MB RAM)"**. | `src/ui/gui.py` |
+| **REQ-FUNC-13** | Enrutador Multi-Proveedor IA con rotación silenciosa y respaldo gratuito automático. | `ProviderFailoverRouter` coordina múltiples cuentas (`gemini`, `openai`, `claude`, `groq`, `openrouter`, `pollinations`, `ollama`, `custom`), rota silenciosamente en el mismo frame ante `HTTP 429/402/401/403/5xx` e incluye cola gratuita automática (`build_auto_free_fallback_accounts`). | `src/ai/providers.py`, `src/config/user_store.py` |
+| **REQ-FUNC-14** | Centro de Control Gráfico Ligero (GUI de 7 pestañas). | `HUDMindGUI` (`--gui` / `HUDMind.bat`) gestiona cuentas, reglas por juego, estadísticas circulares `0-100%`, idiomas, estilos con vista previa *click-through*, atajos y modo **"Iniciar y Cerrar GUI (0 MB RAM)"**. | `src/ui/gui.py` |
 | **REQ-FUNC-15** | Configuración independiente de idioma para texto y audio. | `text_language` y `voice_language` (`es`/`en`) se configuran de forma independiente e inyectan directivas bilingües mediante `build_language_instruction`. | `src/config/settings.py`, `src/ai/gemini_client.py` |
+| **REQ-FUNC-16** | Perfiles multi-género y Modo Entrenamiento / Práctica. | Incluye perfiles completos para **CS2** (`example_cs2`), **VALORANT** (`example_valorant`), **Age of Empires II: DE** (`aoe2_de`), **Rocket League** (`rocket_league`) y **ROB RUN** (`rob_run`), con soporte de `--training-mode` (`coach_mode="training"`). | `profiles/*/`, `src/ai/gemini_client.py` |
+| **REQ-FUNC-17** | Reglas personalizadas por juego con semáforo de impacto en tokens y creador de perfiles. | Permite editar `profiles/<game_id>/custom_rules.md` desde la GUI con cálculo en vivo de tokens extra (`NULO`/`BAJO`/`MODERADO`/`ALTO`) y crear nuevos perfiles de juego desde `NewProfileDialog`. | `src/profiles/loader.py`, `src/ui/gui.py` |
+| **REQ-FUNC-18** | Dashboard de Uso/Gasto IA por Modelo y Gráficos Circulares `0–100%` de Estilo y Rendimiento. | `TelemetryStore` y `CircularGauge` muestran partidas jugadas hoy, total histórico desde instalación, gasto real/ahorrado por modelo IA, círculos `0-100%` de rendimiento (última partida y últimas 10) y 5 círculos `0-100` de estilo (`Agresividad`, `Paciencia`, `Visión Táctica`, `Economía/Macro`, `Supervivencia`). | `src/config/telemetry.py`, `src/ui/gui.py` |
 
 ---
 

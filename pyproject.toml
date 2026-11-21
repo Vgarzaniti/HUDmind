@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hudmind"
-version = "0.4.0"
+version = "0.5.0"
 description = "HUDMind — Real-time Windows gaming coach powered by Gemini multimodal API, Context Caching, transparent click-through overlay, and async TTS."
 readme = "README.md"
 license = "MIT"

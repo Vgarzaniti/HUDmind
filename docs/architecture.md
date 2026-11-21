@@ -1,4 +1,4 @@
-# Arquitectura Técnica — HUDMind (v0.4.0 — ISO/IEC/IEEE 42010)
+# Arquitectura Técnica — HUDMind (v0.5.0 — ISO/IEC/IEEE 42010)
 
 Este documento describe la arquitectura **Event-Driven**, los patrones de diseño, el enrutador multi-proveedor IA, el modelo de concurrencia y los registros de decisión arquitectónica (ADRs) de **HUDMind**.
 
@@ -114,3 +114,6 @@ Este documento describe la arquitectura **Event-Driven**, los patrones de diseñ
 | **ADR-006** | `ProviderFailoverRouter` multi-cuenta con Prefix/Ephemeral Caching | Cliente único acoplado a un solo proveedor | Permite apilar cuentas gratuitas/pagas y rotar en el mismo frame ante `HTTP 429/402`, con soporte offline sin login vía `Ollama`. |
 | **ADR-007** | Win32 `RegisterHotKey` (`F9`/`F10`) sin hooks globales | Librería `keyboard` (`WH_KEYBOARD_LL`) | Los hooks de bajo nivel son marcados por motores anti-cheat competitivos (Vanguard/FACEIT); `RegisterHotKey` es 100% seguro. |
 | **ADR-008** | `HUDMindGUI` en `tkinter/ttk` con imports diferidos y subproceso desacoplado | GUI pesada corriendo en el mismo loop que el overlay | Abre en ~52 MB RSS y permite cerrar la GUI al iniciar partida (**0 MB RAM extra** mientras jugás). |
+| **ADR-009** | Recorte dinámico del área útil de la ventana del juego (`GetClientRect` + `ClientToScreen`) y caché LRU (`32` frases) en `EdgeTTSEngine` | Capturar monitor entero con bordes de Windows y re-sintetizar MP3 repetidos por red | Elimina barras de título y escritorios adyacentes en modo ventana y reduce a `0 ms` / `0 KB` de red las frases tácticas frecuentes. |
+| **ADR-010** | Reglas personalizadas por juego (`custom_rules.md`) con semáforo de impacto en tokens y creador de perfiles en GUI | Editar manualmente archivos Markdown del sistema base | Mantiene intacta la base oficial (`base_knowledge_base`) y alerta al usuario cuando sus reglas superan `200`/`500` tokens extra. |
+| **ADR-011** | `TelemetryStore` (`config/telemetry.json`) + `CircularGauge` (`0-100%`) en `tk.Canvas` con inferencia heurística `<0.05 ms` | Librerías pesadas de gráficos (`matplotlib`/`plotly`) o llamadas extra a la IA para puntuar la partida | Cero costo en tokens de IA y 0 MB de dependencias externas; calcula en tiempo real los 5 ejes de estilo de juego, el rendimiento `0-100%` y el gasto/ahorro por modelo. |

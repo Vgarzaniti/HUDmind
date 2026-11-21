@@ -11,8 +11,11 @@ profiles/
 └── mi_nuevo_juego/
     ├── manifest.json         # Configuración técnica y detección del proceso .exe
     ├── system_prompt.md      # Personalidad, reglas de brevedad y criterios del coach
-    └── knowledge_base.md     # Conocimiento táctico, anclajes del HUD y lista negra de UI
+    ├── knowledge_base.md     # Conocimiento táctico, anclajes del HUD, modo entrenamiento y lista negra de UI
+    └── custom_rules.md       # (Opcional, gestionado desde la GUI) Reglas personales del usuario
 ```
+
+> **Tip Rápido desde la GUI:** Podés crear el esqueleto completo de un juego nuevo sin tocar archivos haciendo clic en **`+ Nuevo Perfil de Juego`** en la pestaña **`Control`** de `HUDMind.bat`, y agregar tus propias reglas o recordatorios personales desde la pestaña **`Reglas por Juego`** (con medidor semáforo de impacto en tokens).
 
 ---
 
