@@ -18,6 +18,9 @@ dist/
 build/
 .eggs/
 HUDMind.exe
+HUDMind-Native.exe
+native/**/bin/
+native/**/obj/
 
 # Virtual environments
 .venv/
