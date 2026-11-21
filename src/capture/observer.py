@@ -39,6 +39,7 @@ class ScreenObserver:
         self._paused = False
         self._active_event = asyncio.Event()
         self._active_event.set()
+        self._wake_event = asyncio.Event()
         self._published_count = 0
         self._dropped_count = 0
         self._skipped_by_gate_count = 0
@@ -79,6 +80,12 @@ class ScreenObserver:
         """Resume frame grabbing immediately."""
         self._paused = False
         self._active_event.set()
+        self._wake_event.set()
+
+    def wake_now(self) -> None:
+        """Interrupt inter-frame sleep immediately (e.g. on F10 on-demand analysis)."""
+        self._active_event.set()
+        self._wake_event.set()
 
     def subscribe(self, subscriber_name: str) -> asyncio.Queue[CapturedFrame]:
         """Register a subscriber with a Drop-Oldest queue (maxsize=1)."""
@@ -192,4 +199,6 @@ class ScreenObserver:
             interval = 1.0 / self._target_fps
             elapsed = time.monotonic() - loop_start
             sleep_time = max(0.01, interval - elapsed)
-            await asyncio.sleep(sleep_time)
+            self._wake_event.clear()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._wake_event.wait(), timeout=sleep_time)

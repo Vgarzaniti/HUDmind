@@ -425,6 +425,7 @@ async def test_hedged_vision_racing_beats_slow_primary_spike() -> None:
         settings=AppSettings(token_efficiency_mode="eco"),
         provider_factory=lambda acc, cfg: _DelayedStub(acc, cfg, delays[acc.id], fast_resp),
         auto_free_fallback=False,
+        hedge_delay_seconds=0.15,
     )
     await router.prepare_session(profile)
     t0 = asyncio.get_running_loop().time()
@@ -432,6 +433,6 @@ async def test_hedged_vision_racing_beats_slow_primary_spike() -> None:
     elapsed = asyncio.get_running_loop().time() - t0
 
     assert result == fast_resp
-    # Must finish right after the 0.35s hedge delay + 0.03s secondary (< 0.7s, NOT 1.2s!)
-    assert elapsed < 0.75
+    # Must finish right after the 0.15s hedge delay + 0.03s secondary (< 0.55s, NOT 1.2s!)
+    assert elapsed < 0.55
     await router.close_session()

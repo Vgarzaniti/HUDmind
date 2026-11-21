@@ -124,7 +124,7 @@ def build_realtime_compact_prompt(
         if hist_lines:
             parts.append("Do NOT repeat: " + " ; ".join(hist_lines))
     parts.append(
-        "Reply STRICTLY 1 line: H|<max 10 words>|<4-8w HUD state> OR M|<max 10 words>|<4-8w HUD state> OR L|<max 10 words>|<4-8w HUD state> OR NONE."
+        "Reply STRICTLY 1 line: H|<max 8 words> OR M|<max 8 words> OR L|<max 8 words> OR NONE."
     )
     return "\n".join(parts)
 
@@ -704,7 +704,7 @@ class GeminiCoachClient:
         m_low = self._model.lower()
         gen_cfg: dict[str, Any] = {
             "temperature": 0.55,
-            "maxOutputTokens": 42,
+            "maxOutputTokens": 24,
             "mediaResolution": "MEDIA_RESOLUTION_LOW",
         }
         if "2.5" in m_low:

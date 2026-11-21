@@ -30,7 +30,9 @@ from src.ai.gemini_client import (
     GeminiCoachClient,
     build_coach_mode_instruction,
     build_language_instruction,
+    build_realtime_compact_prompt,
     build_universal_game_context_instruction,
+    parse_compact_coach_line,
 )
 from src.config.settings import AppSettings, redact_secrets_in_text
 from src.config.telemetry import TelemetryStore
@@ -480,6 +482,7 @@ class OpenAICompatibleProvider(BaseAIProvider):
         effective_mode: str = getattr(self, "_effective_mode", self._settings.coach_mode)
         spatial: SpatialFrameAnalysis | None = None
         hud_scan = ""
+        use_compact_wire = False
         if is_keyless_cloud:
             if live_hud is not None:
                 hud_scan = live_hud.to_prompt_block(profile.manifest.display_name)
@@ -525,31 +528,58 @@ class OpenAICompatibleProvider(BaseAIProvider):
             )
         else:
             b64 = base64.b64encode(image_bytes).decode("ascii")
-            max_tokens = {"eco": 85, "balanced": 115, "high": 150}.get(
-                self._settings.token_efficiency_mode, 115
+            use_compact_wire = self._settings.token_efficiency_mode in ("eco", "balanced") and (
+                self.account.provider in ("groq", "openai", "openrouter")
             )
             image_url_obj: dict[str, str] = {"url": f"data:{mime_type};base64,{b64}"}
             if self.account.provider in ("openai", "pollinations"):
-                is_eco_mode = self._settings.token_efficiency_mode in ("eco",)
+                is_eco_mode = self._settings.token_efficiency_mode in ("eco", "balanced")
                 image_url_obj["detail"] = "low" if is_eco_mode else "auto"
 
-            payload = {
-                "model": self.account.model,
-                "temperature": self._settings.gemini_temperature,
-                "max_tokens": max_tokens,
-                "messages": [
-                    {"role": "system", "content": system_content},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_prompt},
-                            {"type": "image_url", "image_url": image_url_obj},
-                        ],
-                    },
-                ],
-            }
-            if self.account.provider in ("openai", "groq"):
-                payload["response_format"] = {"type": "json_object"}
+            if use_compact_wire:
+                compact_prompt = build_realtime_compact_prompt(
+                    profile,
+                    coach_mode=self._settings.coach_mode,
+                    text_language=text_language,
+                    voice_language=voice_language,
+                    recent_history=recent_history,
+                    force_advice=force_advice,
+                )
+                payload = {
+                    "model": self.account.model,
+                    "temperature": 0.5,
+                    "max_tokens": 26,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": compact_prompt},
+                                {"type": "image_url", "image_url": image_url_obj},
+                            ],
+                        }
+                    ],
+                }
+            else:
+                max_tokens = {"eco": 85, "balanced": 115, "high": 150}.get(
+                    self._settings.token_efficiency_mode, 115
+                )
+                payload = {
+                    "model": self.account.model,
+                    "temperature": self._settings.gemini_temperature,
+                    "max_tokens": max_tokens,
+                    "messages": [
+                        {"role": "system", "content": system_content},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": user_prompt},
+                                {"type": "image_url", "image_url": image_url_obj},
+                            ],
+                        },
+                    ],
+                }
+                if self.account.provider in ("openai", "groq"):
+                    payload["response_format"] = {"type": "json_object"}
             endpoint = (
                 base_url
                 if base_url.endswith("/openai")
@@ -578,8 +608,12 @@ class OpenAICompatibleProvider(BaseAIProvider):
                 data = await resp.json()
                 choices = data.get("choices") or []
                 first_msg = choices[0].get("message", {}) if choices else {}
-                content = first_msg.get("content") or ""
-                parsed = extract_coach_response_from_text(str(content))
+                content = str(first_msg.get("content") or "")
+                parsed = (
+                    parse_compact_coach_line(content)
+                    if (not is_keyless_cloud and use_compact_wire)
+                    else extract_coach_response_from_text(content)
+                )
                 if parsed is None:
                     return ProviderCallResult(error_code=422, error_message="JSON inválido")
                 if is_keyless_cloud and not parsed.match_context.strip():
@@ -927,10 +961,12 @@ class ProviderFailoverRouter:
         provider_factory: Callable[[ProviderAccount, AppSettings], BaseAIProvider] | None = None,
         auto_free_fallback: bool | None = None,
         telemetry: TelemetryStore | None = None,
+        hedge_delay_seconds: float = 1.10,
     ) -> None:
         self._settings = settings
         self._on_failover = on_failover
         self._telemetry = telemetry
+        self._hedge_delay_seconds = max(0.05, hedge_delay_seconds)
         factory = provider_factory or create_provider_adapter
         use_auto_fallback = (
             (provider_factory is None) if auto_free_fallback is None else auto_free_fallback
@@ -1273,6 +1309,7 @@ class ProviderFailoverRouter:
                 v_lang=v_lang,
                 sys_chars=sys_chars,
                 eff_mode=eff_mode,
+                hedge_delay_seconds=self._hedge_delay_seconds,
             )
             if handled:
                 return hedged_resp

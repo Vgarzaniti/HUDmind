@@ -313,6 +313,8 @@ class GameCopilotOrchestrator:
         if self._user_paused:
             self._user_paused = False
             self._observer.resume()
+        else:
+            self._observer.wake_now()
         logger.info("Análisis táctico bajo demanda solicitado (%s).", hk_analyze)
         self._overlay.show_message(
             text="Analizando situación actual...",
