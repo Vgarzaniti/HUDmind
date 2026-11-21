@@ -132,6 +132,127 @@ def _extract_cpu_hud_telemetry(image_bytes: bytes) -> str:
         return "HUD_CPU_SCAN: active_gameplay_frame"
 
 
+_LOCAL_TACTICAL_TIPS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
+    "rocket_league": {
+        "training": [
+            ("medium", "Usá Powerslide al aterrizar para conservar impulso", "Aterrizá con las cuatro ruedas y presioná derrape para no perder velocidad."),
+            ("medium", "Fast Aerial: soltá stick atrás antes del 2do salto", "En este salto practicá Fast Aerial: soltá el analógico antes del segundo salto."),
+            ("low", "Dosificá el boost en el aire con toques cortos", "Hacé feathering del boost con pulsos cortos para controlar mejor la altura."),
+            ("medium", "Igualá la velocidad de la pelota antes de la pared", "Acompañá la pelota a su misma velocidad antes de despegar desde la pared."),
+            ("low", "Practicá Half-Flip para girar 180° al instante", "Cancelá el backflip a mitad de giro y usá Air Roll para enderezar el auto."),
+            ("medium", "Golpeá con la esquina delantera para máxima potencia", "Pegale justo después del pique con la esquina del paragolpes delantero."),
+        ],
+        "match": [
+            ("medium", "Rotá siempre por el segundo palo (Back Post)", "Volvé por el lado opuesto a la jugada y cubrí desde el segundo palo."),
+            ("high", "Evitá Double Commit si tu compañero ya fue", "Tu compañero está comprometido adelante, quedate cubriendo el rebote como último hombre."),
+            ("low", "Juntá pads chicos por el centro sin abrirte", "No pierdas posición yendo al boost de 100, recogé pads chicos en la rotación."),
+            ("medium", "Hacé Shadow Defense y cerrá el ángulo al rincón", "Acompañá de espaldas a su misma velocidad y forzá el tiro hacia la esquina."),
+            ("low", "Ya vas en supersónico: ahorrá el boost restante", "En velocidad supersónica no gastes más boost, guardalo para el próximo salto."),
+        ],
+    },
+    "rob_run": {
+        "training": [
+            ("low", "Memorizá dos rutas de escape antes del atraco", "Revisá los callejones traseros y el punto de extracción más cercano al banco."),
+            ("medium", "Practicá hackeo rápido vigilando las cámaras", "Desactivá o esquivá el cono de las cámaras antes de forzar la bóveda."),
+            ("low", "Ubicá los cajeros rápidos para botín seguro", "Identificá los cajeros de salida rápida para sumar efectivo sin subir alerta."),
+        ],
+        "match": [
+            ("high", "Alerta policial alta: cortá y extraé el botín ya", "El nivel policial está subiendo en Looty Bay, asegurá la mochila en extracción."),
+            ("medium", "Llevás buen botín: evitá patrullas y asegurá", "Con la mochila cargada no inicies otro robo grande, priorizá extraer limpio."),
+            ("high", "Rodeado con poco botín: considerá Surrender", "Si tenés equipamiento caro y poco botín en mochila, rendirte protege tu loadout."),
+            ("medium", "En Co-op cubrí la puerta mientras cargan bolsas", "Mantené línea de visión en la entrada principal mientras tu compañero vacía la bóveda."),
+        ],
+    },
+    "aoe2_de": {
+        "training": [
+            ("high", "Mantené el Centro Urbano produciendo sin pausa", "En Build Order la prioridad número uno es cero segundos de TC inactivo."),
+            ("medium", "Construí casa preventiva a 3 de población del límite", "Adelantá la próxima casa ahora para no quedar bloqueado de población."),
+            ("low", "Mantené al Scout en círculos buscando las 8 ovejas", "No dejes el explorador quieto: encontrá las dos manadas de ovejas y los dos jabalíes."),
+            ("medium", "Al llegar a ~35 aldeanos investigá Carretilla", "Con tus granjas activas recordá meter Carretilla para potenciar toda la economía."),
+        ],
+        "match": [
+            ("high", "Revisá aldeanos inactivos y cola del Centro Urbano", "Que no pare el Centro Urbano: meté aldeanos en cola y reasigná inactivos."),
+            ("medium", "Gastá la madera flotante en granjas o edificios", "Si acumulás madera, transformala ya en granjas o un segundo edificio militar."),
+            ("medium", "Prepará contrarresto según la unidad rival", "Contra caballería mezclá Piqueros; contra arqueros sumá Guerrilleros o Mangoneles."),
+            ("low", "Priorizá mejoras de herrería antes de pelear", "No tomes la pelea grande sin la mejora de armadura o ataque en la Herrería."),
+        ],
+    },
+    "example_cs2": {
+        "training": [
+            ("medium", "Frená en seco con Counter-Strafe antes del tiro", "Tocá la tecla opuesta para clavar velocidad cero antes de disparar la ráfaga."),
+            ("low", "Mantené la mira a la altura de cabeza al abrir", "Pre-apuntá al ángulo a la altura del casco antes de asomar del muro."),
+            ("medium", "Controlá las primeras 7 balas hacia abajo", "En el spray de rifle compensá verticalmente las primeras balas antes de corregir."),
+        ],
+        "match": [
+            ("medium", "Revisá el radar: cubrí el hueco libre del equipo", "Mirá el minimapa un segundo para no apilarse todos en el mismo sitio."),
+            ("high", "No asomes en seco sin flash ni humo de soporte", "Tenés utilidad disponible, tirá flash o humo antes de abrir ese ángulo largo."),
+            ("medium", "Sincronizá tu compra con la economía del equipo", "Si tus compañeros hacen eco, guardá al menos dos mil dólares para comprar juntos."),
+            ("high", "Jugá al tiempo de bomba y buscá el trade", "No regales un duelo aislado: jugá escondido con el tiempo o pegado a tu compañero."),
+        ],
+    },
+    "example_valorant": {
+        "training": [
+            ("medium", "Dispará en ráfagas de 2-3 balas y movete", "En The Range practicá ráfaga corta, strafe lateral y parada limpia."),
+            ("low", "Ajustá la mira en horizontal sin bajar el mouse", "Mantené la línea de cabeza constante al cambiar de un objetivo al siguiente."),
+        ],
+        "match": [
+            ("medium", "Guardá créditos para llegar a 3900 en la próxima", "Cuidá tu economía para asegurar rifle completo y escudo pesado en la siguiente."),
+            ("high", "Usá tus habilidades antes de tomar el duelo 50/50", "No entres a mira pura teniendo habilidades listas para desplazar o cegar."),
+            ("low", "Si te falta 1 punto de Ultimate, asegurá el orbe", "Estás cerca de tu definitiva: buscá el orbe con cobertura de un compañero."),
+        ],
+    },
+}
+
+
+def _generate_local_cpu_tactical_tip(
+    profile: GameProfile,
+    hud_scan: str,
+    recent_history: str,
+    coach_mode: str,
+) -> CoachResponse:
+    """Instant zero-latency local tactical coach fallback using HUD scan + profile rules."""
+    game_tips = _LOCAL_TACTICAL_TIPS.get(
+        profile.manifest.game_id,
+        _LOCAL_TACTICAL_TIPS["example_cs2"],
+    )
+    mode_key = "training" if coach_mode == "training" else "match"
+    candidates = list(game_tips.get(mode_key, game_tips["match"]))
+
+    # Also incorporate user's custom rules from the GUI if configured!
+    if profile.custom_rules.strip():
+        for line in profile.custom_rules.splitlines():
+            clean = line.strip().lstrip("-*•0123456789. ").strip()
+            if len(clean) >= 12:
+                short_overlay = clean[:75].rsplit(" ", 1)[0] if len(clean) > 75 else clean
+                candidates.insert(0, ("medium", short_overlay, clean[:140]))
+
+    hist_low = recent_history.lower()
+    unseen = [c for c in candidates if c[1].lower()[:22] not in hist_low]
+    pool = unseen if unseen else candidates
+
+    # Use HUD scan hash/red-alert level to pick deterministically varied tip
+    high_red = "red_alert=2" in hud_scan or "red_alert=3" in hud_scan or "red_alert=4" in hud_scan
+    if high_red:
+        high_candidates = [c for c in pool if c[0] == "high"]
+        if high_candidates:
+            urg, ov, vc = high_candidates[0]
+            return CoachResponse(
+                should_intervene=True,
+                urgency="high",
+                overlay_text=ov,
+                voice_line=vc,
+            )
+
+    idx = int(time.monotonic()) % len(pool)
+    urg, ov, vc = pool[idx]
+    return CoachResponse(
+        should_intervene=True,
+        urgency=urg,  # type: ignore[arg-type]
+        overlay_text=ov,
+        voice_line=vc,
+    )
+
+
 def _compose_static_system_prompt(profile: GameProfile) -> str:
     """Combine compact system prompt and knowledge base into a static prefix (>1024 tokens).
 
@@ -335,12 +456,18 @@ class OpenAICompatibleProvider(BaseAIProvider):
         is_keyless_pollinations = (
             self.account.provider == "pollinations" and not self.account.api_key.strip()
         )
+        hud_scan = ""
         if is_keyless_pollinations:
             hud_scan = _extract_cpu_hud_telemetry(image_bytes)
             compact_sys = (
                 f"{profile.compact_system_prompt}\n\n"
                 f"# Reglas Clave ({profile.manifest.display_name}):\n"
                 f"{profile.compact_knowledge_base[:1200]}"
+            )
+            proactive_directive = (
+                "MODO COACH PROACTIVO (HUD_CPU_SCAN): Devolvé SIEMPRE should_intervene=true "
+                "con un consejo táctico concreto, breve y accionable para este momento de "
+                f"{profile.manifest.display_name}, sin repetir los consejos anteriores."
             )
             payload: dict[str, object] = {
                 "model": "openai-fast",
@@ -351,7 +478,7 @@ class OpenAICompatibleProvider(BaseAIProvider):
                         "role": "user",
                         "content": (
                             f"Juego activo: {profile.manifest.display_name} ({profile.manifest.game_id}).\n"
-                            f"{hud_scan}\n\n{user_prompt}"
+                            f"{hud_scan}\n{proactive_directive}\n\n{user_prompt}"
                         ),
                     },
                 ],
@@ -393,6 +520,15 @@ class OpenAICompatibleProvider(BaseAIProvider):
             session = self._get_session()
             async with session.post(endpoint, headers=self._build_headers(), json=payload) as resp:
                 if resp.status != 200:
+                    if is_keyless_pollinations:
+                        return ProviderCallResult(
+                            response=_generate_local_cpu_tactical_tip(
+                                profile,
+                                hud_scan,
+                                recent_history,
+                                self._settings.coach_mode,
+                            )
+                        )
                     err_body = (await resp.text())[:220]
                     return ProviderCallResult(
                         error_code=resp.status,
@@ -404,12 +540,39 @@ class OpenAICompatibleProvider(BaseAIProvider):
                 first_msg = choices[0].get("message", {}) if choices else {}
                 content = first_msg.get("content") or ""
                 parsed = extract_coach_response_from_text(str(content))
-                if parsed is None:
+                if parsed is None or (is_keyless_pollinations and not parsed.should_intervene):
+                    if is_keyless_pollinations:
+                        return ProviderCallResult(
+                            response=_generate_local_cpu_tactical_tip(
+                                profile,
+                                hud_scan,
+                                recent_history,
+                                self._settings.coach_mode,
+                            )
+                        )
                     return ProviderCallResult(error_code=422, error_message="JSON inválido")
                 return ProviderCallResult(response=parsed)
         except TimeoutError:
+            if is_keyless_pollinations:
+                return ProviderCallResult(
+                    response=_generate_local_cpu_tactical_tip(
+                        profile,
+                        hud_scan,
+                        recent_history,
+                        self._settings.coach_mode,
+                    )
+                )
             return ProviderCallResult(error_code=408, error_message="timeout")
         except Exception as exc:
+            if is_keyless_pollinations:
+                return ProviderCallResult(
+                    response=_generate_local_cpu_tactical_tip(
+                        profile,
+                        hud_scan,
+                        recent_history,
+                        self._settings.coach_mode,
+                    )
+                )
             return ProviderCallResult(error_code=503, error_message=str(exc))
 
     async def test_connection(self) -> tuple[bool, str]:
@@ -594,7 +757,7 @@ def build_auto_free_fallback_accounts(
     no-login providers without interrupting gameplay.
     """
     result = list(existing)
-    existing_providers = {a.provider for a in result if a.is_ready()}
+    existing_providers = {a.provider for a in result}
 
     fallback_specs: list[tuple[str, ProviderKind, int]] = [
         ("auto-free-pollinations", "pollinations", 990),

@@ -360,6 +360,7 @@ class TelemetryStore:
                 return None
 
             self._sync_active_gauges_into_record(match)
+            self._data.active_match = None
             self._commit_match_locked(match)
             self._write_atomic(self._data)
             return match
