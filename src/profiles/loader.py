@@ -19,6 +19,7 @@ _SAFE_GAME_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _HORIZONTAL_RULE_RE = re.compile(r"(?m)^\s*---+\s*$")
 _MULTI_BLANK_RE = re.compile(r"\n{3,}")
 _MAX_PROMPT_BYTES = 512 * 1024  # 512 KB ceiling per markdown profile document
+MAX_CUSTOM_RULES_CHARS = 4000  # ~1,000 tokens ceiling for per-game user custom rules
 
 
 def compact_markdown(text: str) -> str:
@@ -94,11 +95,13 @@ class GameManifest(BaseModel):
 
 
 class GameProfile(BaseModel):
-    """Fully loaded game cartridge (manifest + system prompt + knowledge base)."""
+    """Fully loaded game cartridge (manifest + system prompt + knowledge base + custom rules)."""
 
     manifest: GameManifest
     system_prompt: str
     knowledge_base: str
+    base_knowledge_base: str = ""
+    custom_rules: str = ""
     profile_dir: Path
 
     def matches_process(self, executable_name: str | None) -> bool:
@@ -113,6 +116,12 @@ class GameProfile(BaseModel):
         """Rough character-based token estimate (~4 chars/token) for diagnostics."""
         total_chars = len(self.system_prompt) + len(self.knowledge_base)
         return max(1, total_chars // 4)
+
+    @property
+    def custom_rules_estimated_tokens(self) -> int:
+        """Rough token estimate added specifically by the user's custom rules."""
+        clean = self.custom_rules.strip()
+        return len(clean) // 4 if clean else 0
 
     @property
     def compact_system_prompt(self) -> str:
@@ -326,19 +335,32 @@ class GameProfileLoader:
             raw_manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
             manifest = GameManifest.model_validate(raw_manifest)
             system_prompt = prompt_path.read_text(encoding="utf-8").strip()
-            knowledge_base = kb_path.read_text(encoding="utf-8").strip()
+            base_kb = kb_path.read_text(encoding="utf-8").strip()
 
-            if not system_prompt or not knowledge_base:
+            if not system_prompt or not base_kb:
                 logger.warning(
                     "Perfil '%s' tiene system_prompt.md o knowledge_base.md vacío.",
                     folder.name,
                 )
                 return None
 
+            custom_rules = ""
+            custom_path = folder / "custom_rules.md"
+            if custom_path.is_file() and custom_path.stat().st_size <= _MAX_PROMPT_BYTES:
+                custom_rules = custom_path.read_text(encoding="utf-8").strip()[:MAX_CUSTOM_RULES_CHARS]
+
+            full_kb = (
+                f"{base_kb}\n\n## Reglas Personalizadas del Jugador (Prioridad Alta)\n{custom_rules}"
+                if custom_rules
+                else base_kb
+            )
+
             return GameProfile(
                 manifest=manifest,
                 system_prompt=system_prompt,
-                knowledge_base=knowledge_base,
+                knowledge_base=full_kb,
+                base_knowledge_base=base_kb,
+                custom_rules=custom_rules,
                 profile_dir=folder,
             )
         except (json.JSONDecodeError, ValidationError, OSError) as exc:
@@ -443,3 +465,34 @@ class GameProfileLoader:
         if created is None:
             raise RuntimeError(f"No se pudo cargar el perfil recién creado: {manifest.game_id}")
         return created
+
+    def save_custom_rules(self, game_id: str, rules_text: str) -> GameProfile:
+        """Save or clear per-game custom player rules (`profiles/<game_id>/custom_rules.md`)."""
+        profile = self.get_by_id(game_id)
+        if profile is None:
+            raise KeyError(f"Perfil no encontrado: {game_id!r}")
+
+        clean = rules_text.strip()
+        if len(clean) > MAX_CUSTOM_RULES_CHARS:
+            raise ValueError(
+                f"Las reglas personalizadas superan el máximo permitido de "
+                f"{MAX_CUSTOM_RULES_CHARS} caracteres (~1,000 tokens)."
+            )
+
+        target_dir = profile.profile_dir.resolve()
+        target_dir.relative_to(self._profiles_dir.resolve())  # CWE-22 guard
+        custom_path = target_dir / "custom_rules.md"
+
+        if not clean:
+            if custom_path.is_file():
+                custom_path.unlink()
+        else:
+            tmp_path = target_dir / "custom_rules.md.tmp"
+            tmp_path.write_text(clean + "\n", encoding="utf-8")
+            tmp_path.replace(custom_path)
+
+        self.reload()
+        updated = self.get_by_id(profile.manifest.game_id)
+        if updated is None:
+            raise RuntimeError(f"Error recargando perfil '{game_id}' tras guardar reglas.")
+        return updated

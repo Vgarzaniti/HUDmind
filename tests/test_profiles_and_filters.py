@@ -24,6 +24,7 @@ from src.pipeline.filters import (
 )
 from src.pipeline.schemas import InterventionStateMachine
 from src.profiles.loader import (
+    MAX_CUSTOM_RULES_CHARS,
     ForegroundProcessDetector,
     GameManifest,
     GameProfileLoader,
@@ -201,3 +202,22 @@ def test_create_profile_scaffold_and_window_region_clamping(tmp_path: Path) -> N
         region_provider=lambda: (0, 0, 100, 100),
     )
     assert strat_tiny._resolve_target_region(fake_sct)["width"] == 1920
+
+    # Per-game custom rules lifecycle: save, inject into KB, enforce ceiling, and clear
+    updated = loader.save_custom_rules(
+        "league_of_legends",
+        "- Priorizar control de dragones.\n- Comprar wards de control.",
+    )
+    assert "Priorizar control de dragones" in updated.custom_rules
+    assert "Reglas Personalizadas del Jugador" in updated.knowledge_base
+    assert "Priorizar control de dragones" in updated.compact_knowledge_base
+    assert updated.custom_rules_estimated_tokens > 0
+    assert "Reglas Personalizadas del Jugador" not in updated.base_knowledge_base
+
+    with pytest.raises(ValueError):
+        loader.save_custom_rules("league_of_legends", "x" * (MAX_CUSTOM_RULES_CHARS + 10))
+
+    cleared = loader.save_custom_rules("league_of_legends", "   ")
+    assert cleared.custom_rules == ""
+    assert cleared.custom_rules_estimated_tokens == 0
+    assert not (tmp_path / "league_of_legends" / "custom_rules.md").exists()

@@ -4,6 +4,7 @@
 .env.*.local
 config/accounts.json
 config/user_config.json
+profiles/*/custom_rules.md
 
 # Python artifacts
 __pycache__/

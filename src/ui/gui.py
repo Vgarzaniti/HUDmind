@@ -45,7 +45,7 @@ from src.output.overlay import (
     _ensure_tcl_tk_env,
     enable_windows_dpi_awareness,
 )
-from src.profiles.loader import GameProfileLoader
+from src.profiles.loader import MAX_CUSTOM_RULES_CHARS, GameProfileLoader
 
 logger = logging.getLogger("hudmind.gui")
 
@@ -457,6 +457,7 @@ class HUDMindGUI:
         self._var_coach_mode = tk.StringVar(value=s.coach_mode)
         profile_ids = [p.manifest.game_id for p in self._profiles] or ["example_cs2"]
         self._var_profile = tk.StringVar(value=profile_ids[0])
+        self._var_rules_game = tk.StringVar(value=profile_ids[0])
         self._var_dry_run = tk.BooleanVar(value=False)
 
         # Language & Voice tab
@@ -518,18 +519,21 @@ class HUDMindGUI:
 
         self._tab_control = ttk.Frame(self._notebook, padding=14)
         self._tab_accounts = ttk.Frame(self._notebook, padding=14)
+        self._tab_rules = ttk.Frame(self._notebook, padding=14)
         self._tab_lang_voice = ttk.Frame(self._notebook, padding=14)
         self._tab_overlay = ttk.Frame(self._notebook, padding=14)
         self._tab_perf = ttk.Frame(self._notebook, padding=14)
 
         self._notebook.add(self._tab_control, text="  Control  ")
         self._notebook.add(self._tab_accounts, text="  Cuentas IA & Rotación  ")
+        self._notebook.add(self._tab_rules, text="  Reglas por Juego  ")
         self._notebook.add(self._tab_lang_voice, text="  Idioma y Voz  ")
         self._notebook.add(self._tab_overlay, text="  Estilo Overlay  ")
         self._notebook.add(self._tab_perf, text="  Rendimiento  ")
 
         self._build_control_tab()
         self._build_accounts_tab()
+        self._build_rules_tab()
         self._build_lang_voice_tab()
         self._build_overlay_tab()
         self._build_perf_tab()
@@ -745,6 +749,114 @@ class HUDMindGUI:
             text="+ OpenRouter :free",
             command=lambda: self._quick_add_preset("openrouter"),
         ).pack(side="left")
+
+    # ------------------------------------------------------------------ Tab 3: Per-Game Custom Rules
+    def _build_rules_tab(self) -> None:
+        # 1. Explicit Impact Warning Banner
+        warn_box = tk.Frame(
+            self._tab_rules,
+            bg="#1E1B18",
+            highlightthickness=1,
+            highlightbackground="#F59E0B",
+            padx=12,
+            pady=8,
+        )
+        warn_box.pack(fill="x", pady=(0, 10))
+        tk.Label(
+            warn_box,
+            text="⚠ AVISO DE IMPACTO AL AGREGAR REGLAS PERSONALIZADAS POR JUEGO",
+            bg="#1E1B18",
+            fg="#F59E0B",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            warn_box,
+            text=(
+                "• Consumo de Tokens y Latencia: Tus reglas se suman a la base de conocimiento del juego. "
+                "En Gemini/Claude/OpenAI se precargan en caché, pero en proveedores sin caché (o si superás "
+                "~200 tokens extra) aumentan el gasto de cuota en cada frame y pueden demorar la respuesta.\n"
+                "• Calidad y Foco del Coach: Reglas largas o contradictorias con el manual base pueden diluir la "
+                "precisión o hacer que el coach hable de más. Usá viñetas cortas y directas (máx. 5–8 líneas).\n"
+                "• Reinicio de Caché: Si el coach ya está corriendo, detenelo y volvelo a iniciar tras guardar."
+            ),
+            bg="#1E1B18",
+            fg="#FDE68A",
+            justify="left",
+            wraplength=780,
+            font=("Segoe UI", 8),
+        ).pack(anchor="w", pady=(3, 0))
+
+        # 2. Top selector bar
+        top_bar = tk.Frame(self._tab_rules, bg=_BG_CARD)
+        top_bar.pack(fill="x", pady=(0, 8))
+
+        tk.Label(top_bar, text="Juego a personalizar:", bg=_BG_CARD, fg=_FG_TEXT).pack(
+            side="left", padx=(0, 8)
+        )
+        profile_ids = [p.manifest.game_id for p in self._profiles] or ["example_cs2"]
+        self._combo_rules_game = ttk.Combobox(
+            top_bar,
+            textvariable=self._var_rules_game,
+            values=profile_ids,
+            state="readonly",
+            width=24,
+        )
+        self._combo_rules_game.pack(side="left", padx=(0, 10))
+        self._combo_rules_game.bind("<<ComboboxSelected>>", lambda _: self._load_selected_game_rules())
+
+        ttk.Button(
+            top_bar,
+            text="+ Insertar Ejemplo para este Juego",
+            command=self._insert_game_rule_example,
+        ).pack(side="left", padx=(0, 6))
+
+        ttk.Button(
+            top_bar,
+            text="Ver Manual Base del Juego",
+            command=self._view_base_knowledge,
+        ).pack(side="left")
+
+        # 3. Live Impact Meter (Traffic light)
+        self._lbl_rules_impact = tk.Label(
+            self._tab_rules,
+            text="Impacto actual: NULO (0 caracteres | ~0 tokens extra)",
+            bg=_BG_CARD,
+            fg=_SUCCESS,
+            font=("Segoe UI", 9, "bold"),
+        )
+        self._lbl_rules_impact.pack(anchor="w", pady=(0, 4))
+
+        # 4. Rules Editor
+        self._txt_custom_rules = tk.Text(
+            self._tab_rules,
+            bg=_BG_ROOT,
+            fg=_FG_TEXT,
+            insertbackground=_FG_TEXT,
+            font=("Consolas", 10),
+            height=11,
+            relief="flat",
+            padx=10,
+            pady=8,
+            wrap="word",
+        )
+        self._txt_custom_rules.pack(fill="both", expand=True, pady=(0, 8))
+        self._txt_custom_rules.bind("<KeyRelease>", lambda _: self._update_rules_impact_meter())
+
+        # 5. Bottom action buttons
+        act_bar = tk.Frame(self._tab_rules, bg=_BG_CARD)
+        act_bar.pack(fill="x")
+        ttk.Button(
+            act_bar,
+            text="Limpiar Reglas de este Juego",
+            command=self._clear_selected_game_rules,
+        ).pack(side="left")
+        ttk.Button(
+            act_bar,
+            text="💾  Guardar Reglas de este Juego",
+            command=self._save_selected_game_rules,
+        ).pack(side="right")
+
+        self._load_selected_game_rules()
 
     # ------------------------------------------------------------------ Tab 3: Language & Voice
     def _build_lang_voice_tab(self) -> None:
@@ -1023,10 +1135,150 @@ class HUDMindGUI:
             self._profiles = self._profile_loader.list_profiles()
             profile_ids = [p.manifest.game_id for p in self._profiles]
             self._combo_profile.configure(values=profile_ids)
+            self._combo_rules_game.configure(values=profile_ids)
             self._var_profile.set(dlg.created_game_id)
+            self._var_rules_game.set(dlg.created_game_id)
+            self._load_selected_game_rules()
             self._var_status.set(
                 f"✓ Nuevo perfil '{dlg.created_game_id}' creado en profiles/{dlg.created_game_id}/"
             )
+
+    def _load_selected_game_rules(self) -> None:
+        game_id = self._var_rules_game.get()
+        profile = self._profile_loader.get_by_id(game_id)
+        self._txt_custom_rules.delete("1.0", "end")
+        if profile is not None and profile.custom_rules:
+            self._txt_custom_rules.insert("1.0", profile.custom_rules)
+        self._update_rules_impact_meter()
+
+    def _update_rules_impact_meter(self) -> None:
+        text = self._txt_custom_rules.get("1.0", "end-1c").strip()
+        chars = len(text)
+        extra_tokens = chars // 4
+        game_id = self._var_rules_game.get()
+        profile = self._profile_loader.get_by_id(game_id)
+        base_tokens = (
+            (len(profile.system_prompt) + len(profile.base_knowledge_base or profile.knowledge_base)) // 4
+            if profile
+            else 0
+        )
+
+        if chars == 0:
+            level = "NULO — Solo reglas oficiales del juego"
+            color = _SUCCESS
+        elif extra_tokens <= 200:
+            level = "BAJO (Óptimo — bajo costo de tokens y alta precisión)"
+            color = _SUCCESS
+        elif extra_tokens <= 500:
+            level = "MODERADO (Más consumo en proveedores sin caché)"
+            color = "#F59E0B"
+        else:
+            level = "ALTO (¡Cuidado! Gasta más tokens y puede restar foco táctico)"
+            color = _DANGER
+
+        self._lbl_rules_impact.configure(
+            text=(
+                f"Impacto [{game_id}]: {level} | {chars}/{MAX_CUSTOM_RULES_CHARS} chars "
+                f"(+{extra_tokens} tokens extra · total perfil ~{base_tokens + extra_tokens} tokens)"
+            ),
+            fg=color,
+        )
+
+    def _insert_game_rule_example(self) -> None:
+        game_id = self._var_rules_game.get()
+        examples: dict[str, str] = {
+            "aoe2_de": (
+                "- Juego principalmente con Francos: priorizar Jinetes (Knights) y Castillos baratos.\n"
+                "- Recordarme investigar Carretilla (Wheelbarrow) al llegar a ~35 aldeanos.\n"
+                "- En mapas cerrados (Arena), priorizar Fast Castle y reliquias con Monjes."
+            ),
+            "rocket_league": (
+                "- Juego 2v2: priorizar cubrir siempre como segundo hombre cuando mi compañero va a la pared.\n"
+                "-En Free Play estoy practicando Fast Aerials y aterrizajes con Powerslide.\n"
+                "- Recordarme no gastar todo el boost al volver si ya estoy en velocidad supersónica."
+            ),
+            "rob_run": (
+                "- Priorizar golpes sigilosos en joyerías y cajeros antes de intentar el banco central.\n"
+                "- Si llevo más de $15,000 o planos raros en la mochila, avisarme extraer de inmediato.\n"
+                "- Si juego con loadout caro y me rodean 2+ policías con poco botín, recordarme usar Surrender."
+            ),
+            "example_cs2": (
+                "- En lado CT juego ancla de B: priorizar guardar Molotov e Incendiaria para frenar rush.\n"
+                "- Con AWP recordarme comprar siempre pistola de respaldo o mantener distancia larga.\n"
+                "- En eco grupal no dejarme bajar de $2,000 para tener full buy en la siguiente."
+            ),
+            "example_valorant": (
+                "- Juego controlador (Omen/Clove): recordarme no pushear primero sin gastar mis humos.\n"
+                "- Priorizar Vandal y recordarme tirar ráfagas de 2-3 balas a larga distancia.\n"
+                "- Si tengo Ultimate lista al inicio de ronda, recordarme buscar orbe o jugada con ult."
+            ),
+        }
+        sample = examples.get(
+            game_id,
+            "- Priorizar supervivencia y avisarme cuando mis recursos o vida bajen del 30%.\n"
+            "- Recordarme usar mis habilidades/utilidad antes de iniciar un duelo difícil.",
+        )
+        current = self._txt_custom_rules.get("1.0", "end-1c").strip()
+        new_text = f"{current}\n{sample}".strip() if current else sample
+        self._txt_custom_rules.delete("1.0", "end")
+        self._txt_custom_rules.insert("1.0", new_text)
+        self._update_rules_impact_meter()
+
+    def _view_base_knowledge(self) -> None:
+        game_id = self._var_rules_game.get()
+        profile = self._profile_loader.get_by_id(game_id)
+        if profile is None:
+            return
+        viewer = tk.Toplevel(self._root)
+        viewer.title(f"Manual Base — {profile.manifest.display_name} ({game_id})")
+        viewer.geometry("720x500")
+        viewer.configure(bg=_BG_ROOT)
+        viewer.transient(self._root)
+
+        txt = tk.Text(
+            viewer,
+            bg=_BG_ROOT,
+            fg="#CBD5E1",
+            font=("Consolas", 9),
+            padx=12,
+            pady=10,
+            wrap="word",
+        )
+        txt.pack(fill="both", expand=True, padx=10, pady=10)
+        txt.insert("1.0", profile.base_knowledge_base or profile.knowledge_base)
+        txt.configure(state="disabled")
+
+    def _clear_selected_game_rules(self) -> None:
+        self._txt_custom_rules.delete("1.0", "end")
+        self._save_selected_game_rules()
+
+    def _save_selected_game_rules(self) -> None:
+        game_id = self._var_rules_game.get()
+        raw_text = self._txt_custom_rules.get("1.0", "end-1c").strip()
+        extra_tokens = len(raw_text) // 4
+
+        if extra_tokens > 500:
+            proceed = messagebox.askyesno(
+                "Advertencia de Impacto Alto en Tokens",
+                f"Tus reglas para '{game_id}' agregan ~{extra_tokens} tokens extra.\n\n"
+                "Esto puede aumentar el consumo de cuota (especialmente en proveedores sin caché) "
+                "y hacer que el coach pierda precisión.\n\n"
+                "¿Querés guardarlas de todos modos?",
+                parent=self._root,
+            )
+            if not proceed:
+                return
+
+        try:
+            updated = self._profile_loader.save_custom_rules(game_id, raw_text)
+            self._profiles = self._profile_loader.list_profiles()
+            self._update_rules_impact_meter()
+            self._var_status.set(
+                f"✓ Reglas de '{updated.manifest.display_name}' guardadas "
+                f"(+{updated.custom_rules_estimated_tokens} tokens extra)."
+            )
+        except Exception as exc:
+            messagebox.showerror("Error guardando reglas", str(exc), parent=self._root)
 
     @staticmethod
     def _safe_int(var: tk.IntVar, default: int, low: int, high: int) -> int:
