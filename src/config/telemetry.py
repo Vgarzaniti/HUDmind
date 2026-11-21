@@ -258,6 +258,7 @@ class TelemetryData(BaseModel):
     daily_match_counts: dict[str, int] = Field(default_factory=dict)
     models: dict[str, ModelUsageStats] = Field(default_factory=dict)
     recent_matches: list[MatchRecord] = Field(default_factory=list)
+    active_match: MatchRecord | None = None
 
 
 class TelemetryStore:
@@ -348,6 +349,7 @@ class TelemetryStore:
                 return None
             match = self._active_match
             self._active_match = None
+            self._data.active_match = None
 
             elapsed = max(1.0, time.monotonic() - self._active_match_start_mono)
             match.duration_seconds = round(elapsed, 1)
@@ -363,6 +365,7 @@ class TelemetryStore:
             return match
 
     def _sync_active_gauges_into_record(self, match: MatchRecord) -> None:
+        match.ended_at = _now_iso()
         match.performance_score = _clamp_score(self._cur_perf)
         match.playstyle = PlaystyleMetrics(
             aggression=_clamp_score(self._cur_agg),
@@ -371,6 +374,7 @@ class TelemetryStore:
             resource_efficiency=_clamp_score(self._cur_eco),
             consistency=_clamp_score(self._cur_con),
         )
+        self._data.active_match = match
 
     def _commit_match_locked(self, match: MatchRecord) -> None:
         self._data.total_matches_all_time += 1
@@ -475,7 +479,7 @@ class TelemetryStore:
                 stats.interventions_count += 1
 
             self._update_playstyle_from_response_locked(response)
-            self._maybe_flush_throttled(force=False)
+            self._maybe_flush_throttled(force=True)
 
     def _update_playstyle_from_response_locked(self, response: CoachResponse) -> None:
         if self._active_match is None:
@@ -610,12 +614,14 @@ class TelemetryStore:
             total_matches = self._data.total_matches_all_time
 
             all_matches = list(self._data.recent_matches)
+            live_source = self._active_match if self._active_match is not None else self._data.active_match
             if (
-                self._active_match is not None
-                and self._active_match.frames_analyzed > 0
+                live_source is not None
+                and live_source.frames_analyzed > 0
             ):
-                live_copy = self._active_match.model_copy(deep=True)
-                self._sync_active_gauges_into_record(live_copy)
+                live_copy = live_source.model_copy(deep=True)
+                if self._active_match is not None:
+                    self._sync_active_gauges_into_record(live_copy)
                 all_matches.append(live_copy)
                 matches_today += 1
                 total_matches += 1

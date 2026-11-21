@@ -337,11 +337,16 @@ class OpenAICompatibleProvider(BaseAIProvider):
         )
         if is_keyless_pollinations:
             hud_scan = _extract_cpu_hud_telemetry(image_bytes)
+            compact_sys = (
+                f"{profile.compact_system_prompt}\n\n"
+                f"# Reglas Clave ({profile.manifest.display_name}):\n"
+                f"{profile.compact_knowledge_base[:1200]}"
+            )
             payload: dict[str, object] = {
                 "model": "openai-fast",
                 "temperature": self._settings.gemini_temperature,
                 "messages": [
-                    {"role": "system", "content": system_content},
+                    {"role": "system", "content": compact_sys},
                     {
                         "role": "user",
                         "content": (
@@ -792,8 +797,12 @@ class ProviderFailoverRouter:
                 cooldown_s = 600.0
                 reason = f"auth/créditos (HTTP {code})"
             elif code == 429:
-                cooldown_s = 60.0
+                is_anon_poll = acc.provider == "pollinations" and not acc.api_key.strip()
+                cooldown_s = 12.0 if is_anon_poll else 60.0
                 reason = "cuota / rate limit (HTTP 429)"
+            elif acc.provider == "ollama" and code == 503:
+                cooldown_s = 600.0
+                reason = "Ollama local no está corriendo en localhost:11434 (HTTP 503)"
             else:
                 cooldown_s = 20.0
                 reason = f"error (HTTP {code})"
