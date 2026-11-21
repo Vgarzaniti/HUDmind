@@ -6,6 +6,7 @@ import contextlib
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,8 +31,13 @@ class MSSCaptureStrategy(CaptureStrategy):
     to invoke `capture_frame()` repeatedly via `asyncio.to_thread()`.
     """
 
-    def __init__(self, monitor_index: int = 1) -> None:
+    def __init__(
+        self,
+        monitor_index: int = 1,
+        region_provider: Callable[[], tuple[int, int, int, int] | None] | None = None,
+    ) -> None:
         self._monitor_index = monitor_index
+        self._region_provider = region_provider
         self._local = threading.local()
         self._frame_counter = 0
         self._lock = threading.Lock()
@@ -65,14 +71,48 @@ class MSSCaptureStrategy(CaptureStrategy):
                 if sct in self._instances:
                     self._instances.remove(sct)
 
+    def _resolve_target_region(self, sct: MSSBase) -> dict[str, int]:
+        """Resolve active window client rectangle if available, else full monitor."""
+        monitors = sct.monitors
+        idx = self._monitor_index if 0 <= self._monitor_index < len(monitors) else 1
+        fallback_mon: dict[str, int] = dict(monitors[idx])
+
+        if self._region_provider is None:
+            return fallback_mon
+
+        bbox = self._region_provider()
+        if bbox is None:
+            return fallback_mon
+
+        left, top, width, height = bbox
+        if width < 320 or height < 240:
+            return fallback_mon
+
+        # Clamp to virtual desktop bounds (monitors[0]) so partially off-screen windows never fail BitBlt
+        virt = monitors[0]
+        v_left = int(virt["left"])
+        v_top = int(virt["top"])
+        v_right = v_left + int(virt["width"])
+        v_bottom = v_top + int(virt["height"])
+
+        c_left = max(v_left, left)
+        c_top = max(v_top, top)
+        c_right = min(v_right, left + width)
+        c_bottom = min(v_bottom, top + height)
+        c_width = c_right - c_left
+        c_height = c_bottom - c_top
+
+        if c_width < 320 or c_height < 240:
+            return fallback_mon
+
+        return {"left": c_left, "top": c_top, "width": c_width, "height": c_height}
+
     def capture_frame(self) -> CapturedFrame | None:
         try:
             sct = self._get_sct()
-            monitors = sct.monitors
-            idx = self._monitor_index if 0 <= self._monitor_index < len(monitors) else 1
-            monitor = monitors[idx]
+            target_region = self._resolve_target_region(sct)
 
-            raw = sct.grab(monitor)
+            raw = sct.grab(target_region)
             # Zero-copy buffer protocol from raw.raw (bytearray) to RGB PIL Image:
             # avoids raw.bgra which allocates an extra 8.3MB (1080p) / 33MB (4K) bytes() copy.
             buf = raw.raw if hasattr(raw, "raw") else raw.bgra

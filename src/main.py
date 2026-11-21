@@ -81,14 +81,22 @@ class GameCopilotOrchestrator:
         # 1. Profile Loader & Windows Process Detector
         self._profile_loader = GameProfileLoader(settings.profiles_dir)
 
-        # 2. Capture Strategy (Strategy Pattern)
+        # 2. Capture Strategy (Strategy Pattern + Active Game Window Client-Rect Cropping)
         self._capture_strategy: CaptureStrategy
         if mock_source is not None:
             self._capture_strategy = VideoMockCaptureStrategy(source_path=mock_source)
         elif use_synthetic_mock:
             self._capture_strategy = VideoMockCaptureStrategy(source_path=None)
         else:
-            self._capture_strategy = MSSCaptureStrategy(monitor_index=settings.capture_monitor)
+            region_cb = (
+                None
+                if self._test_mode
+                else self._profile_loader.detector.get_foreground_window_bbox
+            )
+            self._capture_strategy = MSSCaptureStrategy(
+                monitor_index=settings.capture_monitor,
+                region_provider=region_cb,
+            )
 
         # 3. Screen Observer (Async Pub-Sub with Drop-Oldest + Pre-Capture GPU/CPU Gate)
         self._observer = ScreenObserver(

@@ -52,7 +52,7 @@
 | :--- | :---: | :--- |
 | `ruff check src tests` | **PASS** | **0 errores** (incluyendo reglas de seguridad Bandit `S`) |
 | `mypy src tests` | **PASS** | **0 errores** en **30 archivos** analizados |
-| `pytest` | **PASS** | **26/26 pruebas aprobadas** |
+| `pytest` | **PASS** | **28/28 pruebas aprobadas** |
 | Overlay Windows 11 (`--health-check`) | **PASS** | `WS_EX_TRANSPARENT \| WS_EX_LAYERED` verificado con `GetWindowLongW` |
 | Pipeline CPU (`pHash + 720p + JPEG`, 1360×768) | **PASS** | **13.74 ms/frame** · pico RAM Python `97 KB` · payload `25.6 KB` |
 | Pipeline CPU (`pHash + 720p + JPEG`, 1920×1080) | **PASS** | **19.85 ms/frame** · pico RAM Python `96 KB` · payload `25.6 KB` |

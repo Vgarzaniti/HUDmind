@@ -13,6 +13,7 @@ import contextlib
 import logging
 import os
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -268,6 +269,114 @@ class AccountEditorDialog(tk.Toplevel):
         self.destroy()
 
 
+class NewProfileDialog(tk.Toplevel):
+    """Modal wizard to create a new game profile cartridge from active Windows processes."""
+
+    def __init__(self, parent: tk.Tk, loader: GameProfileLoader) -> None:
+        super().__init__(parent)
+        self.title("Crear Nuevo Perfil de Juego")
+        self.configure(bg=_BG_ROOT)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self._loader = loader
+        self.created_game_id: str | None = None
+
+        self._var_display_name = tk.StringVar(value="")
+        self._var_game_id = tk.StringVar(value="")
+        self._var_process = tk.StringVar(value="")
+        self._var_lang = tk.StringVar(value="es")
+
+        self._build_ui()
+        self._refresh_processes()
+        self.wait_visibility()
+        self.focus_set()
+
+    def _build_ui(self) -> None:
+        pad: dict[str, Any] = {"padx": 12, "pady": 7}
+        box = tk.Frame(self, bg=_BG_CARD, padx=16, pady=14)
+        box.pack(fill="both", expand=True, padx=10, pady=10)
+
+        tk.Label(
+            box,
+            text="Creá un cartucho para cualquier juego eligiendo su ejecutable (.exe):",
+            bg=_BG_CARD,
+            fg=_ACCENT,
+            font=("Segoe UI", 9, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(0, 8))
+
+        tk.Label(box, text="Ejecutable (.exe):", bg=_BG_CARD, fg=_FG_TEXT).grid(
+            row=1, column=0, sticky="w", **pad
+        )
+        proc_row = tk.Frame(box, bg=_BG_CARD)
+        proc_row.grid(row=1, column=1, sticky="ew", **pad)
+        self._combo_proc = ttk.Combobox(proc_row, textvariable=self._var_process, width=28)
+        self._combo_proc.pack(side="left", fill="x", expand=True)
+        self._combo_proc.bind("<<ComboboxSelected>>", lambda _: self._auto_fill_from_exe())
+        ttk.Button(proc_row, text="↻", width=3, command=self._refresh_processes).pack(
+            side="left", padx=(6, 0)
+        )
+
+        tk.Label(box, text="Nombre del Juego:", bg=_BG_CARD, fg=_FG_TEXT).grid(
+            row=2, column=0, sticky="w", **pad
+        )
+        entry_name = ttk.Entry(box, textvariable=self._var_display_name, width=36)
+        entry_name.grid(row=2, column=1, sticky="ew", **pad)
+        entry_name.bind("<KeyRelease>", lambda _: self._auto_slug())
+
+        tk.Label(box, text="ID del Perfil (carpeta):", bg=_BG_CARD, fg=_FG_TEXT).grid(
+            row=3, column=0, sticky="w", **pad
+        )
+        ttk.Entry(box, textvariable=self._var_game_id, width=36).grid(
+            row=3, column=1, sticky="ew", **pad
+        )
+
+        tk.Label(box, text="Idioma base:", bg=_BG_CARD, fg=_FG_TEXT).grid(
+            row=4, column=0, sticky="w", **pad
+        )
+        ttk.Combobox(
+            box, textvariable=self._var_lang, values=["es", "en"], state="readonly", width=12
+        ).grid(row=4, column=1, sticky="w", **pad)
+
+        btn_row = tk.Frame(box, bg=_BG_CARD)
+        btn_row.grid(row=5, column=0, columnspan=2, sticky="e", pady=(14, 2), padx=12)
+        ttk.Button(btn_row, text="Cancelar", command=self.destroy).pack(side="right", padx=(8, 0))
+        ttk.Button(btn_row, text="Crear Perfil", command=self._on_create).pack(side="right")
+
+    def _refresh_processes(self) -> None:
+        exes = self._loader.detector.list_running_executables()
+        self._combo_proc.configure(values=exes)
+
+    def _auto_fill_from_exe(self) -> None:
+        exe = self._var_process.get().strip()
+        if not exe or self._var_display_name.get().strip():
+            return
+        stem = exe[:-4] if exe.lower().endswith(".exe") else exe
+        clean_title = re.sub(r"[-_]+", " ", stem).strip().title()
+        self._var_display_name.set(clean_title)
+        self._auto_slug()
+
+    def _auto_slug(self) -> None:
+        raw = self._var_display_name.get().strip().lower()
+        slug = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
+        if slug:
+            self._var_game_id.set(slug[:48])
+
+    def _on_create(self) -> None:
+        try:
+            profile = self._loader.create_profile_scaffold(
+                game_id=self._var_game_id.get(),
+                display_name=self._var_display_name.get(),
+                process_name=self._var_process.get(),
+                language=self._var_lang.get(),
+            )
+            self.created_game_id = profile.manifest.game_id
+            self.destroy()
+        except Exception as exc:
+            messagebox.showerror("No se pudo crear el perfil", str(exc), parent=self)
+
+
 class HUDMindGUI:
     """Main lightweight Tkinter Control Center for HUDMind."""
 
@@ -277,7 +386,8 @@ class HUDMindGUI:
 
         self._settings: AppSettings = load_effective_settings()
         self._accounts: list[ProviderAccount] = load_accounts(self._settings)
-        self._profiles = GameProfileLoader(self._settings.profiles_dir).list_profiles()
+        self._profile_loader = GameProfileLoader(self._settings.profiles_dir)
+        self._profiles = self._profile_loader.list_profiles()
 
         self._process: subprocess.Popen[str] | None = None
         self._log_queue: queue.Queue[str] = queue.Queue(maxsize=300)
@@ -465,14 +575,22 @@ class HUDMindGUI:
         tk.Label(top, text="Perfil de juego (Modo Prueba):", bg=_BG_CARD, fg=_FG_TEXT).grid(
             row=1, column=0, sticky="w", padx=6, pady=6
         )
+        prof_row = tk.Frame(top, bg=_BG_CARD)
+        prof_row.grid(row=1, column=1, sticky="w", padx=6, pady=6)
         profile_ids = [p.manifest.game_id for p in self._profiles] or ["example_cs2"]
-        ttk.Combobox(
-            top,
+        self._combo_profile = ttk.Combobox(
+            prof_row,
             textvariable=self._var_profile,
             values=profile_ids,
             state="readonly",
-            width=26,
-        ).grid(row=1, column=1, sticky="w", padx=6, pady=6)
+            width=24,
+        )
+        self._combo_profile.pack(side="left", padx=(0, 8))
+        ttk.Button(
+            prof_row,
+            text="+ Nuevo Perfil de Juego",
+            command=self._create_new_game_profile,
+        ).pack(side="left")
 
         ttk.Checkbutton(
             top,
@@ -878,6 +996,18 @@ class HUDMindGUI:
         self._combo_voice.configure(values=voices)
         if not keep_current or not self._var_tts_voice.get().strip():
             self._var_tts_voice.set(voices[0])
+
+    def _create_new_game_profile(self) -> None:
+        dlg = NewProfileDialog(self._root, self._profile_loader)
+        self._root.wait_window(dlg)
+        if dlg.created_game_id:
+            self._profiles = self._profile_loader.list_profiles()
+            profile_ids = [p.manifest.game_id for p in self._profiles]
+            self._combo_profile.configure(values=profile_ids)
+            self._var_profile.set(dlg.created_game_id)
+            self._var_status.set(
+                f"✓ Nuevo perfil '{dlg.created_game_id}' creado en profiles/{dlg.created_game_id}/"
+            )
 
     @staticmethod
     def _safe_int(var: tk.IntVar, default: int, low: int, high: int) -> int:

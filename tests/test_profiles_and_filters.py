@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from PIL import Image, ImageDraw
 from pydantic import ValidationError
 
 from src.capture.base import CapturedFrame
+from src.capture.mss_capture import MSSCaptureStrategy
 from src.pipeline.filters import (
     CooldownFilter,
     FilterPipeline,
@@ -157,3 +160,44 @@ def test_filter_chain_focus_phash_cooldown_and_resize() -> None:
     with Image.open(io.BytesIO(eco_ctx.encoded_bytes)) as decoded:
         assert decoded.width <= 896 and decoded.height <= 504
     assert len(profile.compact_knowledge_base) < len(profile.knowledge_base)
+
+
+def test_create_profile_scaffold_and_window_region_clamping(tmp_path: Path) -> None:
+    loader = GameProfileLoader(tmp_path, process_detector=_StubDetector("League of Legends.exe"))
+    created = loader.create_profile_scaffold(
+        game_id="league_of_legends",
+        display_name="League of Legends",
+        process_name="League of Legends",
+        language="es",
+    )
+    assert created.manifest.game_id == "league_of_legends"
+    assert created.matches_process("League of Legends.exe")
+    assert (tmp_path / "league_of_legends" / "manifest.json").is_file()
+
+    # Duplicate creation raises FileExistsError
+    with pytest.raises(FileExistsError):
+        loader.create_profile_scaffold(
+            game_id="league_of_legends",
+            display_name="LoL",
+            process_name="League of Legends.exe",
+        )
+
+    # Active window region provider clamps to virtual desktop and falls back if too small
+    fake_sct: Any = SimpleNamespace(
+        monitors=[
+            {"left": 0, "top": 0, "width": 1920, "height": 1080},
+            {"left": 0, "top": 0, "width": 1920, "height": 1080},
+        ]
+    )
+    strat_crop = MSSCaptureStrategy(
+        monitor_index=1,
+        region_provider=lambda: (-20, 50, 1300, 740),
+    )
+    rect = strat_crop._resolve_target_region(fake_sct)
+    assert rect == {"left": 0, "top": 50, "width": 1280, "height": 740}
+
+    strat_tiny = MSSCaptureStrategy(
+        monitor_index=1,
+        region_provider=lambda: (0, 0, 100, 100),
+    )
+    assert strat_tiny._resolve_target_region(fake_sct)["width"] == 1920

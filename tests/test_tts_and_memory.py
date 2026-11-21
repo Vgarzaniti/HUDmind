@@ -9,7 +9,7 @@ import pytest
 
 from src.config.hotkeys import GlobalHotkeyManager
 from src.config.settings import AppSettings
-from src.output.tts import EdgeTTSEngine, TTSEngine, VoiceService
+from src.output.tts import AudioPlayer, EdgeTTSEngine, TTSEngine, VoiceService
 from src.pipeline.schemas import CoachResponse, InterventionMemory
 from src.profiles.loader import GameProfileLoader
 
@@ -106,3 +106,33 @@ def test_multi_game_profiles_load_both_cs2_and_valorant() -> None:
     val = loader.get_by_id("example_valorant")
     assert val is not None
     assert val.matches_process("VALORANT-Win64-Shipping.exe")
+
+
+async def test_edge_tts_in_memory_lru_cache_hits_and_eviction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    synth_calls: list[str] = []
+    played_bytes: list[bytes] = []
+
+    player = AudioPlayer()
+    monkeypatch.setattr(player, "play_bytes_blocking", lambda b, fmt="mp3": played_bytes.append(b))
+    engine = EdgeTTSEngine(player=player, cache_max_entries=2)
+
+    async def _fake_synth(text: str) -> bytes:
+        synth_calls.append(text)
+        return f"mp3:{text}".encode()
+
+    monkeypatch.setattr(engine, "synthesize_mp3", _fake_synth)
+
+    await engine.speak("Recargá en cobertura")
+    # Repeated call (even with extra spaces/case difference) must hit RAM cache (0 network calls)
+    await engine.speak("  recargá   en COBERTURA ")
+    assert len(synth_calls) == 1
+    assert engine.cache_hits == 1
+    assert engine.cache_size == 1
+    assert len(played_bytes) == 2
+
+    # Fill and exceed max_entries=2 to verify LRU eviction
+    await engine.speak("Segunda frase")
+    await engine.speak("Tercera frase")
+    assert engine.cache_size == 2

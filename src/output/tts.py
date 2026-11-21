@@ -10,6 +10,7 @@ import os
 import subprocess
 import threading
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 
 # Keep stdout clean when pygame initializes its audio mixer
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -160,10 +161,14 @@ class Pyttsx3TTSEngine(TTSEngine):
 
 
 class EdgeTTSEngine(TTSEngine):
-    """Neural online TTS strategy using `edge-tts` with in-memory MP3 playback.
+    """Neural online TTS strategy using `edge-tts` with in-memory MP3 playback & LRU cache.
 
+    Caches the most recent synthesized phrases in RAM (`OrderedDict`, max 32 items,
+    <0.5 MB total) so recurring tactical callouts play in 0ms without network I/O.
     Falls back automatically to `Pyttsx3TTSEngine` if the network is unavailable.
     """
+
+    _MAX_CACHEABLE_BYTES = 256 * 1024
 
     def __init__(
         self,
@@ -171,15 +176,31 @@ class EdgeTTSEngine(TTSEngine):
         rate: str = "+10%",
         player: AudioPlayer | None = None,
         fallback_engine: TTSEngine | None = None,
+        cache_max_entries: int = 32,
     ) -> None:
         self._voice = voice
         self._rate = rate
         self._player = player or AudioPlayer()
         self._fallback = fallback_engine
+        self._cache_max_entries = max(0, cache_max_entries)
+        self._audio_cache: OrderedDict[tuple[str, str, str], bytes] = OrderedDict()
+        self._cache_hits = 0
 
     @property
     def name(self) -> str:
         return f"edge-tts({self._voice})"
+
+    @property
+    def cache_hits(self) -> int:
+        return self._cache_hits
+
+    @property
+    def cache_size(self) -> int:
+        return len(self._audio_cache)
+
+    def _cache_key(self, text: str) -> tuple[str, str, str]:
+        normalized = " ".join(text.strip().lower().split())
+        return (self._voice, self._rate, normalized)
 
     async def synthesize_mp3(self, text: str) -> bytes:
         import edge_tts
@@ -193,9 +214,28 @@ class EdgeTTSEngine(TTSEngine):
                     chunks.append(data)
         return b"".join(chunks)
 
+    async def _get_or_synthesize_mp3(self, text: str) -> bytes:
+        key = self._cache_key(text)
+        if self._cache_max_entries > 0 and key in self._audio_cache:
+            self._audio_cache.move_to_end(key)
+            self._cache_hits += 1
+            return self._audio_cache[key]
+
+        audio_bytes = await asyncio.wait_for(self.synthesize_mp3(text), timeout=8.0)
+        if (
+            audio_bytes
+            and self._cache_max_entries > 0
+            and len(audio_bytes) <= self._MAX_CACHEABLE_BYTES
+        ):
+            self._audio_cache[key] = audio_bytes
+            self._audio_cache.move_to_end(key)
+            while len(self._audio_cache) > self._cache_max_entries:
+                self._audio_cache.popitem(last=False)
+        return audio_bytes
+
     async def speak(self, text: str) -> None:
         try:
-            audio_bytes = await asyncio.wait_for(self.synthesize_mp3(text), timeout=8.0)
+            audio_bytes = await self._get_or_synthesize_mp3(text)
             if audio_bytes:
                 await asyncio.to_thread(self._player.play_bytes_blocking, audio_bytes, "mp3")
                 return

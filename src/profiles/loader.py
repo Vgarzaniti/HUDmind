@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -193,6 +194,57 @@ class ForegroundProcessDetector:
             logger.debug("Error obteniendo proceso en primer plano: %s", exc)
             return None
 
+    def get_foreground_window_bbox(self) -> tuple[int, int, int, int] | None:
+        """Return `(left, top, width, height)` of the active window's client area on Windows.
+
+        Capturing only the game's client rectangle prevents desktop/taskbar bleed in
+        windowed mode (privacy) and dedicates 100% of vision resolution to the game HUD.
+        """
+        if not _WIN32_AVAILABLE or win32gui is None:
+            return None
+        try:
+            hwnd = int(win32gui.GetForegroundWindow())
+            if not hwnd or win32gui.IsIconic(hwnd):
+                return None
+
+            left, top, right, bottom = win32gui.GetClientRect(hwnd)
+            width = int(right - left)
+            height = int(bottom - top)
+            if width >= 320 and height >= 240:
+                screen_x, screen_y = win32gui.ClientToScreen(hwnd, (0, 0))
+                return int(screen_x), int(screen_y), width, height
+
+            w_left, w_top, w_right, w_bottom = win32gui.GetWindowRect(hwnd)
+            w_width = int(w_right - w_left)
+            w_height = int(w_bottom - w_top)
+            if w_width >= 320 and w_height >= 240:
+                return int(w_left), int(w_top), w_width, w_height
+            return None
+        except Exception:
+            return None
+
+    def list_running_executables(self) -> list[str]:
+        """Return sorted unique `.exe` names currently running with visible windows or processes."""
+        names: set[str] = set()
+        if _WIN32_AVAILABLE and win32gui is not None and win32process is not None:
+            with contextlib.suppress(Exception):
+                def _enum_cb(hwnd: int, _: object) -> None:
+                    if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd):
+                        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                        if pid > 0:
+                            with contextlib.suppress(Exception):
+                                names.add(str(psutil.Process(pid).name()))
+
+                win32gui.EnumWindows(_enum_cb, None)
+
+        if not names:
+            for proc in psutil.process_iter(["name"]):
+                with contextlib.suppress(Exception):
+                    pname = proc.info.get("name")
+                    if isinstance(pname, str) and pname.lower().endswith(".exe"):
+                        names.add(pname)
+        return sorted(names, key=str.lower)
+
 
 class GameProfileLoader:
     """Loads game profile cartridges dynamically from disk and matches active processes."""
@@ -321,3 +373,73 @@ class GameProfileLoader:
         exe_name = self._detector.get_foreground_executable()
         profile = self.get_for_process(exe_name)
         return exe_name, profile
+
+    def create_profile_scaffold(
+        self,
+        *,
+        game_id: str,
+        display_name: str,
+        process_name: str,
+        language: str = "es",
+        notes: str = "",
+    ) -> GameProfile:
+        """Create a new game profile cartridge on disk and register it immediately."""
+        clean_id = game_id.strip().lower()
+        clean_name = display_name.strip()
+        clean_proc = process_name.strip()
+        if not clean_proc.lower().endswith(".exe"):
+            clean_proc = f"{clean_proc}.exe"
+
+        manifest = GameManifest(
+            game_id=clean_id,
+            display_name=clean_name,
+            process_names=[clean_proc],
+            capture_fps=1.0,
+            phash_threshold=8,
+            cooldown_seconds=10.0,
+            max_resolution=(1280, 720),
+            language=language.strip() or "es",
+            notes=notes.strip() or f"Perfil táctico para {clean_name}.",
+        )
+
+        target_dir = (self._profiles_dir / manifest.game_id).resolve()
+        base_resolved = self._profiles_dir.resolve()
+        target_dir.relative_to(base_resolved)  # Enforces CWE-22 containment
+        if target_dir.exists():
+            raise FileExistsError(f"El perfil '{manifest.game_id}' ya existe en {target_dir}")
+
+        target_dir.mkdir(parents=True, exist_ok=False)
+        (target_dir / "manifest.json").write_text(
+            json.dumps(manifest.model_dump(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        system_prompt = (
+            f"# Rol: Coach Táctico en Tiempo Real — {clean_name}\n\n"
+            f"Observás la pantalla del jugador durante una partida de **{clean_name}**.\n\n"
+            "## Reglas Estrictas\n"
+            "1. **Silencio por Defecto (`should_intervene = false`):** Solo intervení ante riesgo "
+            "inmediato, error táctico claro o decisión clave de recursos/objetivos.\n"
+            "2. **Brevedad Extrema:** `overlay_text` máximo 8 palabras; `voice_line` máximo 12 palabras.\n"
+            "3. **Cero Alucinaciones:** Basate exclusivamente en elementos legibles del HUD.\n"
+        )
+        knowledge_base = (
+            f"# Base de Conocimiento Táctico — {clean_name}\n\n"
+            "## 1. Anclajes Visuales del HUD\n"
+            "- **Minimapa / Radar:** Posición de aliados, enemigos y objetivos activos.\n"
+            "- **Barras de Estado (Vida / Recursos / Munición / Cooldowns):** Alertar cuando estén en nivel crítico.\n"
+            "- **Reloj / Temporizador de Partida:** Priorizar objetivos próximos a activarse.\n\n"
+            "## 2. Heurísticas de Decisión\n"
+            "- `" + '"high"' + "`: Peligro inminente de muerte evitable, flanco descubierto o recurso en 0.\n"
+            "- `" + '"medium"' + "`: Uso de habilidad/utilidad disponible o rotación táctica.\n"
+            "- `" + '"low"' + "`: Recordatorio de economía o posicionamiento general.\n\n"
+            "## 3. Lista Negra de UI (`should_intervene = false`)\n"
+            "- Menú principal, lobby, pantalla de carga, tabla de puntuaciones (`TAB`), cámara de muerte o chat.\n"
+        )
+        (target_dir / "system_prompt.md").write_text(system_prompt, encoding="utf-8")
+        (target_dir / "knowledge_base.md").write_text(knowledge_base, encoding="utf-8")
+
+        self.reload()
+        created = self.get_by_id(manifest.game_id)
+        if created is None:
+            raise RuntimeError(f"No se pudo cargar el perfil recién creado: {manifest.game_id}")
+        return created
