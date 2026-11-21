@@ -115,6 +115,10 @@ def test_multi_game_profiles_load_both_cs2_and_valorant() -> None:
     assert rl is not None and rl.matches_process("RocketLeague.exe")
     assert "Free Play" in rl.knowledge_base
 
+    rob = loader.get_by_id("rob_run")
+    assert rob is not None and rob.matches_process("ROB RUN.exe")
+    assert "Looty Bay" in rob.knowledge_base
+
     assert build_coach_mode_instruction("match") == ""
     training_note = build_coach_mode_instruction("training")
     assert "TRAINING / PRACTICE MODE ACTIVE" in training_note

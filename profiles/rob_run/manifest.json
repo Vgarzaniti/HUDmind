@@ -1,0 +1,11 @@
+{
+  "game_id": "rob_run",
+  "display_name": "ROB RUN",
+  "process_names": ["ROB RUN.exe"],
+  "capture_fps": 1.0,
+  "phash_threshold": 8,
+  "cooldown_seconds": 9.0,
+  "max_resolution": [1280, 720],
+  "language": "es",
+  "notes": "Perfil táctico de extracción, atracos en Looty Bay, sigilo/notoriedad, rol Criminal vs Policía y reconocimiento sin máscara."
+}
