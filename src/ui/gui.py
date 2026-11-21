@@ -31,6 +31,7 @@ from src.config.settings import (
     OverlayTheme,
     redact_secrets_in_text,
 )
+from src.config.telemetry import PlaystyleMetrics, TelemetryStore
 from src.config.user_store import (
     PROVIDER_PRESETS,
     ProviderAccount,
@@ -93,6 +94,140 @@ _THEMES: list[OverlayTheme] = [
     "matrix-green",
     "tactical-amber",
 ]
+
+
+class CircularGauge(tk.Canvas):
+    """Lightweight native Tkinter Canvas circular gauge (0 to 100 / 0 to 100%)."""
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        title: str,
+        subtitle: str = "",
+        diameter: int = 86,
+        ring_width: int = 8,
+        is_percent: bool = False,
+        fixed_color: str | None = None,
+    ) -> None:
+        self._title = title
+        self._subtitle = subtitle
+        self._diameter = diameter
+        self._ring_width = ring_width
+        self._is_percent = is_percent
+        self._fixed_color = fixed_color
+
+        width = diameter + 26
+        height = diameter + 44
+        super().__init__(
+            parent,
+            width=width,
+            height=height,
+            bg=_BG_CARD,
+            highlightthickness=0,
+            bd=0,
+        )
+        self._canvas_w = width
+        self._canvas_h = height
+        self.set_value(0, subtitle)
+
+    @staticmethod
+    def _grade_for_score(val: int) -> str:
+        if val <= 0:
+            return "—"
+        if val >= 88:
+            return "Rango S"
+        if val >= 75:
+            return "Rango A"
+        if val >= 55:
+            return "Rango B"
+        return "Rango C"
+
+    def set_value(self, value: int, subtitle: str | None = None) -> None:
+        val = max(0, min(100, int(value)))
+        if subtitle is not None:
+            self._subtitle = subtitle
+
+        self.delete("all")
+        if self._fixed_color is not None and val > 0:
+            color = self._fixed_color
+        elif val == 0:
+            color = "#475569"
+        elif val >= 75:
+            color = _SUCCESS
+        elif val >= 52:
+            color = _ACCENT
+        elif val >= 35:
+            color = "#F59E0B"
+        else:
+            color = _DANGER
+
+        cx = self._canvas_w // 2
+        self.create_text(
+            cx,
+            11,
+            text=self._title,
+            fill=_FG_TEXT,
+            font=("Segoe UI", 8, "bold"),
+        )
+
+        x0 = (self._canvas_w - self._diameter) // 2
+        y0 = 23
+        x1 = x0 + self._diameter
+        y1 = y0 + self._diameter
+        cy = (y0 + y1) // 2
+
+        # Background dark track ring
+        self.create_oval(
+            x0,
+            y0,
+            x1,
+            y1,
+            outline=_BG_INPUT,
+            width=self._ring_width,
+        )
+
+        # Foreground progress arc (0 to 100 mapped clockwise from 12 o'clock)
+        if val > 0:
+            extent = -min(359.6, max(4.0, val * 3.6))
+            self.create_arc(
+                x0,
+                y0,
+                x1,
+                y1,
+                start=90,
+                extent=extent,
+                style="arc",
+                outline=color,
+                width=self._ring_width,
+            )
+
+        main_label = f"{val}%" if self._is_percent else f"{val}"
+        self.create_text(
+            cx,
+            cy - 5,
+            text=main_label,
+            fill=color if val > 0 else _FG_MUTED,
+            font=("Segoe UI", 13 if self._diameter >= 84 else 11, "bold"),
+        )
+
+        badge_text = self._grade_for_score(val) if self._is_percent else "/ 100"
+        self.create_text(
+            cx,
+            cy + 12,
+            text=badge_text,
+            fill=_FG_MUTED,
+            font=("Segoe UI", 7, "bold"),
+        )
+
+        if self._subtitle:
+            self.create_text(
+                cx,
+                y1 + 11,
+                text=self._subtitle[:24],
+                fill=_FG_MUTED,
+                font=("Segoe UI", 7),
+            )
 
 
 class AccountEditorDialog(tk.Toplevel):
@@ -389,6 +524,8 @@ class HUDMindGUI:
         self._accounts: list[ProviderAccount] = load_accounts(self._settings)
         self._profile_loader = GameProfileLoader(self._settings.profiles_dir)
         self._profiles = self._profile_loader.list_profiles()
+        self._telemetry = TelemetryStore()
+        self._sim_counter = 0
 
         self._process: subprocess.Popen[str] | None = None
         self._log_queue: queue.Queue[str] = queue.Queue(maxsize=300)
@@ -397,8 +534,8 @@ class HUDMindGUI:
 
         self._root = tk.Tk()
         self._root.title("HUDMind — Panel de Configuración y Coach IA")
-        self._root.geometry("860x620")
-        self._root.minsize(780, 560)
+        self._root.geometry("960x660")
+        self._root.minsize(850, 580)
         self._root.configure(bg=_BG_ROOT)
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -406,6 +543,7 @@ class HUDMindGUI:
         self._init_vars()
         self._build_layout()
         self._refresh_accounts_tree()
+        self._refresh_analytics_dashboard()
         self._root.after(150, self._poll_logs)
 
     def _init_styles(self) -> None:
@@ -459,6 +597,7 @@ class HUDMindGUI:
         profile_ids = [p.manifest.game_id for p in self._profiles] or ["example_cs2"]
         self._var_profile = tk.StringVar(value=profile_ids[0])
         self._var_rules_game = tk.StringVar(value=profile_ids[0])
+        self._var_stats_game = tk.StringVar(value="all")
         self._var_dry_run = tk.BooleanVar(value=False)
 
         # Language & Voice tab
@@ -523,6 +662,7 @@ class HUDMindGUI:
         self._tab_control = ttk.Frame(self._notebook, padding=14)
         self._tab_accounts = ttk.Frame(self._notebook, padding=14)
         self._tab_rules = ttk.Frame(self._notebook, padding=14)
+        self._tab_analytics = ttk.Frame(self._notebook, padding=12)
         self._tab_lang_voice = ttk.Frame(self._notebook, padding=14)
         self._tab_overlay = ttk.Frame(self._notebook, padding=14)
         self._tab_perf = ttk.Frame(self._notebook, padding=14)
@@ -530,6 +670,7 @@ class HUDMindGUI:
         self._notebook.add(self._tab_control, text="  Control  ")
         self._notebook.add(self._tab_accounts, text="  Cuentas IA & Rotación  ")
         self._notebook.add(self._tab_rules, text="  Reglas por Juego  ")
+        self._notebook.add(self._tab_analytics, text="  📊 Mi Estilo & Uso IA  ")
         self._notebook.add(self._tab_lang_voice, text="  Idioma y Voz  ")
         self._notebook.add(self._tab_overlay, text="  Estilo Overlay  ")
         self._notebook.add(self._tab_perf, text="  Rendimiento  ")
@@ -537,9 +678,14 @@ class HUDMindGUI:
         self._build_control_tab()
         self._build_accounts_tab()
         self._build_rules_tab()
+        self._build_analytics_tab()
         self._build_lang_voice_tab()
         self._build_overlay_tab()
         self._build_perf_tab()
+        self._notebook.bind(
+            "<<NotebookTabChanged>>",
+            lambda _e: self._refresh_analytics_dashboard(),
+        )
 
         # Footer bar
         footer = tk.Frame(self._root, bg=_BG_ROOT, padx=14, pady=8)
@@ -1177,7 +1323,448 @@ class HUDMindGUI:
             variable=self._var_file_log,
         ).grid(row=9, column=0, columnspan=3, sticky="w", **pad)
 
+    # ------------------------------------------------------------------ Tab 4: Analytics & AI Usage
+    def _build_analytics_tab(self) -> None:
+        # 1. Top Toolbar: Game Filter + Demo Simulation + Refresh + Reset
+        top_bar = tk.Frame(self._tab_analytics, bg=_BG_CARD)
+        top_bar.pack(fill="x", pady=(0, 8))
+
+        tk.Label(
+            top_bar,
+            text="Filtrar por juego:",
+            bg=_BG_CARD,
+            fg=_FG_TEXT,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left", padx=(0, 6))
+
+        filter_values = ["all", *[p.manifest.game_id for p in self._profiles]]
+        self._combo_stats_game = ttk.Combobox(
+            top_bar,
+            textvariable=self._var_stats_game,
+            values=filter_values,
+            state="readonly",
+            width=20,
+        )
+        self._combo_stats_game.pack(side="left", padx=(0, 8))
+        self._combo_stats_game.bind(
+            "<<ComboboxSelected>>",
+            lambda _e: self._refresh_analytics_dashboard(),
+        )
+
+        ttk.Button(
+            top_bar,
+            text="🔄 Actualizar",
+            command=self._refresh_analytics_dashboard,
+        ).pack(side="left", padx=(0, 6))
+
+        ttk.Button(
+            top_bar,
+            text="🎮 Simular Partida Demo",
+            command=self._simulate_demo_match,
+        ).pack(side="left", padx=(0, 6))
+
+        ttk.Button(
+            top_bar,
+            text="🗑 Reiniciar Estadísticas",
+            command=self._reset_analytics_telemetry,
+        ).pack(side="right")
+
+        # 2. 4 KPI Summary Cards (Matches Today, Total Since Install, Total Tokens, AI Cost/Saved)
+        kpi_row = tk.Frame(self._tab_analytics, bg=_BG_CARD)
+        kpi_row.pack(fill="x", pady=(0, 8))
+        for col in range(4):
+            kpi_row.columnconfigure(col, weight=1)
+
+        def _make_kpi_card(
+            col_idx: int,
+            heading: str,
+            accent_color: str,
+        ) -> tuple[tk.Label, tk.Label]:
+            card = tk.Frame(
+                kpi_row,
+                bg=_BG_ROOT,
+                padx=10,
+                pady=7,
+                highlightthickness=1,
+                highlightbackground=_BORDER,
+            )
+            card.grid(row=0, column=col_idx, sticky="nsew", padx=4)
+            tk.Label(
+                card,
+                text=heading,
+                bg=_BG_ROOT,
+                fg=_FG_MUTED,
+                font=("Segoe UI", 8, "bold"),
+            ).pack(anchor="w")
+            val_lbl = tk.Label(
+                card,
+                text="0",
+                bg=_BG_ROOT,
+                fg=accent_color,
+                font=("Segoe UI", 13, "bold"),
+            )
+            val_lbl.pack(anchor="w", pady=(2, 0))
+            sub_lbl = tk.Label(
+                card,
+                text="",
+                bg=_BG_ROOT,
+                fg=_FG_MUTED,
+                font=("Segoe UI", 7),
+            )
+            sub_lbl.pack(anchor="w")
+            return val_lbl, sub_lbl
+
+        self._kpi_today_val, self._kpi_today_sub = _make_kpi_card(
+            0, "PARTIDAS JUGADAS HOY", _ACCENT
+        )
+        self._kpi_total_val, self._kpi_total_sub = _make_kpi_card(
+            1, "TOTAL DESDE INSTALACIÓN", _SUCCESS
+        )
+        self._kpi_tokens_val, self._kpi_tokens_sub = _make_kpi_card(
+            2, "USO TOTAL DE TOKENS IA", _FG_TEXT
+        )
+        self._kpi_cost_val, self._kpi_cost_sub = _make_kpi_card(
+            3, "GASTO REAL vs AHORRADO", _SUCCESS
+        )
+
+        # 3. Circular Gauges Row (0-100% Performance + 0-100 Playstyle Circles)
+        gauges_wrapper = tk.Frame(self._tab_analytics, bg=_BG_CARD)
+        gauges_wrapper.pack(fill="x", pady=(0, 6))
+
+        perf_box = tk.LabelFrame(
+            gauges_wrapper,
+            text=" Rendimiento en Partidas (0 a 100%) ",
+            bg=_BG_CARD,
+            fg=_ACCENT,
+            font=("Segoe UI", 9, "bold"),
+            padx=8,
+            pady=4,
+        )
+        perf_box.pack(side="left", fill="y", padx=(0, 8))
+
+        self._gauge_last_match = CircularGauge(
+            perf_box,
+            title="Última Partida",
+            subtitle="Sin datos",
+            diameter=84,
+            ring_width=8,
+            is_percent=True,
+        )
+        self._gauge_last_match.pack(side="left", padx=6)
+
+        self._gauge_avg_matches = CircularGauge(
+            perf_box,
+            title="Últimas 10 Partidas",
+            subtitle="Promedio",
+            diameter=84,
+            ring_width=8,
+            is_percent=True,
+        )
+        self._gauge_avg_matches.pack(side="left", padx=6)
+
+        style_box = tk.LabelFrame(
+            gauges_wrapper,
+            text=" Tu Estilo de Juego (Gráficos Circulares 0 a 100) ",
+            bg=_BG_CARD,
+            fg=_ACCENT,
+            font=("Segoe UI", 9, "bold"),
+            padx=8,
+            pady=4,
+        )
+        style_box.pack(side="left", fill="both", expand=True)
+
+        circles_row = tk.Frame(style_box, bg=_BG_CARD)
+        circles_row.pack(fill="x")
+
+        self._gauge_aggression = CircularGauge(
+            circles_row,
+            title="Agresividad",
+            subtitle="Peeks / Ataque",
+            diameter=72,
+            ring_width=7,
+            is_percent=False,
+            fixed_color="#F97316",
+        )
+        self._gauge_aggression.pack(side="left", expand=True)
+
+        self._gauge_patience = CircularGauge(
+            circles_row,
+            title="Paciencia",
+            subtitle="Disciplina / Cover",
+            diameter=72,
+            ring_width=7,
+            is_percent=False,
+        )
+        self._gauge_patience.pack(side="left", expand=True)
+
+        self._gauge_tactical = CircularGauge(
+            circles_row,
+            title="Visión Táctica",
+            subtitle="Radar / Rotación",
+            diameter=72,
+            ring_width=7,
+            is_percent=False,
+        )
+        self._gauge_tactical.pack(side="left", expand=True)
+
+        self._gauge_economy = CircularGauge(
+            circles_row,
+            title="Economía / Macro",
+            subtitle="Recursos / Boost",
+            diameter=72,
+            ring_width=7,
+            is_percent=False,
+        )
+        self._gauge_economy.pack(side="left", expand=True)
+
+        self._gauge_consistency = CircularGauge(
+            circles_row,
+            title="Supervivencia",
+            subtitle="Temple / Consistencia",
+            diameter=72,
+            ring_width=7,
+            is_percent=False,
+        )
+        self._gauge_consistency.pack(side="left", expand=True)
+
+        self._lbl_archetype = tk.Label(
+            self._tab_analytics,
+            text="Diagnóstico de Estilo: —",
+            bg=_BG_ROOT,
+            fg=_ACCENT,
+            font=("Segoe UI", 8, "bold"),
+            padx=10,
+            pady=5,
+            anchor="w",
+        )
+        self._lbl_archetype.pack(fill="x", pady=(0, 6))
+
+        # 4. AI Model Usage & Cost Breakdown Table
+        tk.Label(
+            self._tab_analytics,
+            text="Desglose de Uso de IA: Cuánto Gastó Cada Modelo y Cuenta (Tokens, Caché, Latencia y Costo):",
+            bg=_BG_CARD,
+            fg=_FG_TEXT,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+
+        cols = (
+            "account",
+            "model",
+            "requests",
+            "advice",
+            "in_tokens",
+            "out_tokens",
+            "total_tokens",
+            "latency",
+            "cost",
+            "saved",
+        )
+        self._tree_usage = ttk.Treeview(
+            self._tab_analytics,
+            columns=cols,
+            show="headings",
+            height=6,
+            selectmode="browse",
+        )
+        headings = {
+            "account": ("Cuenta / Proveedor", 170),
+            "model": ("Modelo IA", 135),
+            "requests": ("Consultas (429)", 95),
+            "advice": ("Consejos", 65),
+            "in_tokens": ("Tokens In (Caché)", 120),
+            "out_tokens": ("Tokens Out", 75),
+            "total_tokens": ("Total Tokens", 85),
+            "latency": ("Latencia", 68),
+            "cost": ("Gasto Real", 82),
+            "saved": ("Ahorrado", 82),
+        }
+        for col_id, (title_txt, width_px) in headings.items():
+            self._tree_usage.heading(col_id, text=title_txt)
+            self._tree_usage.column(col_id, width=width_px, anchor="w")
+        self._tree_usage.pack(fill="both", expand=True)
+
     # ------------------------------------------------------------------ Actions
+    def _refresh_analytics_dashboard(self) -> None:
+        self._telemetry.reload()
+        summary = self._telemetry.get_dashboard_summary(
+            game_filter=self._var_stats_game.get() or "all"
+        )
+
+        # Update KPI cards
+        self._kpi_today_val.configure(text=f"{summary['matches_today']} partidas")
+        self._kpi_today_sub.configure(text="Jugadas en el día de hoy")
+
+        self._kpi_total_val.configure(text=f"{summary['total_matches_all_time']} partidas")
+        install_date = str(summary["installed_at"])[:10]
+        self._kpi_total_sub.configure(
+            text=f"Desde {install_date} · {summary['total_coaching_minutes']} min coucheados"
+        )
+
+        self._kpi_tokens_val.configure(text=f"{summary['total_tokens']:,} tokens")
+        self._kpi_tokens_sub.configure(
+            text=(
+                f"Caché: {summary['total_cached_tokens']:,} · "
+                f"{summary['total_frames_filtered_saved']:,} frames filtrados (pHash)"
+            )
+        )
+
+        cost_usd = summary["total_actual_cost_usd"]
+        saved_usd = summary["total_saved_cost_usd"]
+        self._kpi_cost_val.configure(
+            text=f"${cost_usd:.4f} USD" if cost_usd > 0 else "$0.0000 (Gratis)"
+        )
+        self._kpi_cost_sub.configure(text=f"Ahorrado por Free/Caché/pHash: ${saved_usd:.4f} USD")
+
+        # Update Circular Gauges (0-100% and 0-100)
+        self._gauge_last_match.set_value(
+            summary["last_match_performance"],
+            subtitle=str(summary["last_match_label"]),
+        )
+        self._gauge_avg_matches.set_value(
+            summary["recent_avg_performance"],
+            subtitle="Promedio reciente",
+        )
+
+        style: PlaystyleMetrics = summary["playstyle"]
+        self._gauge_aggression.set_value(style.aggression)
+        self._gauge_patience.set_value(style.patience)
+        self._gauge_tactical.set_value(style.tactical_awareness)
+        self._gauge_economy.set_value(style.resource_efficiency)
+        self._gauge_consistency.set_value(style.consistency)
+
+        self._lbl_archetype.configure(
+            text=f"Diagnóstico de tu Estilo de Juego: {summary['archetype']}"
+        )
+
+        # Update AI Model Usage Treeview
+        for row_id in self._tree_usage.get_children():
+            self._tree_usage.delete(row_id)
+
+        for m in summary["models"]:
+            req_str = (
+                f"{m.requests_ok} ({m.requests_rate_limited} rot)"
+                if m.requests_rate_limited > 0
+                else f"{m.requests_ok}"
+            )
+            in_str = (
+                f"{m.input_tokens:,} ({m.cached_tokens:,})"
+                if m.cached_tokens > 0
+                else f"{m.input_tokens:,}"
+            )
+            cost_str = "$0.0000 (Free)" if m.is_free_tier else f"${m.actual_cost_usd:.4f}"
+            saved_str = f"${m.saved_cost_usd:.4f}"
+            self._tree_usage.insert(
+                "",
+                "end",
+                values=(
+                    f"{m.account_label} [{m.provider}]",
+                    m.model,
+                    req_str,
+                    m.interventions_count,
+                    in_str,
+                    f"{m.output_tokens:,}",
+                    f"{m.total_tokens:,}",
+                    f"{m.avg_latency_ms:.0f} ms",
+                    cost_str,
+                    saved_str,
+                ),
+            )
+
+    def _simulate_demo_match(self) -> None:
+        """Simulate a realistic match entry so the user can test all 7 circular gauges immediately."""
+        presets = [
+            (
+                "rob_run",
+                "ROB RUN",
+                88,
+                PlaystyleMetrics(
+                    aggression=74,
+                    patience=81,
+                    tactical_awareness=85,
+                    resource_efficiency=91,
+                    consistency=84,
+                ),
+                "gemini",
+                "gemini-2.5-flash",
+                "Google Gemini (AI Studio)",
+            ),
+            (
+                "aoe2_de",
+                "Age of Empires II: DE",
+                82,
+                PlaystyleMetrics(
+                    aggression=58,
+                    patience=84,
+                    tactical_awareness=79,
+                    resource_efficiency=89,
+                    consistency=86,
+                ),
+                "groq",
+                "meta-llama/llama-4-scout-17b-16e-instruct",
+                "Groq Cloud (Gratis)",
+            ),
+            (
+                "rocket_league",
+                "Rocket League",
+                79,
+                PlaystyleMetrics(
+                    aggression=82,
+                    patience=68,
+                    tactical_awareness=76,
+                    resource_efficiency=74,
+                    consistency=78,
+                ),
+                "openrouter",
+                "google/gemma-3-27b-it:free",
+                "OpenRouter (:free)",
+            ),
+            (
+                "example_cs2",
+                "Counter-Strike 2",
+                91,
+                PlaystyleMetrics(
+                    aggression=67,
+                    patience=88,
+                    tactical_awareness=90,
+                    resource_efficiency=86,
+                    consistency=92,
+                ),
+                "gemini",
+                "gemini-2.5-flash",
+                "Google Gemini (AI Studio)",
+            ),
+        ]
+        selected_filter = self._var_stats_game.get()
+        matching = [p for p in presets if p[0] == selected_filter]
+        chosen = matching[0] if matching else presets[self._sim_counter % len(presets)]
+        self._sim_counter += 1
+
+        game_id, game_name, perf_score, style, prov, mod, acc_lbl = chosen
+        self._telemetry.record_simulated_match(
+            game_id=game_id,
+            game_name=game_name,
+            performance_score=perf_score,
+            playstyle=style,
+            provider=prov,
+            model=mod,
+            account_label=acc_lbl,
+        )
+        self._refresh_analytics_dashboard()
+        self._var_status.set(
+            f"✓ Partida demo de '{game_name}' registrada ({perf_score}% rendimiento)."
+        )
+
+    def _reset_analytics_telemetry(self) -> None:
+        if not messagebox.askyesno(
+            "Reiniciar Estadísticas",
+            "¿Querés volver a cero el historial de partidas, estilo de juego y contadores de tokens?",
+            parent=self._root,
+        ):
+            return
+        self._telemetry.reset_all()
+        self._refresh_analytics_dashboard()
+        self._var_status.set("✓ Estadísticas y contadores de uso de IA reiniciados.")
     def _refresh_hotkey_hint_label(self) -> None:
         hk_p = self._var_hk_pause.get().strip().upper() or "F9"
         hk_a = self._var_hk_analyze.get().strip().upper() or "F10"
@@ -1309,6 +1896,7 @@ class HUDMindGUI:
             profile_ids = [p.manifest.game_id for p in self._profiles]
             self._combo_profile.configure(values=profile_ids)
             self._combo_rules_game.configure(values=profile_ids)
+            self._combo_stats_game.configure(values=["all", *profile_ids])
             self._var_profile.set(dlg.created_game_id)
             self._var_rules_game.set(dlg.created_game_id)
             self._load_selected_game_rules()
@@ -1891,6 +2479,7 @@ class HUDMindGUI:
         self._btn_start.configure(state="normal")
         self._btn_stop.configure(state="disabled")
         self._var_status.set("Coach detenido — 0% CPU en reposo.")
+        self._refresh_analytics_dashboard()
 
     def _stop_coach(self, wait_seconds: float = 0.0) -> None:
         proc = self._process

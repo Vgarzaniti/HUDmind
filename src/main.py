@@ -27,6 +27,7 @@ from src.capture.mss_capture import MSSCaptureStrategy, VideoMockCaptureStrategy
 from src.capture.observer import ScreenObserver
 from src.config.hotkeys import GlobalHotkeyManager
 from src.config.settings import AppSettings, RuntimeMetrics, configure_logging
+from src.config.telemetry import TelemetryStore
 from src.config.user_store import ProviderAccount, load_accounts, load_effective_settings
 from src.output.overlay import TransparentOverlay, enable_windows_dpi_awareness
 from src.output.tts import AudioPlayer, VoiceService
@@ -67,12 +68,18 @@ class GameCopilotOrchestrator:
         enable_hotkeys: bool | None = None,
         ai_client: Any | None = None,
         accounts: list[ProviderAccount] | None = None,
+        telemetry: TelemetryStore | None = None,
     ) -> None:
         self._settings = settings
         self._test_mode = test_mode
         self._forced_profile_id = forced_profile_id
         self._dry_run = dry_run
         self.metrics = RuntimeMetrics()
+        self._telemetry: TelemetryStore | None = (
+            telemetry
+            if telemetry is not None
+            else (None if (use_synthetic_mock or mock_source is not None or ai_client is not None) else TelemetryStore())
+        )
 
         voice_enabled = settings.enable_voice if enable_voice is None else enable_voice
         overlay_enabled = settings.enable_overlay if enable_overlay is None else enable_overlay
@@ -151,6 +158,7 @@ class GameCopilotOrchestrator:
                 accounts=resolved_accounts,
                 settings=settings,
                 on_failover=self._on_provider_failover,
+                telemetry=self._telemetry,
             )
 
         self._active_profile: GameProfile | None = None
@@ -341,6 +349,12 @@ class GameCopilotOrchestrator:
             self._filter_pipeline.reset()
             self._state_machine.reset()
             self._memory.clear()
+            if self._telemetry is not None:
+                self._telemetry.start_match_session(
+                    game_id=profile.manifest.game_id,
+                    game_name=profile.manifest.display_name,
+                    coach_mode=self._settings.coach_mode,
+                )
             self._observer.update_fps(profile.manifest.capture_fps)
             if not self._user_paused:
                 self._observer.resume()
@@ -376,6 +390,8 @@ class GameCopilotOrchestrator:
                 "Juego '%s' ya no está en primer plano; pausando captura.",
                 self._active_profile.manifest.display_name,
             )
+            if self._telemetry is not None:
+                self._telemetry.finish_active_match()
             self._observer.pause()
 
     async def _profile_watcher_loop(self) -> None:
@@ -470,6 +486,8 @@ class GameCopilotOrchestrator:
 
             if filtered is None or filtered.encoded_bytes is None:
                 self.metrics.record_filter(filter_ms, passed=False)
+                if self._telemetry is not None:
+                    self._telemetry.record_frame_filtered()
                 continue
 
             # Frame passed pipeline (or manual F10 request)
@@ -572,6 +590,8 @@ class GameCopilotOrchestrator:
         await self._voice.stop()
         if self._ai_client is not None:
             await self._ai_client.close_session()
+        if self._telemetry is not None:
+            self._telemetry.finish_active_match()
         self._overlay.close()
         snap = self.metrics.snapshot()
         logger.info(

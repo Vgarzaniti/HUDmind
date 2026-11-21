@@ -18,6 +18,7 @@ from src.ai.providers import (
     extract_coach_response_from_text,
 )
 from src.config.settings import AppSettings
+from src.config.telemetry import PlaystyleMetrics, TelemetryStore
 from src.config.user_store import (
     ProviderAccount,
     load_accounts,
@@ -261,3 +262,78 @@ async def test_auto_free_fallback_appends_keyless_providers_and_rotates_silently
     assert res == expected
     assert "Pollinations" in router.active_account_label
     await router.close_session()
+
+
+def test_telemetry_store_tracks_matches_playstyle_gauges_and_model_costs(
+    tmp_path: Path,
+) -> None:
+    store = TelemetryStore(tmp_path / "telemetry.json")
+    store.start_match_session("rob_run", "ROB RUN", "match")
+    store.record_frame_filtered()
+    store.record_frame_filtered()
+
+    # 1. Free-tier Gemini call with aggressive peek warning
+    store.record_ai_call(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        account_label="Gemini Principal",
+        system_chars=2400,
+        efficiency_mode="eco",
+        used_cache=True,
+        latency_ms=340.0,
+        response=CoachResponse(
+            should_intervene=True,
+            urgency="high",
+            overlay_text="No hagas peek solo contra SWAT",
+            voice_line="Tenés mucho botín, esperá cobertura y extraé.",
+        ),
+    )
+
+    # 2. Paid OpenAI call with clean frame (should_intervene=False)
+    store.record_ai_call(
+        provider="openai",
+        model="gpt-4o-mini",
+        account_label="ChatGPT Backup",
+        system_chars=2400,
+        efficiency_mode="eco",
+        used_cache=True,
+        latency_ms=510.0,
+        response=CoachResponse(
+            should_intervene=False,
+            urgency="low",
+            overlay_text="",
+            voice_line="",
+        ),
+    )
+
+    match = store.finish_active_match()
+    assert match is not None
+    assert match.game_id == "rob_run"
+    assert 0 <= match.performance_score <= 100
+    assert match.playstyle.aggression > 52  # Nudged up by peek/SWAT/botín intervention
+
+    # Add a second simulated match for AoE2
+    store.record_simulated_match(
+        game_id="aoe2_de",
+        game_name="Age of Empires II: DE",
+        performance_score=90,
+        playstyle=PlaystyleMetrics(
+            aggression=60,
+            patience=85,
+            tactical_awareness=88,
+            resource_efficiency=92,
+            consistency=89,
+        ),
+    )
+
+    summary_all = store.get_dashboard_summary("all")
+    assert summary_all["matches_today"] == 2
+    assert summary_all["total_matches_all_time"] == 2
+    assert summary_all["last_match_performance"] == 90
+    assert 0 < summary_all["recent_avg_performance"] <= 100
+    assert summary_all["total_tokens"] > 0
+    assert summary_all["total_actual_cost_usd"] > 0.0  # Paid gpt-4o-mini incurred small cost
+    assert summary_all["total_saved_cost_usd"] > 0.0  # Free Gemini + cache + pHash saved cost
+
+    summary_rob = store.get_dashboard_summary("rob_run")
+    assert summary_rob["last_match_performance"] == match.performance_score

@@ -28,6 +28,7 @@ from src.ai.gemini_client import (
     build_language_instruction,
 )
 from src.config.settings import AppSettings, redact_secrets_in_text
+from src.config.telemetry import TelemetryStore
 from src.config.user_store import PROVIDER_PRESETS, ProviderAccount, ProviderKind
 from src.pipeline.schemas import CoachResponse
 from src.profiles.loader import GameProfile
@@ -540,9 +541,11 @@ class ProviderFailoverRouter:
         on_failover: Callable[[str, str], None] | None = None,
         provider_factory: Callable[[ProviderAccount, AppSettings], BaseAIProvider] | None = None,
         auto_free_fallback: bool | None = None,
+        telemetry: TelemetryStore | None = None,
     ) -> None:
         self._settings = settings
         self._on_failover = on_failover
+        self._telemetry = telemetry
         factory = provider_factory or create_provider_adapter
         use_auto_fallback = (
             (provider_factory is None) if auto_free_fallback is None else auto_free_fallback
@@ -632,12 +635,16 @@ class ProviderFailoverRouter:
             )
             candidates = [(earliest_idx, self._providers[earliest_idx])]
 
+        sys_chars = len(profile.system_prompt) + len(profile.knowledge_base)
+        eff_mode = self._settings.token_efficiency_mode
+
         for idx, prov in candidates:
             acc = prov.account
             if acc.id not in self._prepared_ids and self._active_profile is not None:
                 await prov.prepare_session(self._active_profile)
                 self._prepared_ids.add(acc.id)
 
+            t_call_start = time.monotonic()
             result = await prov.analyze_frame(
                 image_bytes=image_bytes,
                 mime_type=mime_type,
@@ -647,8 +654,21 @@ class ProviderFailoverRouter:
                 text_language=t_lang,
                 voice_language=v_lang,
             )
+            call_ms = (time.monotonic() - t_call_start) * 1000.0
+            used_cache = acc.provider in ("gemini", "claude", "openai")
 
             if result.response is not None:
+                if self._telemetry is not None:
+                    self._telemetry.record_ai_call(
+                        provider=acc.provider,
+                        model=acc.model,
+                        account_label=acc.label,
+                        system_chars=sys_chars,
+                        efficiency_mode=eff_mode,
+                        used_cache=used_cache,
+                        latency_ms=call_ms,
+                        response=result.response,
+                    )
                 if idx != self._active_index:
                     prev_label = self._providers[self._active_index].account.label
                     self._active_index = idx
@@ -662,6 +682,20 @@ class ProviderFailoverRouter:
             if code == 422:
                 logger.debug("Proveedor '%s' devolvió salida no estructurada (422).", acc.label)
                 return None
+
+            if self._telemetry is not None:
+                self._telemetry.record_ai_call(
+                    provider=acc.provider,
+                    model=acc.model,
+                    account_label=acc.label,
+                    system_chars=sys_chars,
+                    efficiency_mode=eff_mode,
+                    used_cache=used_cache,
+                    latency_ms=call_ms,
+                    response=None,
+                    rate_limited=(code in (402, 429)),
+                    failed=(code not in (402, 429)),
+                )
 
             if code in (401, 402, 403):
                 cooldown_s = 600.0

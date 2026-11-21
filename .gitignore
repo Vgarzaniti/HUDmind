@@ -4,6 +4,7 @@
 .env.*.local
 config/accounts.json
 config/user_config.json
+config/telemetry.json
 profiles/*/custom_rules.md
 
 # Python artifacts
