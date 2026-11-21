@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import messagebox, ttk
 from typing import Any
 
@@ -856,9 +857,39 @@ class HUDMindGUI:
             ),
             bg=_BG_CARD,
             fg=_FG_MUTED,
-            wraplength=780,
+            wraplength=820,
             justify="left",
-        ).pack(anchor="w", pady=(0, 10))
+        ).pack(anchor="w", pady=(0, 6))
+
+        vision_banner = tk.Frame(
+            self._tab_accounts,
+            bg=_BG_ROOT,
+            padx=10,
+            pady=6,
+            highlightthickness=1,
+            highlightbackground=_ACCENT,
+        )
+        vision_banner.pack(fill="x", pady=(0, 8))
+        tk.Label(
+            vision_banner,
+            text=(
+                "👁 Para que la IA VEA en vivo a tus compañeros, rivales, marcador y minimapa (Visión 100% Real), "
+                "activá una Key gratuita en 15 segundos:"
+            ),
+            bg=_BG_ROOT,
+            fg=_ACCENT,
+            font=("Segoe UI", 8, "bold"),
+        ).pack(side="left", padx=(0, 8))
+        ttk.Button(
+            vision_banner,
+            text="🌐 Sacar Key Gratis Gemini",
+            command=lambda: webbrowser.open("https://aistudio.google.com/apikey"),
+        ).pack(side="right", padx=(4, 0))
+        ttk.Button(
+            vision_banner,
+            text="🌐 Sacar Key Gratis Groq",
+            command=lambda: webbrowser.open("https://console.groq.com/keys"),
+        ).pack(side="right")
 
         cols = ("prio", "label", "provider", "model", "key", "status")
         self._tree = ttk.Treeview(self._tab_accounts, columns=cols, show="headings", height=11)

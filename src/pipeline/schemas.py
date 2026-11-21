@@ -44,6 +44,13 @@ class CoachResponse(BaseModel):
             "Cadena vacía si should_intervene es false."
         ),
     )
+    match_context: str = Field(
+        default="",
+        description=(
+            "Resumen opcional de 1 línea del estado observado en pantalla "
+            "(marcador/reloj, compañeros, rivales y recursos)."
+        ),
+    )
 
     @property
     def is_actionable(self) -> bool:
@@ -202,18 +209,61 @@ class InterventionRecord:
 
 
 class InterventionMemory:
-    """Bounded rolling memory of recent interventions to prevent repetitive callouts."""
+    """Bounded rolling memory of recent interventions and match context blackboard."""
 
     def __init__(self, max_items: int = 3, ttl_seconds: float = 90.0) -> None:
         self._max_items = max(1, max_items)
         self._ttl_seconds = max(5.0, ttl_seconds)
         self._records: deque[InterventionRecord] = deque(maxlen=self._max_items)
+        self._context_notes: deque[tuple[float, str]] = deque(maxlen=5)
 
-    def record(self, response: CoachResponse, now: float | None = None) -> None:
-        """Store an actionable coach response."""
+    @staticmethod
+    def _significant_tokens(text: str) -> set[str]:
+        cleaned = "".join(ch.lower() if ch.isalnum() else " " for ch in text)
+        return {w for w in cleaned.split() if len(w) >= 4}
+
+    def is_repetitive(self, response: CoachResponse, now: float | None = None) -> bool:
+        """Return True if `response` duplicates or heavily overlaps any recent intervention."""
         if not response.is_actionable:
+            return False
+        current = time.monotonic() if now is None else now
+        recent_items = self.recent(now=current)
+        if not recent_items:
+            return False
+
+        cand_ov = response.overlay_text.strip().lower()
+        cand_vc = response.voice_line.strip().lower()
+        cand_tokens = self._significant_tokens(f"{cand_ov} {cand_vc}")
+
+        for rec in recent_items:
+            rec_ov = rec.overlay_text.strip().lower()
+            rec_vc = rec.voice_line.strip().lower()
+            if (cand_ov and cand_ov == rec_ov) or (cand_vc and cand_vc == rec_vc):
+                return True
+            rec_tokens = self._significant_tokens(f"{rec_ov} {rec_vc}")
+            if cand_tokens and rec_tokens:
+                overlap = len(cand_tokens & rec_tokens) / min(len(cand_tokens), len(rec_tokens))
+                if overlap >= 0.58:
+                    return True
+        return False
+
+    def record_context(self, match_context: str, now: float | None = None) -> None:
+        """Record a 1-line match state snapshot (teammates, rivals, score, phase)."""
+        clean = match_context.strip()
+        if not clean:
             return
         current = time.monotonic() if now is None else now
+        if self._context_notes and self._context_notes[-1][1].lower() == clean.lower():
+            return
+        self._context_notes.append((current, clean[:160]))
+
+    def record(self, response: CoachResponse, now: float | None = None) -> None:
+        """Store an actionable coach response and any observed match context."""
+        current = time.monotonic() if now is None else now
+        if response.match_context.strip():
+            self.record_context(response.match_context, now=current)
+        if not response.is_actionable:
+            return
         self._records.append(
             InterventionRecord(
                 timestamp=current,
@@ -231,22 +281,45 @@ class InterventionMemory:
             self._records.popleft()
         return list(self._records)
 
+    def recent_context_notes(self, now: float | None = None) -> list[tuple[int, str]]:
+        """Return unexpired match state blackboard snapshots as `(age_seconds, text)`."""
+        current = time.monotonic() if now is None else now
+        cutoff = current - max(self._ttl_seconds, 180.0)
+        while self._context_notes and self._context_notes[0][0] < cutoff:
+            self._context_notes.popleft()
+        return [(max(0, int(current - ts)), note) for ts, note in self._context_notes]
+
     def format_prompt_context(self, now: float | None = None) -> str:
-        """Format a compact anti-repetition reminder for Gemini, or empty string if none."""
+        """Format match context blackboard + anti-repetition history for the AI prompt."""
         current = time.monotonic() if now is None else now
         items = self.recent(now=current)
-        if not items:
+        ctx_notes = self.recent_context_notes(now=current)
+        if not items and not ctx_notes:
             return ""
-        lines = [
-            "Intervenciones recientes ya comunicadas al jugador "
-            "(NO repitas el mismo consejo salvo escalada crítica):"
-        ]
-        for rec in items:
-            age_s = max(0, int(current - rec.timestamp))
-            summary = rec.overlay_text or rec.voice_line
-            lines.append(f"- hace {age_s}s [{rec.urgency.upper()}]: {summary}")
-        return "\n".join(lines)
+
+        blocks: list[str] = []
+        if ctx_notes:
+            ctx_lines = [
+                "Contexto acumulado de la partida (evolución de marcador, compañeros y rivales):"
+            ]
+            for age_s, note in ctx_notes:
+                ctx_lines.append(f"- hace {age_s}s: {note}")
+            blocks.append("\n".join(ctx_lines))
+
+        if items:
+            lines = [
+                "Intervenciones recientes ya comunicadas al jugador "
+                "(PROHIBIDO repetir el mismo consejo, frase o eje táctico):"
+            ]
+            for rec in items:
+                age_s = max(0, int(current - rec.timestamp))
+                summary = rec.overlay_text or rec.voice_line
+                lines.append(f"- hace {age_s}s [{rec.urgency.upper()}]: {summary}")
+            blocks.append("\n".join(lines))
+
+        return "\n\n".join(blocks)
 
     def clear(self) -> None:
         """Erase rolling memory when switching game profiles."""
         self._records.clear()
+        self._context_notes.clear()

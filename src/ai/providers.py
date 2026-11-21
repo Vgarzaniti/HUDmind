@@ -29,6 +29,7 @@ from src.ai.gemini_client import (
     GeminiCoachClient,
     build_coach_mode_instruction,
     build_language_instruction,
+    build_universal_game_context_instruction,
 )
 from src.config.settings import AppSettings, redact_secrets_in_text
 from src.config.telemetry import TelemetryStore
@@ -41,7 +42,8 @@ logger = logging.getLogger(__name__)
 _JSON_SCHEMA_REMINDER = (
     'Respond ONLY with valid JSON matching exactly: '
     '{"should_intervene": bool, "urgency": "low"|"medium"|"high", '
-    '"overlay_text": "max 8 words or empty", "voice_line": "max 12 words or empty"}. '
+    '"overlay_text": "max 8 words or empty", "voice_line": "max 12 words or empty", '
+    '"match_context": "1-line summary of score/timer, visible teammates, rivals, and player resources"}. '
     "No markdown fences, no extra prose."
 )
 
@@ -132,6 +134,8 @@ def _extract_cpu_hud_telemetry(image_bytes: bytes) -> str:
         return "HUD_CPU_SCAN: active_gameplay_frame"
 
 
+_LOCAL_TIP_CURSOR: dict[str, int] = {}
+
 _LOCAL_TACTICAL_TIPS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
     "rocket_league": {
         "training": [
@@ -141,6 +145,12 @@ _LOCAL_TACTICAL_TIPS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
             ("medium", "Igualá la velocidad de la pelota antes de la pared", "Acompañá la pelota a su misma velocidad antes de despegar desde la pared."),
             ("low", "Practicá Half-Flip para girar 180° al instante", "Cancelá el backflip a mitad de giro y usá Air Roll para enderezar el auto."),
             ("medium", "Golpeá con la esquina delantera para máxima potencia", "Pegale justo después del pique con la esquina del paragolpes delantero."),
+            ("low", "Alterná Ball Cam al driblar para leer el espacio", "Desactivá Ball Cam un instante al llevarla en el techo para ver la cancha."),
+            ("medium", "Practicá Speedflip diagonal hacia los saques", "Combiná flip diagonal con cancelación rápida para llegar primero al kickoff."),
+            ("low", "Usá Wave Dash al bajar de la pared al piso", "Esperá a que las ruedas traseras toquen el suelo y hacé dodge hacia adelante."),
+            ("medium", "Apuntá al palo lejano cambiando el ángulo con Air Roll", "Rotá levemente el auto antes del impacto para cruzar el tiro al segundo palo."),
+            ("low", "Controlá el primer toque suave para no regalar posesión", "Soltá el acelerador justo al recibir la pelota para amortiguar el control."),
+            ("medium", "En Backboard Read leé el rebote antes de saltar", "No saltes apurado al travesaño: esperá a ver la altura del pique en la pared."),
         ],
         "match": [
             ("medium", "Rotá siempre por el segundo palo (Back Post)", "Volvé por el lado opuesto a la jugada y cubrí desde el segundo palo."),
@@ -148,6 +158,11 @@ _LOCAL_TACTICAL_TIPS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
             ("low", "Juntá pads chicos por el centro sin abrirte", "No pierdas posición yendo al boost de 100, recogé pads chicos en la rotación."),
             ("medium", "Hacé Shadow Defense y cerrá el ángulo al rincón", "Acompañá de espaldas a su misma velocidad y forzá el tiro hacia la esquina."),
             ("low", "Ya vas en supersónico: ahorrá el boost restante", "En velocidad supersónica no gastes más boost, guardalo para el próximo salto."),
+            ("high", "Leé a tus rivales: si el rival llega antes, hacé Fake Challenge", "El rival tiene posesión clara, amagá la entrada y girá rápido para cubrir el pase."),
+            ("medium", "Mirá dónde está tu compañero antes de despejar al medio", "No despejes al centro si hay rivales esperando; sacala por la pared lateral."),
+            ("low", "Robá el boost de esquina rival solo si tu compañero cubre", "Al salir del ataque llevate el pad grande rival únicamente si atrás hay relevo."),
+            ("medium", "En 2v1 buscá el pase o el bump al arquero rival", "Tenés superioridad numérica con tu compañero: buscá pase cruzado o demolición."),
+            ("high", "Último hombre: no te tires a pelotas 50/50 en campo rival", "Sos el último defensor, priorizá ganar tiempo hasta que rote tu compañero."),
         ],
     },
     "rob_run": {
@@ -155,12 +170,17 @@ _LOCAL_TACTICAL_TIPS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
             ("low", "Memorizá dos rutas de escape antes del atraco", "Revisá los callejones traseros y el punto de extracción más cercano al banco."),
             ("medium", "Practicá hackeo rápido vigilando las cámaras", "Desactivá o esquivá el cono de las cámaras antes de forzar la bóveda."),
             ("low", "Ubicá los cajeros rápidos para botín seguro", "Identificá los cajeros de salida rápida para sumar efectivo sin subir alerta."),
+            ("medium", "Medí el tiempo de sprint entre coberturas", "Practicá cruzar las avenidas abiertas usando vehículos como pantalla visual."),
+            ("low", "Verificá las salidas secundarias de la joyería", "Abrí siempre la puerta trasera antes de romper las vitrinas principales."),
+            ("medium", "Coordiná el peso de la mochila con tu velocidad", "Recordá que el botín pesado reduce tu sprint al escapar de las patrullas."),
         ],
         "match": [
             ("high", "Alerta policial alta: cortá y extraé el botín ya", "El nivel policial está subiendo en Looty Bay, asegurá la mochila en extracción."),
             ("medium", "Llevás buen botín: evitá patrullas y asegurá", "Con la mochila cargada no inicies otro robo grande, priorizá extraer limpio."),
             ("high", "Rodeado con poco botín: considerá Surrender", "Si tenés equipamiento caro y poco botín en mochila, rendirte protege tu loadout."),
             ("medium", "En Co-op cubrí la puerta mientras cargan bolsas", "Mantené línea de visión en la entrada principal mientras tu compañero vacía la bóveda."),
+            ("high", "Compañero caído cerca: usá cobertura antes de revivir", "Limpiá el ángulo de la patrulla o tirá distracción antes de levantar a tu aliado."),
+            ("low", "Alterná zonas de Looty Bay para bajar presión policial", "No encadenes dos robos en la misma cuadra si ya hay sirenas cerca."),
         ],
     },
     "aoe2_de": {
@@ -169,12 +189,16 @@ _LOCAL_TACTICAL_TIPS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
             ("medium", "Construí casa preventiva a 3 de población del límite", "Adelantá la próxima casa ahora para no quedar bloqueado de población."),
             ("low", "Mantené al Scout en círculos buscando las 8 ovejas", "No dejes el explorador quieto: encontrá las dos manadas de ovejas y los dos jabalíes."),
             ("medium", "Al llegar a ~35 aldeanos investigá Carretilla", "Con tus granjas activas recordá meter Carretilla para potenciar toda la economía."),
+            ("low", "Atraé el jabalí con 2 flechas y guarecé si baja vida", "Dispará dos veces con el aldeano y corré directo debajo del Centro Urbano."),
+            ("medium", "Repartí 6 aldeanos en ovejas y 4 en madera al inicio", "Asegurá seis en comida bajo el TC antes de mandar los cuatro al campamento maderero."),
         ],
         "match": [
             ("high", "Revisá aldeanos inactivos y cola del Centro Urbano", "Que no pare el Centro Urbano: meté aldeanos en cola y reasigná inactivos."),
             ("medium", "Gastá la madera flotante en granjas o edificios", "Si acumulás madera, transformala ya en granjas o un segundo edificio militar."),
             ("medium", "Prepará contrarresto según la unidad rival", "Contra caballería mezclá Piqueros; contra arqueros sumá Guerrilleros o Mangoneles."),
             ("low", "Priorizá mejoras de herrería antes de pelear", "No tomes la pelea grande sin la mejora de armadura o ataque en la Herrería."),
+            ("high", "Explorá la base rival para ver sus edificios militares", "Mandá al Scout a revisar si el rival levantó Establos o Galerías de Tiro."),
+            ("medium", "Cerrá los huecos de tu base con empalizada y casas", "Usá las casas y el cuartel como muralla hacia el bosque para frenar raids."),
         ],
     },
     "example_cs2": {
@@ -182,23 +206,31 @@ _LOCAL_TACTICAL_TIPS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
             ("medium", "Frená en seco con Counter-Strafe antes del tiro", "Tocá la tecla opuesta para clavar velocidad cero antes de disparar la ráfaga."),
             ("low", "Mantené la mira a la altura de cabeza al abrir", "Pre-apuntá al ángulo a la altura del casco antes de asomar del muro."),
             ("medium", "Controlá las primeras 7 balas hacia abajo", "En el spray de rifle compensá verticalmente las primeras balas antes de corregir."),
+            ("low", "Practicá Jiggle Peek corto para sacar información", "Asomá medio hombro y volvé a cobertura para forzar el disparo del AWP rival."),
+            ("medium", "Combiná flash de rebote antes de salir a limpiar", "Rebotá la flash contra el marco para que explote detrás tuyo al abrir."),
         ],
         "match": [
             ("medium", "Revisá el radar: cubrí el hueco libre del equipo", "Mirá el minimapa un segundo para no apilarse todos en el mismo sitio."),
             ("high", "No asomes en seco sin flash ni humo de soporte", "Tenés utilidad disponible, tirá flash o humo antes de abrir ese ángulo largo."),
             ("medium", "Sincronizá tu compra con la economía del equipo", "Si tus compañeros hacen eco, guardá al menos dos mil dólares para comprar juntos."),
             ("high", "Jugá al tiempo de bomba y buscá el trade", "No regales un duelo aislado: jugá escondido con el tiempo o pegado a tu compañero."),
+            ("medium", "Ventaja numérica: jugá cruzado con tu compañero", "Están en superioridad numérica, armá fuego cruzado y no busques kills solo."),
+            ("high", "Cuidá el flanco si tus compañeros ya entraron al site", "Tus aliados ya tomaron el sitio, quedate sosteniendo la espalda contra la rotación."),
         ],
     },
     "example_valorant": {
         "training": [
             ("medium", "Dispará en ráfagas de 2-3 balas y movete", "En The Range practicá ráfaga corta, strafe lateral y parada limpia."),
             ("low", "Ajustá la mira en horizontal sin bajar el mouse", "Mantené la línea de cabeza constante al cambiar de un objetivo al siguiente."),
+            ("medium", "Practicá Deadzoning: dispará en el punto exacto del cambio", "Soltá el tiro único justo en el instante en que cambiás de izquierda a derecha."),
+            ("low", "Calentá flicks cortos al centro y volvé al eje", "Volvé siempre la mira al centro después de cada baja para mantener memoria muscular."),
         ],
         "match": [
             ("medium", "Guardá créditos para llegar a 3900 en la próxima", "Cuidá tu economía para asegurar rifle completo y escudo pesado en la siguiente."),
             ("high", "Usá tus habilidades antes de tomar el duelo 50/50", "No entres a mira pura teniendo habilidades listas para desplazar o cegar."),
             ("low", "Si te falta 1 punto de Ultimate, asegurá el orbe", "Estás cerca de tu definitiva: buscá el orbe con cobertura de un compañero."),
+            ("medium", "Leé las definitivas rivales en la barra superior", "Fijate arriba qué rivales tienen Ultimate lista antes de elegir por dónde entrar."),
+            ("high", "Entrá en segunda línea para tradear a tu Duelista", "Pegate a tu compañero de entrada para asegurar el trade inmediato si cae."),
         ],
     },
 }
@@ -210,9 +242,10 @@ def _generate_local_cpu_tactical_tip(
     recent_history: str,
     coach_mode: str,
 ) -> CoachResponse:
-    """Instant zero-latency local tactical coach fallback using HUD scan + profile rules."""
+    """Instant zero-latency local tactical coach fallback using HUD scan + strict rotation."""
+    game_id = profile.manifest.game_id
     game_tips = _LOCAL_TACTICAL_TIPS.get(
-        profile.manifest.game_id,
+        game_id,
         _LOCAL_TACTICAL_TIPS["example_cs2"],
     )
     mode_key = "training" if coach_mode == "training" else "match"
@@ -227,29 +260,20 @@ def _generate_local_cpu_tactical_tip(
                 candidates.insert(0, ("medium", short_overlay, clean[:140]))
 
     hist_low = recent_history.lower()
-    unseen = [c for c in candidates if c[1].lower()[:22] not in hist_low]
+    unseen = [c for c in candidates if c[1].lower()[:20] not in hist_low]
     pool = unseen if unseen else candidates
 
-    # Use HUD scan hash/red-alert level to pick deterministically varied tip
-    high_red = "red_alert=2" in hud_scan or "red_alert=3" in hud_scan or "red_alert=4" in hud_scan
-    if high_red:
-        high_candidates = [c for c in pool if c[0] == "high"]
-        if high_candidates:
-            urg, ov, vc = high_candidates[0]
-            return CoachResponse(
-                should_intervene=True,
-                urgency="high",
-                overlay_text=ov,
-                voice_line=vc,
-            )
+    cursor_key = f"{game_id}:{mode_key}"
+    cur = _LOCAL_TIP_CURSOR.get(cursor_key, 0)
+    _LOCAL_TIP_CURSOR[cursor_key] = cur + 1
 
-    idx = int(time.monotonic()) % len(pool)
-    urg, ov, vc = pool[idx]
+    urg, ov, vc = pool[cur % len(pool)]
     return CoachResponse(
         should_intervene=True,
         urgency=urg,  # type: ignore[arg-type]
         overlay_text=ov,
         voice_line=vc,
+        match_context=f"{profile.manifest.display_name} [{mode_key}] | {hud_scan[:80]}",
     )
 
 
@@ -278,6 +302,7 @@ def _compose_dynamic_turn_prompt(
     """Build the minimal per-frame dynamic prompt."""
     parts = [
         "Analizá este frame actual del juego usando los anclajes del HUD y las reglas del sistema.",
+        build_universal_game_context_instruction(),
         build_language_instruction(text_language, voice_language),
     ]
     mode_note = build_coach_mode_instruction(coach_mode)

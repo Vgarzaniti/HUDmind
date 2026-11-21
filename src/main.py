@@ -21,7 +21,7 @@ if __package__ is None or __package__ == "":
 
 from typing import Any
 
-from src.ai.providers import ProviderFailoverRouter
+from src.ai.providers import ProviderFailoverRouter, _generate_local_cpu_tactical_tip
 from src.capture.base import CapturedFrame, CaptureStrategy
 from src.capture.mss_capture import MSSCaptureStrategy, VideoMockCaptureStrategy
 from src.capture.observer import ScreenObserver
@@ -115,7 +115,7 @@ class GameCopilotOrchestrator:
 
         # 4. Intervention State Machine + Anti-Repetition Memory + Filter Pipeline
         self._state_machine = InterventionStateMachine()
-        self._memory = InterventionMemory(max_items=3, ttl_seconds=90.0)
+        self._memory = InterventionMemory(max_items=12, ttl_seconds=420.0)
         self._filter_pipeline = FilterPipeline(
             detector=self._profile_loader.detector,
             state_machine=self._state_machine,
@@ -555,7 +555,19 @@ class GameCopilotOrchestrator:
         response: CoachResponse | None,
         profile: GameProfile,
     ) -> bool:
-        """Apply InterventionStateMachine rules and dispatch overlay + voice outputs."""
+        """Apply InterventionStateMachine rules, deduplicate, and dispatch overlay + voice."""
+        if response is not None and response.match_context.strip():
+            self._memory.record_context(response.match_context)
+
+        if response is not None and response.is_actionable and self._memory.is_repetitive(response):
+            logger.debug("Consejo repetitivo detectado (%r); rotando a eje táctico fresco.", response.overlay_text)
+            response = _generate_local_cpu_tactical_tip(
+                profile,
+                "",
+                self._memory.format_prompt_context(),
+                self._settings.coach_mode,
+            )
+
         should_deliver = self._state_machine.finish_analysis(response)
         if not should_deliver or response is None:
             logger.debug("Gemini decidió silencio (should_intervene=False).")

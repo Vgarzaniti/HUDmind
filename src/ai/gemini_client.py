@@ -27,6 +27,22 @@ class _CoachWireSchema(BaseModel):
     urgency: UrgencyLevel
     overlay_text: str
     voice_line: str
+    match_context: str = ""
+
+
+def build_universal_game_context_instruction() -> str:
+    """Universal cross-game visual context protocol (scales to any game without custom code)."""
+    return (
+        "UNIVERSAL TACTICAL CONTEXT PROTOCOL (applies to ANY game): "
+        "1) TEAMMATES & RIVALS: Read visible ally/enemy positions on screen and minimap/radar/scoreboard "
+        "(numerical advantage 2v1/1v2, teammate double-commit risk, enemy threat angle, or rival unit/weapon composition). "
+        "2) SCORE, CLOCK & PHASE: Read scoreboard/timer/round/age to adapt risk (if losing late, suggest proactive play; "
+        "if winning or carrying high loot/lead, prioritize clock control, cover, or extraction). "
+        "3) MATCH MEMORY (`match_context`): Populate `match_context` with a compact 1-line summary of the scene "
+        "(max 16 words, e.g. 'Score 1-2 1:40 | Ally pushing left wall, 2 rivals mid | Boost 24') to track match evolution. "
+        "4) STRICT ANTI-REPETITION: Never repeat any tip, phrase, or tactical topic listed in recent history; "
+        "always select a fresh tactical or mechanical observation from the current scene."
+    )
 
 _FRAME_ANALYSIS_PROMPT = (
     "Analizá este frame actual del juego usando las reglas y anclajes del HUD provistos. "
@@ -361,6 +377,7 @@ class GeminiCoachClient:
 
         prompt_parts = [
             _FRAME_ANALYSIS_PROMPT,
+            build_universal_game_context_instruction(),
             build_language_instruction(text_language, voice_language),
         ]
         mode_note = build_coach_mode_instruction(self._settings.coach_mode)
