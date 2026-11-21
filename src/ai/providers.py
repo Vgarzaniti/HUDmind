@@ -28,7 +28,7 @@ from src.ai.gemini_client import (
     build_language_instruction,
 )
 from src.config.settings import AppSettings, redact_secrets_in_text
-from src.config.user_store import ProviderAccount
+from src.config.user_store import PROVIDER_PRESETS, ProviderAccount, ProviderKind
 from src.pipeline.schemas import CoachResponse
 from src.profiles.loader import GameProfile
 
@@ -490,6 +490,39 @@ def create_provider_adapter(account: ProviderAccount, settings: AppSettings) -> 
     return OpenAICompatibleProvider(account, settings)
 
 
+def build_auto_free_fallback_accounts(
+    existing: list[ProviderAccount],
+) -> list[ProviderAccount]:
+    """Append built-in keyless free fallback providers at the bottom of the rotation pool.
+
+    Ensures that if all user-configured API keys hit rate/quota limits (or if no keys
+    were configured at all), the router automatically continues iterating through free
+    no-login providers without interrupting gameplay.
+    """
+    result = list(existing)
+    existing_providers = {a.provider for a in result if a.is_ready()}
+
+    fallback_specs: list[tuple[str, ProviderKind, int]] = [
+        ("auto-free-pollinations", "pollinations", 990),
+        ("auto-free-ollama", "ollama", 991),
+    ]
+    for acc_id, kind, prio in fallback_specs:
+        if kind not in existing_providers:
+            preset = PROVIDER_PRESETS[kind]
+            result.append(
+                ProviderAccount(
+                    id=acc_id,
+                    label=f"{preset.display_name} (Auto-Fallback)",
+                    provider=kind,
+                    model=preset.default_model,
+                    base_url=preset.default_base_url,
+                    priority=prio,
+                    enabled=True,
+                )
+            )
+    return result
+
+
 class ProviderFailoverRouter:
     """Automatic multi-account failover & quota rotation coordinator.
 
@@ -506,12 +539,19 @@ class ProviderFailoverRouter:
         *,
         on_failover: Callable[[str, str], None] | None = None,
         provider_factory: Callable[[ProviderAccount, AppSettings], BaseAIProvider] | None = None,
+        auto_free_fallback: bool | None = None,
     ) -> None:
         self._settings = settings
         self._on_failover = on_failover
         factory = provider_factory or create_provider_adapter
+        use_auto_fallback = (
+            (provider_factory is None) if auto_free_fallback is None else auto_free_fallback
+        )
 
-        ready_accounts = [a for a in accounts if a.is_ready()]
+        effective_accounts = (
+            build_auto_free_fallback_accounts(accounts) if use_auto_fallback else list(accounts)
+        )
+        ready_accounts = [a for a in effective_accounts if a.is_ready()]
         ready_accounts.sort(key=lambda a: (a.priority, a.label.lower()))
 
         self._providers: list[BaseAIProvider] = [factory(acc, settings) for acc in ready_accounts]

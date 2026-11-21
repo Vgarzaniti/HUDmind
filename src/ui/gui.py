@@ -1823,14 +1823,11 @@ class HUDMindGUI:
 
         ready = [a for a in self._accounts if a.is_ready()]
         if not self._var_dry_run.get() and not ready:
-            messagebox.showwarning(
-                "Sin cuentas IA configuradas",
-                "Agregá al menos una cuenta IA en la pestaña 'Cuentas IA & Rotación' "
-                "(o activá Dry-Run para probar sin IA).",
-                parent=self._root,
-            )
-            self._notebook.select(self._tab_accounts)
-            return
+            from src.ai.providers import build_auto_free_fallback_accounts
+
+            self._accounts = build_auto_free_fallback_accounts(self._accounts)
+            self._refresh_accounts_tree()
+            self._save_all()
 
         cmd = [sys.executable, "-m", "src.main"]
         if self._var_mode.get() == "test":

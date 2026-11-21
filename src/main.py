@@ -184,13 +184,11 @@ class GameCopilotOrchestrator:
         return allowed
 
     def _on_provider_failover(self, previous_label: str, new_label: str) -> None:
-        """Notify user discreetly when quota rotation switches to a backup AI account."""
-        title = self._active_profile.manifest.display_name if self._active_profile else "HUDMind"
-        self._overlay.show_message(
-            text=f"Rotación automática IA: {new_label}",
-            urgency="low",
-            title=title,
-            duration_seconds=3.5,
+        """Silently log quota rotation in background without interrupting gameplay overlay."""
+        logger.info(
+            "Rotación automática silenciosa de IA: '%s' -> '%s'",
+            previous_label,
+            new_label,
         )
 
     async def run(self, max_runtime_seconds: float | None = None) -> None:
@@ -815,12 +813,13 @@ def main(argv: list[str] | None = None) -> int:
 
     ready_accounts = [a for a in accounts if a.is_ready()]
     if not args.dry_run and not ready_accounts:
-        logger.error(
-            "No hay cuentas IA configuradas. Abrí el panel gráfico con 'hudmind --gui' "
-            "para agregar cuentas (Gemini, ChatGPT, Claude, Groq, OpenRouter, Ollama sin login), "
-            "o configurá GEMINI_API_KEY en '.env'."
+        from src.ai.providers import build_auto_free_fallback_accounts
+
+        ready_accounts = build_auto_free_fallback_accounts([])
+        logger.info(
+            "Sin API keys configuradas: iniciando automáticamente con el pool gratuito de respaldo (%d proveedores).",
+            len(ready_accounts),
         )
-        return 1
 
     orchestrator = GameCopilotOrchestrator(
         settings=settings,

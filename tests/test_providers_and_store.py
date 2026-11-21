@@ -14,6 +14,7 @@ from src.ai.providers import (
     GeminiProviderAdapter,
     ProviderCallResult,
     ProviderFailoverRouter,
+    build_auto_free_fallback_accounts,
     extract_coach_response_from_text,
 )
 from src.config.settings import AppSettings
@@ -225,3 +226,38 @@ def test_user_store_saves_and_reloads_accounts_and_preferences(tmp_path: Path) -
     assert loaded[0].masked_key() == "AIza...2345"
     assert loaded[1].provider == "ollama" and loaded[1].is_ready()
     assert cfg_file.is_file()
+
+
+async def test_auto_free_fallback_appends_keyless_providers_and_rotates_silently() -> None:
+    profile = GameProfileLoader(Path("profiles")).get_by_id("rob_run")
+    assert profile is not None
+
+    # User only configured 1 keyed account (or 0 accounts): auto fallback adds pollinations + ollama
+    keyed = [ProviderAccount(id="user-key-1", label="Mi Key 1", provider="gemini", api_key="AIzaKey12345", priority=1)]
+    expanded = build_auto_free_fallback_accounts(keyed)
+    providers_in_pool = [a.provider for a in expanded]
+    assert providers_in_pool == ["gemini", "pollinations", "ollama"]
+
+    expected = CoachResponse(
+        should_intervene=True,
+        urgency="medium",
+        overlay_text="Extraé el botín ahora",
+        voice_line="Llevás mucho botín, andá al punto de extracción.",
+    )
+    outcomes = {
+        "user-key-1": ProviderCallResult(error_code=429, error_message="quota limit", quota_or_auth_failure=True),
+        "auto-free-pollinations": ProviderCallResult(response=expected),
+        "auto-free-ollama": ProviderCallResult(response=expected),
+    }
+
+    router = ProviderFailoverRouter(
+        accounts=keyed,
+        settings=AppSettings(),
+        provider_factory=lambda acc, cfg: _StubProvider(acc, cfg, outcomes[acc.id]),
+        auto_free_fallback=True,
+    )
+    await router.prepare_session(profile)
+    res = await router.analyze_frame(b"jpeg", "image/jpeg", profile)
+    assert res == expected
+    assert "Pollinations" in router.active_account_label
+    await router.close_session()
