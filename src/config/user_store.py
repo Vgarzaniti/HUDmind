@@ -51,12 +51,17 @@ PROVIDER_PRESETS: dict[ProviderKind, ProviderPreset] = {
     "gemini": ProviderPreset(
         kind="gemini",
         display_name="Google Gemini (AI Studio)",
-        default_model="gemini-2.5-flash",
-        suggested_models=["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+        default_model="gemini-3.5-flash-lite",
+        suggested_models=[
+            "gemini-3.5-flash-lite",
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-flash",
+        ],
         default_base_url="",
         requires_api_key=True,
         is_free_tier=True,
-        hint="Free tier en aistudio.google.com · Soporta Context Caching · Podés agregar varias cuentas.",
+        hint="Free tier en aistudio.google.com · Visión HD en tiempo real · Context Caching.",
     ),
     "openai": ProviderPreset(
         kind="openai",

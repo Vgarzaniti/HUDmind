@@ -29,6 +29,7 @@ CoachModeType = Literal["auto", "match", "training"]
 # Multi-provider secret detection patterns (ISO/IEC 27001 / OWASP CWE-532)
 _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"AIza[0-9A-Za-z_\-]{20,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"AQ\.[0-9A-Za-z_\-\.]{16,}"), "[REDACTED_API_KEY]"),
     (re.compile(r"sk-(?:proj-|ant-|or-v1-)?[0-9A-Za-z_\-]{16,}"), "[REDACTED_API_KEY]"),
     (re.compile(r"gsk_[0-9A-Za-z_\-]{16,}"), "[REDACTED_API_KEY]"),
     (re.compile(r"(?i)(Bearer\s+)[0-9A-Za-z._\-]{12,}"), r"\1[REDACTED_TOKEN]"),
