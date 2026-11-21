@@ -231,7 +231,15 @@ class AppSettings(BaseSettings):
     enable_overlay: bool = Field(default=True, description="Enable click-through overlay.")
     enable_hotkeys: bool = Field(
         default=True,
-        description="Enable native Windows global hotkeys (F9=pause/mute, F10=analyze now).",
+        description="Enable native Windows global hotkeys (pause/mute & analyze now).",
+    )
+    hotkey_toggle_pause: str = Field(
+        default="F9",
+        description="Global hotkey for pausing/resuming the coach (e.g. 'F9', 'Alt+F9').",
+    )
+    hotkey_analyze_now: str = Field(
+        default="F10",
+        description="Global hotkey for triggering immediate analysis (e.g. 'F10', 'Alt+F10').",
     )
 
     # --- TTS Configuration ---

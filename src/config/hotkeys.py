@@ -1,6 +1,7 @@
 """Native Windows global hotkeys using Win32 RegisterHotKey (no low-level keyboard hooks).
 
-Using `RegisterHotKey` + a dedicated message-loop thread consumes ~0% CPU while idle
+Using `RegisterHotKey` + a dedicated message-loop thread consumes ~0% CPU while idle,
+supports user-configurable keys and modifiers (e.g. `F9`, `F10`, `Alt+F10`, `Ctrl+Shift+C`),
 and avoids `WH_KEYBOARD_LL` hooks that competitive anti-cheat engines may flag.
 """
 
@@ -17,17 +18,118 @@ from ctypes import wintypes
 
 logger = logging.getLogger(__name__)
 
-# Win32 constants
+# Win32 message & modifier constants
 _WM_HOTKEY = 0x0312
 _WM_QUIT = 0x0012
+_MOD_ALT = 0x0001
+_MOD_CONTROL = 0x0002
+_MOD_SHIFT = 0x0004
 _MOD_NOREPEAT = 0x4000
-
-# Virtual-Key codes
-VK_F9 = 0x78
-VK_F10 = 0x79
 
 _HOTKEY_ID_TOGGLE_PAUSE = 1
 _HOTKEY_ID_ANALYZE_NOW = 2
+
+# Standard Virtual-Key codes supported for configurable bindings
+_VK_MAP: dict[str, int] = {
+    **{f"F{i}": 0x6F + i for i in range(1, 13)},  # F1 (0x70) .. F12 (0x7B)
+    **{chr(c): c for c in range(ord("A"), ord("Z") + 1)},
+    **{str(d): 0x30 + d for d in range(10)},
+    **{f"NUM{d}": 0x60 + d for d in range(10)},
+    "TAB": 0x09,
+    "SPACE": 0x20,
+    "PRIOR": 0x21,
+    "PAGEUP": 0x21,
+    "NEXT": 0x22,
+    "PAGEDOWN": 0x22,
+    "END": 0x23,
+    "HOME": 0x24,
+    "INSERT": 0x2D,
+    "DELETE": 0x2E,
+    "PAUSE": 0x13,
+    "ADD": 0x6B,
+    "SUBTRACT": 0x6D,
+    "MULTIPLY": 0x6A,
+    "DIVIDE": 0x6F,
+}
+
+_MODIFIER_MAP: dict[str, tuple[int, str]] = {
+    "CTRL": (_MOD_CONTROL, "Ctrl"),
+    "CONTROL": (_MOD_CONTROL, "Ctrl"),
+    "ALT": (_MOD_ALT, "Alt"),
+    "SHIFT": (_MOD_SHIFT, "Shift"),
+}
+
+SUPPORTED_HOTKEY_PRESETS: list[str] = [
+    "F6",
+    "F7",
+    "F8",
+    "F9",
+    "F10",
+    "F11",
+    "F12",
+    "INSERT",
+    "HOME",
+    "END",
+    "PAGEUP",
+    "PAGEDOWN",
+    "PAUSE",
+    "Alt+F9",
+    "Alt+F10",
+    "Ctrl+F9",
+    "Ctrl+F10",
+    "Alt+C",
+    "Alt+X",
+    "Ctrl+Shift+A",
+]
+
+
+def parse_hotkey_string(hotkey_str: str) -> tuple[int, int, str]:
+    """Parse a hotkey specification like `'F9'` or `'Ctrl+Alt+F10'`.
+
+    Returns:
+        `(win32_modifiers, vk_code, normalized_label)`
+    Raises:
+        `ValueError` if the string is empty or contains an unknown key token.
+    """
+    raw = hotkey_str.strip()
+    if not raw:
+        raise ValueError("El atajo de teclado no puede estar vacío.")
+
+    parts = [p.strip().upper() for p in raw.split("+") if p.strip()]
+    if not parts:
+        raise ValueError(f"Atajo de teclado inválido: {hotkey_str!r}")
+
+    mod_mask = 0
+    key_token: str | None = None
+
+    for token in parts:
+        if token in _MODIFIER_MAP:
+            bit, _ = _MODIFIER_MAP[token]
+            mod_mask |= bit
+        elif key_token is None and token in _VK_MAP:
+            key_token = token
+        else:
+            raise ValueError(
+                f"Tecla no reconocida o inválida en atajo '{hotkey_str}': '{token}'. "
+                "Ejemplos válidos: F9, F10, Alt+F10, Ctrl+F8, INSERT, HOME."
+            )
+
+    if key_token is None:
+        raise ValueError(
+            f"El atajo '{hotkey_str}' debe incluir una tecla principal (ej. F9, F10, C, INSERT)."
+        )
+
+    ordered_mods: list[str] = []
+    if mod_mask & _MOD_CONTROL:
+        ordered_mods.append("Ctrl")
+    if mod_mask & _MOD_ALT:
+        ordered_mods.append("Alt")
+    if mod_mask & _MOD_SHIFT:
+        ordered_mods.append("Shift")
+
+    vk_code = _VK_MAP[key_token]
+    canonical = "+".join([*ordered_mods, key_token])
+    return mod_mask, vk_code, canonical
 
 
 class GlobalHotkeyManager:
@@ -37,11 +139,21 @@ class GlobalHotkeyManager:
         self,
         *,
         enabled: bool = True,
+        pause_hotkey: str = "F9",
+        analyze_hotkey: str = "F10",
         on_toggle_pause: Callable[[], None] | None = None,
         on_analyze_now: Callable[[], None] | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         self._enabled = enabled and (sys.platform == "win32")
+        try:
+            _, _, self._pause_hotkey = parse_hotkey_string(pause_hotkey.strip() or "F9")
+        except ValueError:
+            self._pause_hotkey = "F9"
+        try:
+            _, _, self._analyze_hotkey = parse_hotkey_string(analyze_hotkey.strip() or "F10")
+        except ValueError:
+            self._analyze_hotkey = "F10"
         self._on_toggle_pause = on_toggle_pause
         self._on_analyze_now = on_analyze_now
         self._loop = loop
@@ -55,6 +167,14 @@ class GlobalHotkeyManager:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def pause_hotkey(self) -> str:
+        return self._pause_hotkey
+
+    @property
+    def analyze_hotkey(self) -> str:
+        return self._analyze_hotkey
 
     def start(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Start the Win32 hotkey message-loop thread."""
@@ -111,18 +231,29 @@ class GlobalHotkeyManager:
         self._thread_id = int(kernel32.GetCurrentThreadId())
         self._registered_ids.clear()
 
-        bindings = [
-            (_HOTKEY_ID_TOGGLE_PAUSE, VK_F9, "F9 (Pausar/Reanudar)"),
-            (_HOTKEY_ID_ANALYZE_NOW, VK_F10, "F10 (Analizar ahora)"),
+        raw_specs = [
+            (_HOTKEY_ID_TOGGLE_PAUSE, self._pause_hotkey, "Pausar/Reanudar"),
+            (_HOTKEY_ID_ANALYZE_NOW, self._analyze_hotkey, "Analizar ahora"),
         ]
 
         active_labels: list[str] = []
-        for hk_id, vk_code, label in bindings:
-            if user32.RegisterHotKey(None, hk_id, _MOD_NOREPEAT, vk_code):
+        for hk_id, spec_str, action_desc in raw_specs:
+            try:
+                mod_mask, vk_code, canonical = parse_hotkey_string(spec_str)
+            except ValueError as exc:
+                logger.warning("Atajo inválido '%s' (%s); usando default.", spec_str, exc)
+                fallback_key = "F9" if hk_id == _HOTKEY_ID_TOGGLE_PAUSE else "F10"
+                mod_mask, vk_code, canonical = parse_hotkey_string(fallback_key)
+
+            if user32.RegisterHotKey(None, hk_id, mod_mask | _MOD_NOREPEAT, vk_code):
                 self._registered_ids.append(hk_id)
-                active_labels.append(label)
+                active_labels.append(f"{canonical} ({action_desc})")
             else:
-                logger.warning("No se pudo registrar hotkey %s (puede estar en uso).", label)
+                logger.warning(
+                    "No se pudo registrar hotkey %s (%s) — puede estar en uso por otra app.",
+                    canonical,
+                    action_desc,
+                )
 
         self._running = bool(self._registered_ids)
         if active_labels:

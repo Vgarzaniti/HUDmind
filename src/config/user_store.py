@@ -202,6 +202,8 @@ _PERSISTED_SETTING_KEYS = (
     "enable_voice",
     "enable_overlay",
     "enable_hotkeys",
+    "hotkey_toggle_pause",
+    "hotkey_analyze_now",
     "tts_engine",
     "tts_voice",
     "tts_rate",

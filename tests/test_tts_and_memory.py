@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from src.ai.gemini_client import build_coach_mode_instruction
-from src.config.hotkeys import GlobalHotkeyManager
+from src.config.hotkeys import GlobalHotkeyManager, parse_hotkey_string
 from src.config.settings import AppSettings
 from src.output.tts import AudioPlayer, EdgeTTSEngine, TTSEngine, VoiceService
 from src.pipeline.schemas import CoachResponse, InterventionMemory
@@ -92,13 +92,34 @@ def test_hotkey_manager_dispatches_callbacks_and_respects_disabled() -> None:
         enabled=False,
         on_toggle_pause=lambda: events.append("pause"),
         on_analyze_now=lambda: events.append("analyze"),
+        pause_hotkey="alt+f8",
+        analyze_hotkey="ctrl+shift+a",
     )
+    assert mgr.pause_hotkey == "Alt+F8"
+    assert mgr.analyze_hotkey == "Ctrl+Shift+A"
     mgr.start()
     assert mgr.is_running is False
     mgr.dispatch_action(1)
     mgr.dispatch_action(2)
     mgr.stop()
     assert events == ["pause", "analyze"]
+
+
+def test_parse_hotkey_string_supports_modifiers_numpad_and_rejects_invalid() -> None:
+    mods, vk, canonical = parse_hotkey_string("f9")
+    assert mods == 0
+    assert vk == 0x78
+    assert canonical == "F9"
+
+    mods2, vk2, canonical2 = parse_hotkey_string(" shift + ctrl + num5 ")
+    assert mods2 == (0x0002 | 0x0004)
+    assert vk2 == 0x65
+    assert canonical2 == "Ctrl+Shift+NUM5"
+
+    with pytest.raises(ValueError, match="no reconocida"):
+        parse_hotkey_string("Ctrl+TeclaInexistente")
+    with pytest.raises(ValueError, match="vacío"):
+        parse_hotkey_string("   ")
 
 
 def test_multi_game_profiles_load_both_cs2_and_valorant() -> None:

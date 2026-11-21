@@ -135,6 +135,8 @@ class GameCopilotOrchestrator:
             enabled=hotkeys_enabled,
             on_toggle_pause=self.toggle_user_pause,
             on_analyze_now=self.trigger_on_demand_analysis,
+            pause_hotkey=settings.hotkey_toggle_pause,
+            analyze_hotkey=settings.hotkey_analyze_now,
         )
 
         # 6. Multi-Provider AI Failover Router (Gemini, ChatGPT, Claude, Groq, OpenRouter, Ollama...)
@@ -268,14 +270,15 @@ class GameCopilotOrchestrator:
         self._stop_event.set()
 
     def toggle_user_pause(self) -> None:
-        """Toggle manual pause/mute state (bound to F9 hotkey)."""
+        """Toggle manual pause/mute state (bound to configurable pause hotkey)."""
         self._user_paused = not self._user_paused
         title = self._active_profile.manifest.display_name if self._active_profile else "HUDMind"
+        hk_pause = self._hotkeys.pause_hotkey
         if self._user_paused:
             self._observer.pause()
-            logger.info("Coach PAUSADO por el usuario (F9 para reanudar).")
+            logger.info("Coach PAUSADO por el usuario (%s para reanudar).", hk_pause)
             self._overlay.show_message(
-                text="Coach PAUSADO — presioná F9 para reanudar",
+                text=f"Coach PAUSADO — presioná {hk_pause} para reanudar",
                 urgency="low",
                 title=title,
                 duration_seconds=2.5,
@@ -292,15 +295,19 @@ class GameCopilotOrchestrator:
             )
 
     def trigger_on_demand_analysis(self) -> None:
-        """Request immediate tactical analysis on next frame bypassing pHash & cooldown (F10)."""
+        """Request immediate tactical analysis on next frame bypassing pHash & cooldown."""
+        hk_analyze = self._hotkeys.analyze_hotkey
         if self._active_profile is None:
-            logger.info("Solicitud manual (F10) ignorada: no hay perfil de juego activo.")
+            logger.info(
+                "Solicitud manual (%s) ignorada: no hay perfil de juego activo.",
+                hk_analyze,
+            )
             return
         self._force_analysis_pending = True
         if self._user_paused:
             self._user_paused = False
             self._observer.resume()
-        logger.info("Análisis táctico bajo demanda solicitado (F10).")
+        logger.info("Análisis táctico bajo demanda solicitado (%s).", hk_analyze)
         self._overlay.show_message(
             text="Analizando situación actual...",
             urgency="low",

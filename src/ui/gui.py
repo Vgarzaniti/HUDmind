@@ -24,6 +24,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from src.config.hotkeys import SUPPORTED_HOTKEY_PRESETS, parse_hotkey_string
 from src.config.settings import (
     AppSettings,
     OverlayPosition,
@@ -491,6 +492,8 @@ class HUDMindGUI:
         self._var_min_interval = tk.DoubleVar(value=s.min_inference_interval_seconds)
         self._var_low_priority = tk.BooleanVar(value=s.low_process_priority)
         self._var_hotkeys = tk.BooleanVar(value=s.enable_hotkeys)
+        self._var_hk_pause = tk.StringVar(value=s.hotkey_toggle_pause)
+        self._var_hk_analyze = tk.StringVar(value=s.hotkey_analyze_now)
         self._var_file_log = tk.BooleanVar(value=s.enable_file_logging)
         self._var_status = tk.StringVar(value="Listo — 0% CPU en reposo.")
 
@@ -664,13 +667,22 @@ class HUDMindGUI:
             command=self._show_overlay_preview,
         ).pack(side="right")
 
-        tk.Label(
-            self._tab_control,
-            text="Atajos en partida: F9 = Pausar/Reanudar | F10 = Pedir consejo ahora (saltea cooldown)",
+        hk_bar = tk.Frame(self._tab_control, bg=_BG_CARD)
+        hk_bar.pack(fill="x", pady=(0, 6))
+        self._lbl_hotkeys_hint = tk.Label(
+            hk_bar,
+            text="",
             bg=_BG_CARD,
             fg=_ACCENT,
             font=("Segoe UI", 8, "bold"),
-        ).pack(anchor="w", pady=(0, 6))
+        )
+        self._lbl_hotkeys_hint.pack(side="left")
+        ttk.Button(
+            hk_bar,
+            text="⌨ Configurar Atajos",
+            command=lambda: self._notebook.select(self._tab_perf),
+        ).pack(side="right")
+        self._refresh_hotkey_hint_label()
 
         # Live console log viewer
         self._txt_logs = tk.Text(
@@ -1110,17 +1122,178 @@ class HUDMindGUI:
 
         ttk.Checkbutton(
             grid,
-            text="Habilitar hotkeys globales nativos (F9 Pausar / F10 Analizar ahora)",
+            text="Habilitar hotkeys globales nativos (Win32 RegisterHotKey · 100% compatible Anti-Cheat)",
             variable=self._var_hotkeys,
         ).grid(row=6, column=0, columnspan=3, sticky="w", **pad)
+
+        tk.Label(grid, text="Atajo Pausar / Reanudar Coach:", bg=_BG_CARD, fg=_FG_TEXT).grid(
+            row=7, column=0, sticky="w", **pad
+        )
+        hk_pause_row = tk.Frame(grid, bg=_BG_CARD)
+        hk_pause_row.grid(row=7, column=1, columnspan=2, sticky="w", **pad)
+        combo_pause = ttk.Combobox(
+            hk_pause_row,
+            textvariable=self._var_hk_pause,
+            values=SUPPORTED_HOTKEY_PRESETS,
+            width=16,
+        )
+        combo_pause.pack(side="left", padx=(0, 8))
+        combo_pause.bind("<<ComboboxSelected>>", lambda _e: self._refresh_hotkey_hint_label())
+        ttk.Button(
+            hk_pause_row,
+            text="🎹 Capturar Tecla",
+            command=lambda: self._capture_hotkey_dialog(
+                self._var_hk_pause, "Pausar / Reanudar Coach"
+            ),
+        ).pack(side="left")
+
+        tk.Label(
+            grid,
+            text="Atajo Pedir Consejo Ahora (saltea cooldown):",
+            bg=_BG_CARD,
+            fg=_FG_TEXT,
+        ).grid(row=8, column=0, sticky="w", **pad)
+        hk_analyze_row = tk.Frame(grid, bg=_BG_CARD)
+        hk_analyze_row.grid(row=8, column=1, columnspan=2, sticky="w", **pad)
+        combo_analyze = ttk.Combobox(
+            hk_analyze_row,
+            textvariable=self._var_hk_analyze,
+            values=SUPPORTED_HOTKEY_PRESETS,
+            width=16,
+        )
+        combo_analyze.pack(side="left", padx=(0, 8))
+        combo_analyze.bind("<<ComboboxSelected>>", lambda _e: self._refresh_hotkey_hint_label())
+        ttk.Button(
+            hk_analyze_row,
+            text="🎹 Capturar Tecla",
+            command=lambda: self._capture_hotkey_dialog(
+                self._var_hk_analyze, "Pedir Consejo Ahora"
+            ),
+        ).pack(side="left")
 
         ttk.Checkbutton(
             grid,
             text="Guardar archivo de auditoría rotativo en logs/copilot.log",
             variable=self._var_file_log,
-        ).grid(row=7, column=0, columnspan=3, sticky="w", **pad)
+        ).grid(row=9, column=0, columnspan=3, sticky="w", **pad)
 
     # ------------------------------------------------------------------ Actions
+    def _refresh_hotkey_hint_label(self) -> None:
+        hk_p = self._var_hk_pause.get().strip().upper() or "F9"
+        hk_a = self._var_hk_analyze.get().strip().upper() or "F10"
+        self._lbl_hotkeys_hint.configure(
+            text=(
+                f"Atajos en partida: {hk_p} = Pausar/Reanudar | "
+                f"{hk_a} = Pedir consejo ahora (saltea cooldown)"
+            )
+        )
+
+    def _capture_hotkey_dialog(self, target_var: tk.StringVar, action_title: str) -> None:
+        dlg = tk.Toplevel(self._root)
+        dlg.title(f"Capturar Atajo — {action_title}")
+        dlg.configure(bg=_BG_ROOT)
+        dlg.resizable(False, False)
+        dlg.transient(self._root)
+        dlg.grab_set()
+
+        frame = tk.Frame(dlg, bg=_BG_CARD, padx=22, pady=18)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        tk.Label(
+            frame,
+            text=f"Asignar tecla para: {action_title}",
+            bg=_BG_CARD,
+            fg=_ACCENT,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(pady=(0, 8))
+        lbl_info = tk.Label(
+            frame,
+            text=(
+                "Presioná cualquier tecla o combinación\n"
+                "(ej: F8, Alt+F10, Ctrl+Shift+A, NUM5, INSERT)\n\n"
+                "Presioná ESC para cancelar."
+            ),
+            bg=_BG_CARD,
+            fg=_FG_TEXT,
+            justify="center",
+        )
+        lbl_info.pack()
+
+        ignored_modifiers = {
+            "CONTROL_L",
+            "CONTROL_R",
+            "SHIFT_L",
+            "SHIFT_R",
+            "ALT_L",
+            "ALT_R",
+            "WIN_L",
+            "WIN_R",
+            "META_L",
+            "META_R",
+            "SUPER_L",
+            "SUPER_R",
+        }
+        keysym_aliases = {
+            "KP_0": "NUM0",
+            "KP_1": "NUM1",
+            "KP_2": "NUM2",
+            "KP_3": "NUM3",
+            "KP_4": "NUM4",
+            "KP_5": "NUM5",
+            "KP_6": "NUM6",
+            "KP_7": "NUM7",
+            "KP_8": "NUM8",
+            "KP_9": "NUM9",
+            "KP_ADD": "ADD",
+            "PLUS": "ADD",
+            "KP_SUBTRACT": "SUBTRACT",
+            "MINUS": "SUBTRACT",
+            "KP_MULTIPLY": "MULTIPLY",
+            "ASTERISK": "MULTIPLY",
+            "KP_DIVIDE": "DIVIDE",
+            "SLASH": "DIVIDE",
+            "PRIOR": "PAGEUP",
+            "NEXT": "PAGEDOWN",
+        }
+
+        def _on_keypress(event: tk.Event[Any]) -> None:
+            sym = str(event.keysym).upper()
+            if sym == "ESCAPE":
+                dlg.destroy()
+                return
+            if sym in ignored_modifiers:
+                return
+
+            key_token = keysym_aliases.get(sym, sym)
+            state = int(getattr(event, "state", 0))
+            mods: list[str] = []
+            if state & 0x0004:
+                mods.append("Ctrl")
+            if (state & 0x20000) or (state & 0x0008):
+                mods.append("Alt")
+            if state & 0x0001:
+                mods.append("Shift")
+
+            candidate = "+".join([*mods, key_token])
+            try:
+                _, _, canonical = parse_hotkey_string(candidate)
+            except ValueError:
+                lbl_info.configure(
+                    text=f"Tecla '{candidate}' no soportada.\nProbá F1-F12, A-Z, 0-9, NUM0-9 o modificadores.",
+                    fg=_DANGER,
+                )
+                return
+
+            target_var.set(canonical)
+            self._refresh_hotkey_hint_label()
+            self._var_status.set(
+                f"✓ Atajo '{canonical}' asignado para {action_title} (recordá Guardar)."
+            )
+            dlg.destroy()
+
+        dlg.bind("<KeyPress>", _on_keypress)
+        dlg.wait_visibility()
+        dlg.focus_force()
+
     def _sync_voice_presets(self, keep_current: bool = False) -> None:
         lang = self._var_voice_lang.get()
         voices = _VOICE_PRESETS.get(lang, _VOICE_PRESETS["es"])
@@ -1299,6 +1472,17 @@ class HUDMindGUI:
     def _build_settings_from_ui(self) -> AppSettings:
         rate_val = self._safe_int(self._var_tts_rate, 10, -20, 40)
         rate_str = f"+{rate_val}%" if rate_val >= 0 else f"{rate_val}%"
+        _, _, canonical_pause = parse_hotkey_string(self._var_hk_pause.get().strip() or "F9")
+        _, _, canonical_analyze = parse_hotkey_string(self._var_hk_analyze.get().strip() or "F10")
+        if canonical_pause == canonical_analyze:
+            raise ValueError(
+                f"El atajo de Pausar ({canonical_pause}) y el de Pedir Consejo ({canonical_analyze}) "
+                "no pueden ser la misma tecla."
+            )
+        self._var_hk_pause.set(canonical_pause)
+        self._var_hk_analyze.set(canonical_analyze)
+        self._refresh_hotkey_hint_label()
+
         return self._settings.model_copy(
             update={
                 "text_language": self._var_text_lang.get(),
@@ -1307,6 +1491,8 @@ class HUDMindGUI:
                 "enable_voice": bool(self._var_enable_voice.get()),
                 "enable_overlay": bool(self._var_enable_overlay.get()),
                 "enable_hotkeys": bool(self._var_hotkeys.get()),
+                "hotkey_toggle_pause": canonical_pause,
+                "hotkey_analyze_now": canonical_analyze,
                 "tts_engine": self._var_tts_engine.get(),
                 "tts_voice": self._var_tts_voice.get().strip() or "es-AR-TomasNeural",
                 "tts_rate": rate_str,
