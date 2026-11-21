@@ -31,17 +31,19 @@ class _CoachWireSchema(BaseModel):
 
 
 def build_universal_game_context_instruction() -> str:
-    """Universal cross-game visual context protocol (scales to any game without custom code)."""
+    """Universal cross-game visual context + real human eSports coach persona."""
     return (
-        "UNIVERSAL TACTICAL CONTEXT PROTOCOL (applies to ANY game): "
-        "1) TEAMMATES & RIVALS: Read visible ally/enemy positions on screen and minimap/radar/scoreboard "
-        "(numerical advantage 2v1/1v2, teammate double-commit risk, enemy threat angle, or rival unit/weapon composition). "
-        "2) SCORE, CLOCK & PHASE: Read scoreboard/timer/round/age to adapt risk (if losing late, suggest proactive play; "
-        "if winning or carrying high loot/lead, prioritize clock control, cover, or extraction). "
-        "3) MATCH MEMORY (`match_context`): Populate `match_context` with a compact 1-line summary of the scene "
-        "(max 16 words, e.g. 'Score 1-2 1:40 | Ally pushing left wall, 2 rivals mid | Boost 24') to track match evolution. "
-        "4) STRICT ANTI-REPETITION: Never repeat any tip, phrase, or tactical topic listed in recent history; "
-        "always select a fresh tactical or mechanical observation from the current scene."
+        "REAL ESPORTS COACH PERSONA & LIVE CONTEXT PROTOCOL (applies to ANY game): "
+        "1) SPEAK LIKE A REAL HUMAN COACH ON DISCORD (NOT A TEXTBOOK): Use natural, energetic, concise, "
+        "direct coaching language (e.g. 'Ey, frená — ya saltó tu compañero, cubrí atrás!', "
+        "'¡Bien ahí, dale que quedan 50 segundos!', 'Ojo el boost, juntá pads chicos por el medio'). "
+        "Vary your coaching tone across moments: encouragement/momentum, urgent callout, clock/score reading, "
+        "or quick mechanical tweak. Never sound robotic or repeat textbook definitions. "
+        "2) TEAMMATES, RIVALS & SCORE IN REAL TIME: Read visible ally/enemy positions, scoreboard, timer, "
+        "and HUD resources. Adapt urgency to score & clock (trailing late = push; leading late = control clock). "
+        "3) MATCH MEMORY (`match_context`): Record a compact 1-line summary (score/timer, teammates, rivals, HUD) "
+        "so consecutive frames track match momentum. "
+        "4) STRICT ANTI-REPETITION: Never repeat the same phrase, drill, or topic from recent history."
     )
 
 _FRAME_ANALYSIS_PROMPT = (
@@ -64,17 +66,22 @@ def build_language_instruction(text_language: str = "es", voice_language: str = 
     )
 
 
-def build_coach_mode_instruction(coach_mode: str = "match") -> str:
-    """Return proactive practice instructions when running in training/drills mode."""
-    if coach_mode != "training":
-        return ""
-    return (
-        "TRAINING / PRACTICE MODE ACTIVE (coach_mode=training): "
-        "Do NOT ignore warmup, Free Play, The Range, Aim Botz, Art of War, or practice servers. "
-        "Act as a proactive mechanical & macro drill instructor: evaluate crosshair/car/build-order "
-        "execution in this frame and set should_intervene=true whenever you can offer a concrete "
-        "practice correction or next drill step."
-    )
+def build_coach_mode_instruction(coach_mode: str = "auto") -> str:
+    """Return mode instructions for auto-detection, competitive match, or practice drills."""
+    if coach_mode == "training":
+        return (
+            "TRAINING / PRACTICE MODE ACTIVE (coach_mode=training): "
+            "Do NOT ignore warmup, Free Play, The Range, Aim Botz, Art of War, or practice servers. "
+            "Act as a real, encouraging, hands-on mechanical & macro drill coach right beside the player."
+        )
+    if coach_mode == "auto":
+        return (
+            "AUTO-MODE DETECTION ACTIVE: First check whether the player is in a MAIN MENU / LOBBY "
+            "(if so, return should_intervene=false), in TRAINING / FREE PLAY / PRACTICE (no match timer/score, "
+            "practice arena -> coach mechanics naturally like a trainer), or in a COMPETITIVE MATCH "
+            "(timer, scoreboard, rivals -> coach teammates, rotations, clock & score like a live head coach)."
+        )
+    return ""
 
 
 class GeminiCoachClient:

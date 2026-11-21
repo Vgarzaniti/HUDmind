@@ -754,13 +754,19 @@ class HUDMindGUI:
         cmode_frame.grid(row=2, column=1, sticky="w", padx=6)
         ttk.Radiobutton(
             cmode_frame,
-            text="Partida Competitiva (Match)",
+            text="Automático (Detecta Competitivo / Entrenamiento solo)",
             variable=self._var_coach_mode,
-            value="match",
-        ).pack(side="left", padx=(0, 12))
+            value="auto",
+        ).pack(side="left", padx=(0, 10))
         ttk.Radiobutton(
             cmode_frame,
-            text="Modo Entrenamiento / Práctica (Free Play, Art of War, Aim Botz)",
+            text="Forzar Competitivo",
+            variable=self._var_coach_mode,
+            value="match",
+        ).pack(side="left", padx=(0, 10))
+        ttk.Radiobutton(
+            cmode_frame,
+            text="Forzar Entrenamiento",
             variable=self._var_coach_mode,
             value="training",
         ).pack(side="left")

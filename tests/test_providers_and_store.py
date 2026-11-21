@@ -341,3 +341,32 @@ def test_telemetry_store_tracks_matches_playstyle_gauges_and_model_costs(
 
     summary_rob = store.get_dashboard_summary("rob_run")
     assert summary_rob["last_match_performance"] == match.performance_score
+
+
+async def test_realtime_hud_ocr_auto_detects_match_training_menu_and_events() -> None:
+    import io
+
+    from PIL import Image, ImageDraw
+
+    from src.pipeline.hud_ocr import RealTimeHUDAnalyzer
+
+    analyzer = RealTimeHUDAnalyzer()
+
+    # 1. Competitive match frame with score, timer, low boost & teammate/rival
+    img_match = Image.new("RGB", (896, 504), (25, 45, 55))
+    d1 = ImageDraw.Draw(img_match)
+    d1.text((380, 14), "1   00:45   2", fill=(255, 255, 255))
+    d1.text((760, 440), "12", fill=(255, 210, 40))
+    buf1 = io.BytesIO()
+    img_match.save(buf1, format="JPEG")
+    st1 = await analyzer.analyze(buf1.getvalue(), game_id="rocket_league")
+    assert st1.detected_mode == "match"
+
+    # 2. Free Play / Training frame
+    img_train = Image.new("RGB", (896, 504), (35, 55, 45))
+    d2 = ImageDraw.Draw(img_train)
+    d2.text((340, 20), "ENTRENAMIENTO LIBRE", fill=(255, 255, 255))
+    buf2 = io.BytesIO()
+    img_train.save(buf2, format="JPEG")
+    st2 = await analyzer.analyze(buf2.getvalue(), game_id="rocket_league")
+    assert st2.detected_mode == "training"

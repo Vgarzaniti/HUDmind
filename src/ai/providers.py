@@ -34,6 +34,7 @@ from src.ai.gemini_client import (
 from src.config.settings import AppSettings, redact_secrets_in_text
 from src.config.telemetry import TelemetryStore
 from src.config.user_store import ProviderAccount, ProviderKind
+from src.pipeline.hud_ocr import LiveHUDState, RealTimeHUDAnalyzer
 from src.pipeline.schemas import CoachResponse
 from src.profiles.loader import GameProfile
 
@@ -496,6 +497,212 @@ def _compose_situational_spatial_candidates(
     return dynamic
 
 
+def _compose_human_coach_callout(
+    profile: GameProfile,
+    live_hud: LiveHUDState,
+    recent_history: str,
+    effective_mode: str,
+) -> CoachResponse:
+    """Generate authentic, real-time, human eSports coach callouts from live WinRT OCR + HUD."""
+    game_id = profile.manifest.game_id
+    game_name = profile.manifest.display_name
+    ally_ref = live_hud.ally_names[0] if live_hud.ally_names else "tu compañero"
+    rival_ref = live_hud.rival_names[0] if live_hud.rival_names else "el rival"
+    ally_sec = live_hud.ally_sector
+    rival_sec = live_hud.rival_sector
+    boost_or_res = (
+        live_hud.hud_number_br if live_hud.hud_number_br is not None else live_hud.resource_pct
+    )
+
+    # 1. Highest-priority real-time events read directly from the live screen via Windows 11 OCR
+    event_callouts: list[tuple[str, str, str]] = []
+    for ev in live_hud.live_events:
+        if "PARTIDA COMPETITIVA" in ev:
+            event_callouts.append(
+                (
+                    "medium",
+                    "¡Arrancó el partido! Cabeza fría y foco total",
+                    "Dale que arrancó el competitivo: rotá limpio atrás y no regales las primeras jugadas.",
+                )
+            )
+        elif "MODO ENTRENAMIENTO" in ev:
+            event_callouts.append(
+                (
+                    "low",
+                    "Modo práctica detectado: soltate y probá mecánicas",
+                    "Estamos en práctica libre, aprovechá para soltarte y probar toques nuevos sin miedo a errar.",
+                )
+            )
+        elif "CAMBIÓ EL MARCADOR" in ev and live_hud.score_text:
+            event_callouts.append(
+                (
+                    "high",
+                    f"¡Marcador {live_hud.score_text}! Reseteá ya para el saque",
+                    f"Cambió el partido a {live_hud.score_text}; respirá un segundo y poné todo el foco en el saque que viene.",
+                )
+            )
+        elif "PRÓRROGA" in ev or "OVERTIME" in ev:
+            event_callouts.append(
+                (
+                    "high",
+                    f"¡Prórroga ({live_hud.timer_text})! Gol de oro, primero cubrí",
+                    "Estamos en prórroga a gol de oro: cero apuros, asegurá atrás y castigá el error rival.",
+                )
+            )
+        elif "ÚLTIMO MINUTO" in ev and live_hud.timer_text:
+            event_callouts.append(
+                (
+                    "high",
+                    f"¡Quedan {live_hud.timer_text}! Cada jugada define el partido",
+                    f"Quedan {live_hud.timer_text} en el reloj, cabeza fría: no regales la posesión y definí simple.",
+                )
+            )
+        elif "BOOST/RECURSO CRÍTICO" in ev and game_id == "rocket_league":
+            event_callouts.append(
+                (
+                    "high",
+                    f"Ey, estás seco ({boost_or_res} boost): agarrá pads chicos",
+                    f"Quedaste en {boost_or_res} de boost, no te vayas a la esquina: juntá dos pads chicos por el medio.",
+                )
+            )
+        elif "VIDA BAJA" in ev and live_hud.hud_number_bl is not None:
+            event_callouts.append(
+                (
+                    "high",
+                    f"¡Ojo, estás a {live_hud.hud_number_bl} HP! Cubrite ya",
+                    f"Te queda {live_hud.hud_number_bl} de vida, no asomes solo: metete en cobertura y esperá a {ally_ref}.",
+                )
+            )
+        elif "DOUBLE COMMIT" in ev:
+            event_callouts.append(
+                (
+                    "high",
+                    f"¡Frená! {ally_ref} ya fue a {ally_sec}, cubrí atrás",
+                    f"Ey, frená un toque que {ally_ref} ya entró por {ally_sec}; quedate cubriendo el rebote.",
+                )
+            )
+        elif "PRESIÓN RIVAL 1v2" in ev:
+            event_callouts.append(
+                (
+                    "high",
+                    f"¡Te vienen dos por {rival_sec}! Aguantá y ganá tiempo",
+                    f"Ojo que tenés dos encima por {rival_sec}, no te tires de cabeza: aguantá haciendo tiempo hasta que vuelvan.",
+                )
+            )
+        elif "OPORTUNIDAD 2v1" in ev:
+            event_callouts.append(
+                (
+                    "medium",
+                    f"¡Dale que es 2v1 con {ally_ref}! Buscá el pase",
+                    f"Buena, tenés superioridad con {ally_ref} por {ally_sec}; buscá el pase simple o molestá a {rival_ref}.",
+                )
+            )
+
+    # 2. Natural human coach variety pool (encouragement, micro-adjustments, rival/ally reads)
+    human_drills: dict[str, dict[str, list[tuple[str, str, str]]]] = {
+        "rocket_league": {
+            "training": [
+                ("low", "¡Bien el ritmo! Probá aterrizar con Powerslide ahora", "Bien ahí ese ritmo, ahora tratá de caer con derrape para no perder ni un segundo de velocidad."),
+                ("medium", "Desafío rápido: acompañala suave hacia la pared", "Te propongo esta: dale un toque más suave antes de la pared para despegar pegado a la pelota."),
+                ("low", "Ojo el boost: probá toques cortitos en el aire", "En vez de dejar el boost apretado, hacé pulsitos cortos en el aire y vas a notar mucho más control."),
+                ("medium", "Bien ahí, ahora probá girar con Half-Flip rápido", "Buena recuperación, metele un Half-Flip limpio para volver mirando la pelota al instante."),
+                ("low", "Fijate el primer toque: soltá acelerador al recibir", "Soltá el gas una fracción de segundo cuando la recibís para bajarla muerta y armar jugada."),
+                ("medium", "Probá cruzarla fuerte al segundo palo con Air Roll", "Rotá un poquito la trompa con Air Roll antes de pegarle para meterla fuerte al ángulo lejano."),
+                ("low", "Sacá Ball Cam un segundo cuando la llevás arriba", "Cuando te quede en el techo, probá sacar Ball Cam un instante para ver bien dónde está el arco."),
+                ("medium", "Buena velocidad: meté Wave Dash al bajar de la pared", "Aprovechá la bajada de la pared para clavar un Wave Dash y quedar supersónico sin gastar boost."),
+            ],
+            "match": [
+                ("medium", f"Bien posicionado: cubrí {rival_sec} sin regalarte", f"Tranquilo, mantenete firme cubriendo {rival_sec} y dejá que {ally_ref} presione primero."),
+                ("low", f"¡Buena rotación! Juntá pads chicos por el medio ({boost_or_res}%)", f"Bien la vuelta, juntá pads chicos por el centro que ya estás en {boost_or_res} de boost y volvés al toque."),
+                ("medium", f"Leé a {rival_ref} por {rival_sec}: amagá y girá rápido", f"No hace falta tirarse a todo: amagale a {rival_ref} en {rival_sec} para que regale la pelota a tu compañero."),
+                ("high", f"¡Ojo el centro! No despejes hacia {rival_sec}", f"Sacala siempre por la pared lateral, no la regales al medio que está esperando {rival_ref}."),
+                ("low", "¡Dale que vamos bien! Si estás supersónico ahorrá boost", "Ya agarraste velocidad máxima, soltá el boost ahora y guardalo para el próximo salto."),
+            ],
+        },
+        "rob_run": {
+            "training": [
+                ("low", "Bien el recorrido: marcá dos salidas antes de entrar", "Tomate tres segundos para mirar el callejón de atrás así sabés por dónde salir si suenan sirenas."),
+                ("medium", "Probá forzar rápido vigilando el cono de cámaras", "Buena mano ahí, practicá girar la cámara mientras hackeás para que no te sorprenda una patrulla."),
+            ],
+            "match": [
+                ("high", f"¡Ojo movimiento en {rival_sec}! Cubrí antes de cargar", f"Detecto movimiento fuerte por {rival_sec}, limpiá la visual antes de seguir llenando la mochila."),
+                ("medium", f"Buen botín {live_hud.money_text}: pensá ya en extracción", "Llevás linda plata encima, no te ciegues con otro golpe y empezá a buscar la extracción limpia."),
+                ("low", f"Coordiná con {ally_ref}: uno carga y el otro vigila", f"Pegate al ritmo de {ally_ref} en {ally_sec}; mientras uno agarra el botín el otro cuida la puerta."),
+            ],
+        },
+        "aoe2_de": {
+            "training": [
+                ("high", "¡Che, que no pare el Centro Urbano!", "Acordate de la regla de oro: mirá el Centro Urbano cada diez segundos para que jamás quede parado."),
+                ("medium", "Bien la economía: adelantá una casa ahora", "Venís prolijo, tirá una casa preventiva antes de quedar trabado de población."),
+            ],
+            "match": [
+                ("high", f"¡Ojo actividad en {rival_sec}! Revisá inactivos y TC", f"Hay movimiento por {rival_sec}; mandá a producir el Centro Urbano y no dejes aldeanos parados."),
+                ("medium", "Gastá lo que sobra: convertí madera en granjas o tropas", "Tenés recursos acumulados, invertilos ya en granjas o en un segundo edificio militar para presionar."),
+            ],
+        },
+        "example_cs2": {
+            "training": [
+                ("medium", "Bien el tiro: frená en seco antes de disparar", "Buena mira, clavá bien el contra-strafe una décima antes de soltar la ráfaga para precisión pura."),
+                ("low", "Mantené la mira a la altura de cabeza al girar", "Fijate de no bajar la mira al doblar la esquina, dejala siempre a la altura del casco."),
+            ],
+            "match": [
+                ("medium", f"Bien ahí: jugá cruzado con {ally_ref} contra {rival_sec}", f"No regales duelos solos, armá fuego cruzado con {ally_ref} mirando hacia {rival_sec}."),
+                ("high", f"Tenés utilidad: tirá flash antes de abrir {rival_sec}", f"No asomes en seco hacia {rival_sec}, tirá una flash o humo rápido para ganar el duelo gratis."),
+            ],
+        },
+        "example_valorant": {
+            "training": [
+                ("medium", "Ráfaga de dos balas, pasito al costado y repetí", "Muy bien el tempo: soltá ráfagas cortitas, movete lateral y frená limpio para el siguiente tiro."),
+            ],
+            "match": [
+                ("medium", f"Apoyá a {ally_ref} en {ally_sec} para asegurar el trade", f"Quedate cerca de {ally_ref} en {ally_sec} así si lo cruzan desde {rival_sec} lo tradeás en el acto."),
+            ],
+        },
+    }
+
+    mode_key = "training" if effective_mode == "training" else "match"
+    game_pool = human_drills.get(game_id, human_drills["example_cs2"])
+    candidates: list[tuple[str, str, str]] = [*event_callouts]
+
+    if profile.custom_rules.strip():
+        for line in profile.custom_rules.splitlines():
+            clean = line.strip().lstrip("-*•0123456789. ").strip()
+            if len(clean) >= 12:
+                short_ov = clean[:75].rsplit(" ", 1)[0] if len(clean) > 75 else clean
+                candidates.append(("medium", short_ov, clean[:140]))
+
+    candidates.extend(game_pool.get(mode_key, game_pool["match"]))
+
+    hist_low = recent_history.lower()
+    unseen = [c for c in candidates if c[1].lower()[:18] not in hist_low]
+    pool = unseen if unseen else candidates
+
+    # Prefer live OCR events first when present and unseen
+    if event_callouts:
+        unseen_events = [c for c in event_callouts if c[1].lower()[:18] not in hist_low]
+        if unseen_events:
+            urg, ov, vc = unseen_events[0]
+            return CoachResponse(
+                should_intervene=True,
+                urgency=urg,  # type: ignore[arg-type]
+                overlay_text=ov,
+                voice_line=vc,
+                match_context=live_hud.short_context_line(game_name),
+            )
+
+    cursor_key = f"human:{game_id}:{mode_key}"
+    cur = _LOCAL_TIP_CURSOR.get(cursor_key, 0)
+    _LOCAL_TIP_CURSOR[cursor_key] = cur + 1
+    urg, ov, vc = pool[cur % len(pool)]
+    return CoachResponse(
+        should_intervene=True,
+        urgency=urg,  # type: ignore[arg-type]
+        overlay_text=ov,
+        voice_line=vc,
+        match_context=live_hud.short_context_line(game_name),
+    )
+
+
 def _generate_local_cpu_tactical_tip(
     profile: GameProfile,
     hud_scan: str,
@@ -748,40 +955,44 @@ class OpenAICompatibleProvider(BaseAIProvider):
             coach_mode=self._settings.coach_mode,
         )
 
-        # Keyless anonymous cloud mode (Pollinations & Airforce): use CPU Spatial Teammate/Rival/HUD scan
+        # Keyless anonymous cloud mode (Pollinations & Airforce): use Live WinRT OCR + Spatial context
         is_keyless_cloud = (
             self.account.provider in ("pollinations", "airforce")
             and not self.account.api_key.strip()
         )
+        live_hud: LiveHUDState | None = getattr(self, "_current_live_hud", None)
+        effective_mode: str = getattr(self, "_effective_mode", self._settings.coach_mode)
         spatial: SpatialFrameAnalysis | None = None
         hud_scan = ""
         if is_keyless_cloud:
-            spatial = analyze_frame_spatial_context(image_bytes)
-            hud_scan = spatial.to_prompt_telemetry()
+            if live_hud is not None:
+                hud_scan = live_hud.to_prompt_block(profile.manifest.display_name)
+            else:
+                spatial = analyze_frame_spatial_context(image_bytes)
+                hud_scan = spatial.to_prompt_telemetry()
             compact_sys = (
                 f"{profile.compact_system_prompt}\n\n"
                 f"# Reglas Clave ({profile.manifest.display_name}):\n"
-                f"{profile.compact_knowledge_base[:1200]}"
+                f"{profile.compact_knowledge_base[:1000]}"
             )
             proactive_directive = (
-                "MODO COACH PROACTIVO CON CONTEXTO ESPACIAL (COMPANEROS Y RIVALES): "
-                "Usá las posiciones de Compañeros, Rivales, Balance (2v1/1v2) y HUD_Recursos_Boost "
-                "de CONTEXTO_VISUAL_EN_VIVO para devolver SIEMPRE should_intervene=true con un "
-                f"consejo táctico específico para {profile.manifest.display_name}, sin repetir."
+                "HABLÁ COMO UN COACH DE ESPORTS HUMANO POR DISCORD (NUNCA ROBÓTICO NI DE LIBRO): "
+                "Usá las cifras REALES de RELOJ, MARCADOR, BOOST/RECURSOS, COMPAÑEROS, RIVALES y "
+                "EVENTOS EN TIEMPO REAL de abajo para tirar UN solo callout corto, natural y con energía "
+                f"(should_intervene=true, modo={effective_mode.upper()}), sin repetir consejos previos."
             )
             chosen_model = self.account.model.strip() or (
                 "openai-fast" if self.account.provider == "pollinations" else "open-mistral-nemo"
             )
             payload: dict[str, object] = {
                 "model": chosen_model,
-                "temperature": self._settings.gemini_temperature,
+                "temperature": min(0.65, max(0.35, self._settings.gemini_temperature + 0.25)),
                 "messages": [
                     {"role": "system", "content": compact_sys},
                     {
                         "role": "user",
                         "content": (
-                            f"Juego activo: {profile.manifest.display_name} ({profile.manifest.game_id}).\n"
-                            f"{hud_scan}\n{proactive_directive}\n\n{user_prompt}"
+                            f"{hud_scan}\n\n{proactive_directive}\n\n{user_prompt}"
                         ),
                     },
                 ],
@@ -825,7 +1036,17 @@ class OpenAICompatibleProvider(BaseAIProvider):
             )
         try:
             session = self._get_session()
-            async with session.post(endpoint, headers=self._build_headers(), json=payload) as resp:
+            req_timeout = (
+                aiohttp.ClientTimeout(total=2.6)
+                if is_keyless_cloud
+                else aiohttp.ClientTimeout(total=self._settings.gemini_timeout_seconds)
+            )
+            async with session.post(
+                endpoint,
+                headers=self._build_headers(),
+                json=payload,
+                timeout=req_timeout,
+            ) as resp:
                 if resp.status != 200:
                     err_body = (await resp.text())[:220]
                     return ProviderCallResult(
@@ -839,21 +1060,38 @@ class OpenAICompatibleProvider(BaseAIProvider):
                 content = first_msg.get("content") or ""
                 parsed = extract_coach_response_from_text(str(content))
                 if parsed is None or (is_keyless_cloud and not parsed.should_intervene):
+                    if is_keyless_cloud and live_hud is not None:
+                        return ProviderCallResult(
+                            response=_compose_human_coach_callout(
+                                profile,
+                                live_hud,
+                                recent_history,
+                                effective_mode,
+                            )
+                        )
                     if is_keyless_cloud and spatial is not None:
                         return ProviderCallResult(
                             response=_generate_local_cpu_tactical_tip(
                                 profile,
                                 hud_scan,
                                 recent_history,
-                                self._settings.coach_mode,
+                                effective_mode,
                                 spatial=spatial,
                             )
                         )
                     return ProviderCallResult(error_code=422, error_message="JSON inválido")
-                if is_keyless_cloud and spatial is not None and not parsed.match_context.strip():
-                    parsed = parsed.model_copy(
-                        update={"match_context": spatial.short_context_line(profile.manifest.display_name)}
+                if is_keyless_cloud and not parsed.match_context.strip():
+                    ctx_line = (
+                        live_hud.short_context_line(profile.manifest.display_name)
+                        if live_hud is not None
+                        else (
+                            spatial.short_context_line(profile.manifest.display_name)
+                            if spatial is not None
+                            else ""
+                        )
                     )
+                    if ctx_line:
+                        parsed = parsed.model_copy(update={"match_context": ctx_line})
                 return ProviderCallResult(response=parsed)
         except TimeoutError:
             return ProviderCallResult(error_code=408, error_message="timeout")
@@ -1024,7 +1262,7 @@ class AnthropicClaudeProvider(BaseAIProvider):
 
 
 class LocalSpatialCPUProvider(BaseAIProvider):
-    """Zero-latency, 100% free no-login spatial vision coach running locally on CPU."""
+    """Real-time (<50ms), 100% free no-login WinRT OCR + Spatial Coach running locally on CPU."""
 
     async def analyze_frame(
         self,
@@ -1037,12 +1275,23 @@ class LocalSpatialCPUProvider(BaseAIProvider):
         text_language: str = "es",
         voice_language: str = "es",
     ) -> ProviderCallResult:
+        live_hud: LiveHUDState | None = getattr(self, "_current_live_hud", None)
+        effective_mode: str = getattr(self, "_effective_mode", self._settings.coach_mode)
+        if live_hud is not None:
+            resp = _compose_human_coach_callout(
+                profile,
+                live_hud,
+                recent_history,
+                effective_mode,
+            )
+            return ProviderCallResult(response=resp)
+
         spatial = analyze_frame_spatial_context(image_bytes)
         resp = _generate_local_cpu_tactical_tip(
             profile,
             spatial.to_prompt_telemetry(),
             recent_history,
-            self._settings.coach_mode,
+            effective_mode,
             spatial=spatial,
         )
         return ProviderCallResult(response=resp)
@@ -1240,6 +1489,8 @@ class ProviderFailoverRouter:
         self._prepared_ids: set[str] = set()
         self._active_profile: GameProfile | None = None
         self._active_index: int = 0
+        self._hud_analyzer = RealTimeHUDAnalyzer()
+        self._last_detected_mode: str = "match"
 
     @property
     def account_count(self) -> int:
@@ -1267,6 +1518,7 @@ class ProviderFailoverRouter:
                     await prov.close_session()
         self._prepared_ids.clear()
         self._active_profile = profile
+        self._hud_analyzer.reset()
 
         if not self._providers:
             logger.error("No hay cuentas IA habilitadas en el pool de proveedores.")
@@ -1319,11 +1571,49 @@ class ProviderFailoverRouter:
         sys_chars = len(profile.system_prompt) + len(profile.knowledge_base)
         eff_mode = self._settings.token_efficiency_mode
 
+        # Real-time ~40ms Windows 11 Native OCR + Spatial HUD scan (auto-detects Match vs Training vs Menu)
+        live_hud: LiveHUDState | None = None
+        effective_coach_mode: str = self._settings.coach_mode
+        if len(image_bytes) > 64:
+            live_hud = await self._hud_analyzer.analyze(
+                image_bytes,
+                game_id=profile.manifest.game_id,
+            )
+            if self._settings.coach_mode == "auto":
+                if live_hud.detected_mode == "menu" and not force_advice:
+                    logger.debug("Menú/Lobby detectado automáticamente por OCR; coach en silencio.")
+                    return CoachResponse(should_intervene=False)
+                effective_coach_mode = (
+                    "training" if live_hud.detected_mode == "training" else "match"
+                )
+                if effective_coach_mode != self._last_detected_mode:
+                    self._last_detected_mode = effective_coach_mode
+                    logger.info(
+                        "Detección automática de modo: %s (OCR=%.0fms, timer=%r, score=%r)",
+                        effective_coach_mode.upper(),
+                        live_hud.ocr_ms,
+                        live_hud.timer_text,
+                        live_hud.score_text,
+                    )
+
+        keyless_cloud_tried = False
+
         for idx, prov in candidates:
             acc = prov.account
+            is_keyless_cloud = acc.provider in ("pollinations", "airforce") and not acc.api_key.strip()
+            # Never stall real-time gameplay chaining 8 rate-limited public cloud models on the same frame:
+            # try at most 1 keyless cloud model per frame (2.6s cap), then fall straight to instant local OCR coach.
+            if is_keyless_cloud and keyless_cloud_tried:
+                continue
+            if is_keyless_cloud:
+                keyless_cloud_tried = True
+
             if acc.id not in self._prepared_ids and self._active_profile is not None:
                 await prov.prepare_session(self._active_profile)
                 self._prepared_ids.add(acc.id)
+
+            prov._current_live_hud = live_hud  # type: ignore[attr-defined]
+            prov._effective_mode = effective_coach_mode  # type: ignore[attr-defined]
 
             t_call_start = time.monotonic()
             result = await prov.analyze_frame(
