@@ -925,8 +925,8 @@ class HUDMindGUI:
         )
         ttk.Button(
             quick,
-            text="+ Ollama Local (Gratis sin login)",
-            command=lambda: self._quick_add_preset("ollama"),
+            text="⚡ Cargar Pack 10 Modelos Gratis (SIN LOGIN)",
+            command=self._load_ten_free_nologin_pack,
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
             quick,
@@ -937,6 +937,11 @@ class HUDMindGUI:
             quick,
             text="+ OpenRouter :free",
             command=lambda: self._quick_add_preset("openrouter"),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            quick,
+            text="+ Ollama Local",
+            command=lambda: self._quick_add_preset("ollama"),
         ).pack(side="left")
 
     # ------------------------------------------------------------------ Tab 3: Per-Game Custom Rules
@@ -2201,6 +2206,18 @@ class HUDMindGUI:
         self._root.wait_window(dlg)
         if dlg.result is not None:
             self._insert_or_update_account(dlg.result)
+
+    def _load_ten_free_nologin_pack(self) -> None:
+        from src.ai.providers import build_ten_free_nologin_accounts
+
+        before = len(self._accounts)
+        self._accounts = build_ten_free_nologin_accounts(self._accounts)
+        added = len(self._accounts) - before
+        self._refresh_accounts_tree()
+        self._save_all()
+        self._var_status.set(
+            f"✓ Pack de 10 modelos gratuitos SIN LOGIN listo ({added} nuevos agregados a la rotación)."
+        )
 
     def _quick_add_preset(self, kind: ProviderKind) -> None:
         preset = PROVIDER_PRESETS[kind]

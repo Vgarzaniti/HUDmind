@@ -233,11 +233,13 @@ async def test_auto_free_fallback_appends_keyless_providers_and_rotates_silently
     profile = GameProfileLoader(Path("profiles")).get_by_id("rob_run")
     assert profile is not None
 
-    # User only configured 1 keyed account (or 0 accounts): auto fallback adds pollinations + ollama
+    # User only configured 1 keyed account: auto fallback appends the 10-model keyless free pool
     keyed = [ProviderAccount(id="user-key-1", label="Mi Key 1", provider="gemini", api_key="AIzaKey12345", priority=1)]
     expanded = build_auto_free_fallback_accounts(keyed)
-    providers_in_pool = [a.provider for a in expanded]
-    assert providers_in_pool == ["gemini", "pollinations", "ollama"]
+    assert len(expanded) == 11  # 1 user key + 10 free no-login models
+    assert expanded[0].provider == "gemini"
+    assert expanded[1].provider == "pollinations"
+    assert expanded[-1].provider == "local_cpu"
 
     expected = CoachResponse(
         should_intervene=True,
@@ -245,16 +247,18 @@ async def test_auto_free_fallback_appends_keyless_providers_and_rotates_silently
         overlay_text="Extraé el botín ahora",
         voice_line="Llevás mucho botín, andá al punto de extracción.",
     )
-    outcomes = {
+    outcomes: dict[str, ProviderCallResult] = {
         "user-key-1": ProviderCallResult(error_code=429, error_message="quota limit", quota_or_auth_failure=True),
-        "auto-free-pollinations": ProviderCallResult(response=expected),
-        "auto-free-ollama": ProviderCallResult(response=expected),
     }
 
     router = ProviderFailoverRouter(
         accounts=keyed,
         settings=AppSettings(),
-        provider_factory=lambda acc, cfg: _StubProvider(acc, cfg, outcomes[acc.id]),
+        provider_factory=lambda acc, cfg: _StubProvider(
+            acc,
+            cfg,
+            outcomes.get(acc.id, ProviderCallResult(response=expected)),
+        ),
         auto_free_fallback=True,
     )
     await router.prepare_session(profile)

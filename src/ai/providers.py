@@ -33,7 +33,7 @@ from src.ai.gemini_client import (
 )
 from src.config.settings import AppSettings, redact_secrets_in_text
 from src.config.telemetry import TelemetryStore
-from src.config.user_store import PROVIDER_PRESETS, ProviderAccount, ProviderKind
+from src.config.user_store import ProviderAccount, ProviderKind
 from src.pipeline.schemas import CoachResponse
 from src.profiles.loader import GameProfile
 
@@ -95,43 +95,176 @@ def extract_coach_response_from_text(raw_text: str) -> CoachResponse | None:
     return None
 
 
-def _extract_cpu_hud_telemetry(image_bytes: bytes) -> str:
-    """Extract <0.5ms 5-zone HUD color & alert telemetry in CPU for keyless text-tier fallback."""
+@dataclass(slots=True)
+class SpatialFrameAnalysis:
+    """Universal cross-game spatial & HUD analysis extracted in <1.5ms on CPU."""
+
+    ally_sector: str
+    ally_intensity: int
+    rival_sector: str
+    rival_intensity: int
+    tactical_balance: str
+    resource_pct: int
+    alert_pct: int
+    action_phase: str
+    delta_note: str
+
+    def to_prompt_telemetry(self) -> str:
+        res_tag = "BAJO" if self.resource_pct < 28 else ("ALTO" if self.resource_pct > 68 else "MEDIO")
+        return (
+            f"CONTEXTO_VISUAL_EN_VIVO: Compañeros=[sector {self.ally_sector}, presencia={self.ally_intensity}%] | "
+            f"Rivales=[sector {self.rival_sector}, presión={self.rival_intensity}%] | "
+            f"Balance=[{self.tactical_balance}] | "
+            f"HUD_Recursos_Boost=[{self.resource_pct}% ({res_tag})] | "
+            f"Alerta_Peligro=[{self.alert_pct}%] | "
+            f"Fase=[{self.action_phase}] | "
+            f"Evolución=[{self.delta_note}]"
+        )
+
+    def short_context_line(self, game_name: str) -> str:
+        return (
+            f"{game_name} | Aliado:{self.ally_sector} vs Rival:{self.rival_sector} "
+            f"({self.tactical_balance}) | HUD:{self.resource_pct}% | {self.action_phase}"
+        )[:155]
+
+
+_PREV_SPATIAL_STATE: dict[str, Any] = {}
+
+
+def analyze_frame_spatial_context(image_bytes: bytes) -> SpatialFrameAnalysis:
+    """Universal <1.5ms spatial detector for teammates, rivals, HUD meters, and motion deltas."""
     try:
         with Image.open(io.BytesIO(image_bytes)) as img:
-            thumb = img.convert("RGB").resize((32, 18), Image.Resampling.NEAREST)
+            thumb = img.convert("RGB").resize((48, 27), Image.Resampling.NEAREST)
             w, h = thumb.size
             pixels = list(thumb.getdata())
 
-        def _zone_stats(x0: int, y0: int, x1: int, y1: int) -> str:
-            r_sum = g_sum = b_sum = red_alerts = gold_accents = count = 0
-            for y in range(y0, y1):
-                row_off = y * w
-                for x in range(x0, x1):
-                    r, g, b = pixels[row_off + x]
-                    r_sum += r
-                    g_sum += g
-                    b_sum += b
-                    count += 1
-                    if r > 165 and g < 85 and b < 85:
-                        red_alerts += 1
-                    elif r > 175 and g > 140 and b < 80:
-                        gold_accents += 1
-            n = max(1, count)
-            luma = int((0.299 * r_sum + 0.587 * g_sum + 0.114 * b_sum) / n)
-            red_pct = int((red_alerts * 100) / n)
-            gold_pct = int((gold_accents * 100) / n)
-            return f"luma={luma},red_alert={red_pct}%,gold_hud={gold_pct}%"
+        ally_cols = [0, 0, 0]  # left, center, right
+        rival_cols = [0, 0, 0]
+        upper_energy = 0
+        lower_energy = 0
+        center_box_uniform = 0
+        hud_resource_fill = 0
+        hud_resource_total = 0
+        top_red_alerts = 0
+        top_total = 0
 
-        return (
-            f"HUD_CPU_SCAN: top_left({_zone_stats(0, 0, 10, 6)}) | "
-            f"top_right({_zone_stats(22, 0, 32, 6)}) | "
-            f"center({_zone_stats(10, 5, 22, 13)}) | "
-            f"bottom_left({_zone_stats(0, 12, 11, 18)}) | "
-            f"bottom_right({_zone_stats(21, 12, 32, 18)})"
+        for y in range(h):
+            row_off = y * w
+            for x in range(w):
+                r, g, b = pixels[row_off + x]
+                col_idx = 0 if x < 16 else (1 if x < 32 else 2)
+
+                # Top header / scoreboard / police stars / radar (y < 6)
+                if y < 6:
+                    top_total += 1
+                    if r > 165 and g < 85 and b < 85:
+                        top_red_alerts += 1
+
+                # Main gameplay field (4 <= y <= 21)
+                if 4 <= y <= 21:
+                    # Ally signatures: cyan/blue/green/teal nameplates, cars, outlines
+                    if (b > r + 38 and b > 125) or (g > r + 35 and g > 130 and b > 80):
+                        ally_cols[col_idx] += 1
+                    # Rival signatures: orange/red/crimson/magenta enemy indicators
+                    elif r > b + 48 and r > 150 and g < 145:
+                        rival_cols[col_idx] += 1
+
+                    luma = int(0.299 * r + 0.587 * g + 0.114 * b)
+                    if y < 12:
+                        upper_energy += luma
+                    else:
+                        lower_energy += luma
+
+                    if 12 <= x <= 35 and 7 <= y <= 19 and 25 < luma < 85 and abs(r - b) < 18:
+                        center_box_uniform += 1
+
+                # Bottom HUD corners (boost / ammo / money / health / villagers)
+                if y >= 21 and (x >= 33 or x <= 14):
+                    hud_resource_total += 1
+                    if (r > 170 and g > 120) or (b > 165 and g > 140) or (r > 200 and g > 200 and b > 200):
+                        hud_resource_fill += 1
+
+        sector_names = ("izquierda", "centro", "derecha")
+        ally_max_idx = max(range(3), key=lambda i: ally_cols[i])
+        rival_max_idx = max(range(3), key=lambda i: rival_cols[i])
+
+        ally_total = sum(ally_cols)
+        rival_total = sum(rival_cols)
+        ally_sector = sector_names[ally_max_idx] if ally_total >= 4 else "atrás/rotando"
+        rival_sector = sector_names[rival_max_idx] if rival_total >= 4 else "distancia media"
+
+        ally_int = min(100, int((ally_total * 100) / 140))
+        rival_int = min(100, int((rival_total * 100) / 140))
+
+        if ally_total > rival_total * 1.35 and ally_total >= 8:
+            balance = f"superioridad aliada (2v1 por {ally_sector})"
+        elif rival_total > ally_total * 1.35 and rival_total >= 8:
+            balance = f"presión rival alta (1v2 en {rival_sector})"
+        elif ally_sector == rival_sector and ally_total >= 6:
+            balance = f"disputa directa en {ally_sector} (evitar Double Commit)"
+        else:
+            balance = f"aliado en {ally_sector}, rival cerrando {rival_sector}"
+
+        res_pct = min(100, max(8, int((hud_resource_fill * 185) / max(1, hud_resource_total))))
+        alert_pct = min(100, int((top_red_alerts * 220) / max(1, top_total)))
+
+        if center_box_uniform > 175:
+            phase = "tabla de posiciones (TAB) / marcador visible"
+        elif upper_energy > lower_energy * 1.18:
+            phase = "acción aérea / pared alta"
+        elif ally_cols[1] + rival_cols[1] > 28:
+            phase = "duelo cercano en el centro"
+        else:
+            phase = "transición y posicionamiento en campo"
+
+        prev_ally = _PREV_SPATIAL_STATE.get("ally_sector")
+        prev_rival = _PREV_SPATIAL_STATE.get("rival_sector")
+        prev_res = _PREV_SPATIAL_STATE.get("resource_pct", res_pct)
+
+        deltas: list[str] = []
+        if prev_ally and prev_ally != ally_sector:
+            deltas.append(f"compañero rotó de {prev_ally} a {ally_sector}")
+        if prev_rival and prev_rival != rival_sector:
+            deltas.append(f"amenaza rival se movió a {rival_sector}")
+        if abs(res_pct - prev_res) >= 15:
+            direction = "subió" if res_pct > prev_res else "bajó"
+            deltas.append(f"medidor HUD {direction} a {res_pct}%")
+        if not deltas:
+            deltas.append(f"foco activo en {rival_sector}")
+
+        _PREV_SPATIAL_STATE["ally_sector"] = ally_sector
+        _PREV_SPATIAL_STATE["rival_sector"] = rival_sector
+        _PREV_SPATIAL_STATE["resource_pct"] = res_pct
+
+        return SpatialFrameAnalysis(
+            ally_sector=ally_sector,
+            ally_intensity=ally_int,
+            rival_sector=rival_sector,
+            rival_intensity=rival_int,
+            tactical_balance=balance,
+            resource_pct=res_pct,
+            alert_pct=alert_pct,
+            action_phase=phase,
+            delta_note=", ".join(deltas),
         )
     except Exception:
-        return "HUD_CPU_SCAN: active_gameplay_frame"
+        return SpatialFrameAnalysis(
+            ally_sector="centro",
+            ally_intensity=30,
+            rival_sector="frente",
+            rival_intensity=35,
+            tactical_balance="duelo parejo en transición",
+            resource_pct=55,
+            alert_pct=10,
+            action_phase="acción en campo",
+            delta_note="ritmo activo",
+        )
+
+
+def _extract_cpu_hud_telemetry(image_bytes: bytes) -> str:
+    """Extract live spatial teammate/rival/HUD telemetry string for AI prompts."""
+    return analyze_frame_spatial_context(image_bytes).to_prompt_telemetry()
 
 
 _LOCAL_TIP_CURSOR: dict[str, int] = {}
@@ -236,31 +369,164 @@ _LOCAL_TACTICAL_TIPS: dict[str, dict[str, list[tuple[str, str, str]]]] = {
 }
 
 
+def _compose_situational_spatial_candidates(
+    game_id: str,
+    coach_mode: str,
+    spatial: SpatialFrameAnalysis,
+) -> list[tuple[str, str, str]]:
+    """Build live context-aware tactical callouts from the frame's spatial teammate/rival/HUD detection."""
+    ally = spatial.ally_sector
+    rival = spatial.rival_sector
+    res = spatial.resource_pct
+    phase = spatial.action_phase
+    dynamic: list[tuple[str, str, str]] = []
+
+    if "tabla de posiciones" in phase:
+        dynamic.append(
+            (
+                "low",
+                f"Marcador abierto: revisá composición rival y recursos ({res}%)",
+                f"Aprovechá la tabla de posiciones para leer el estado de tus compañeros y rivales; tenés recursos al {res} por ciento.",
+            )
+        )
+
+    if game_id == "rocket_league":
+        if coach_mode == "training":
+            if "aéreo" in phase:
+                dynamic.append(
+                    (
+                        "medium",
+                        f"Aéreo activo (Boost {res}%): dosificá con toques cortos y usá Air Roll",
+                        f"Estás en fase aérea con {res} por ciento de boost; dosificá con pulsos cortos y alineá las ruedas para aterrizar con Powerslide.",
+                    )
+                )
+            if res < 32:
+                dynamic.append(
+                    (
+                        "medium",
+                        f"Boost bajo ({res}%): practicá Speedflip y Wave Dash sin gastar todo",
+                        f"Con {res} por ciento de boost practicá conservar velocidad supersónica usando Wave Dash y derrape al tocar el suelo.",
+                    )
+                )
+        else:
+            if ally == rival and ally in ("izquierda", "centro", "derecha"):
+                dynamic.append(
+                    (
+                        "high",
+                        f"Compañero y rival en {ally}: ¡no vayas, cubrí 2do palo!",
+                        f"Tu compañero ya está disputando en {ally} contra el rival; evitá el Double Commit y cerrá en el segundo palo.",
+                    )
+                )
+            if "1v2" in spatial.tactical_balance:
+                dynamic.append(
+                    (
+                        "high",
+                        f"Presión rival 1v2 por {rival}: hacé Shadow Defense y ganá tiempo",
+                        f"Tenés mayoría rival entrando por {rival}; hacé Shadow Defense sin regalar el salto hasta que rote tu compañero desde {ally}.",
+                    )
+                )
+            if "2v1" in spatial.tactical_balance:
+                dynamic.append(
+                    (
+                        "medium",
+                        f"Ventaja 2v1 con aliado en {ally}: buscá pase cruzado o bump",
+                        f"Tenés superioridad con tu compañero por {ally} contra un solo rival en {rival}; buscá el centro o demolición al arquero.",
+                    )
+                )
+            if res < 28:
+                dynamic.append(
+                    (
+                        "medium",
+                        f"Boost bajo ({res}%) y rival en {rival}: juntá pads chicos al centro",
+                        f"Estás con {res} por ciento de boost y hay rival en {rival}; no te abras a la esquina, rotá juntando pads chicos.",
+                    )
+                )
+    elif game_id == "rob_run":
+        if spatial.alert_pct >= 25 or "1v2" in spatial.tactical_balance:
+            dynamic.append(
+                (
+                    "high",
+                    f"Presión policial en {rival} y aliado en {ally}: extraé por flanco libre",
+                    f"Detecto amenaza alta en {rival} con tu compañero en {ally}; cortá el robo y salí hacia extracción por el lado opuesto.",
+                )
+            )
+        else:
+            dynamic.append(
+                (
+                    "medium",
+                    f"Aliado en {ally}, amenaza en {rival}: cubrí el ángulo antes de cargar",
+                    f"Tu compañero opera en {ally} y el sector {rival} tiene movimiento; vigilá esa entrada mientras aseguran el botín.",
+                )
+            )
+    elif game_id == "aoe2_de":
+        dynamic.append(
+            (
+                "high" if res > 72 else "medium",
+                f"Actividad en {rival} (HUD {res}%): mantené TC activo y gastá recursos",
+                f"Con actividad en {rival} y tus indicadores al {res} por ciento, no dejes el Centro Urbano inactivo y convertí madera en granjas o tropas.",
+            )
+        )
+    else:
+        # CS2 / Valorant / Universal tactical shooter & competitive games
+        if "1v2" in spatial.tactical_balance:
+            dynamic.append(
+                (
+                    "high",
+                    f"Amenaza múltiple en {rival}: no asomes solo, jugá con aliado de {ally}",
+                    f"Hay presión rival en {rival}; no regales un duelo aislado, esperá fuego cruzado con tu compañero de {ally}.",
+                )
+            )
+        elif "2v1" in spatial.tactical_balance:
+            dynamic.append(
+                (
+                    "medium",
+                    f"Superioridad con aliado en {ally}: abrí juntos para asegurar el trade",
+                    f"Tienen ventaja sobre {rival} con tu compañero en {ally}; entren al mismo tiempo para garantizar el trade.",
+                )
+            )
+        else:
+            dynamic.append(
+                (
+                    "medium",
+                    f"Aliado en {ally}, cubrí {rival} (Recursos HUD {res}%)",
+                    f"Tu compañero ya ocupa {ally}; sostené la mira sobre {rival} y usá cobertura antes de recargar.",
+                )
+            )
+
+    return dynamic
+
+
 def _generate_local_cpu_tactical_tip(
     profile: GameProfile,
     hud_scan: str,
     recent_history: str,
     coach_mode: str,
+    spatial: SpatialFrameAnalysis | None = None,
 ) -> CoachResponse:
-    """Instant zero-latency local tactical coach fallback using HUD scan + strict rotation."""
+    """Instant zero-latency local tactical coach using live spatial teammate/rival detection."""
     game_id = profile.manifest.game_id
     game_tips = _LOCAL_TACTICAL_TIPS.get(
         game_id,
         _LOCAL_TACTICAL_TIPS["example_cs2"],
     )
     mode_key = "training" if coach_mode == "training" else "match"
-    candidates = list(game_tips.get(mode_key, game_tips["match"]))
+    candidates: list[tuple[str, str, str]] = []
 
-    # Also incorporate user's custom rules from the GUI if configured!
+    if spatial is not None:
+        candidates.extend(_compose_situational_spatial_candidates(game_id, mode_key, spatial))
+
+    # Incorporate user's custom rules from the GUI if configured!
     if profile.custom_rules.strip():
         for line in profile.custom_rules.splitlines():
             clean = line.strip().lstrip("-*•0123456789. ").strip()
             if len(clean) >= 12:
                 short_overlay = clean[:75].rsplit(" ", 1)[0] if len(clean) > 75 else clean
-                candidates.insert(0, ("medium", short_overlay, clean[:140]))
+                candidates.append(("medium", short_overlay, clean[:140]))
+
+    candidates.extend(game_tips.get(mode_key, game_tips["match"]))
 
     hist_low = recent_history.lower()
-    unseen = [c for c in candidates if c[1].lower()[:20] not in hist_low]
+    unseen = [c for c in candidates if c[1].lower()[:18] not in hist_low]
     pool = unseen if unseen else candidates
 
     cursor_key = f"{game_id}:{mode_key}"
@@ -268,12 +534,17 @@ def _generate_local_cpu_tactical_tip(
     _LOCAL_TIP_CURSOR[cursor_key] = cur + 1
 
     urg, ov, vc = pool[cur % len(pool)]
+    ctx_str = (
+        spatial.short_context_line(profile.manifest.display_name)
+        if spatial is not None
+        else f"{profile.manifest.display_name} [{mode_key}] | {hud_scan[:80]}"
+    )
     return CoachResponse(
         should_intervene=True,
         urgency=urg,  # type: ignore[arg-type]
         overlay_text=ov,
         voice_line=vc,
-        match_context=f"{profile.manifest.display_name} [{mode_key}] | {hud_scan[:80]}",
+        match_context=ctx_str,
     )
 
 
@@ -477,25 +748,32 @@ class OpenAICompatibleProvider(BaseAIProvider):
             coach_mode=self._settings.coach_mode,
         )
 
-        # Keyless anonymous Pollinations mode: use free text.pollinations.ai/openai + CPU HUD scan
-        is_keyless_pollinations = (
-            self.account.provider == "pollinations" and not self.account.api_key.strip()
+        # Keyless anonymous cloud mode (Pollinations & Airforce): use CPU Spatial Teammate/Rival/HUD scan
+        is_keyless_cloud = (
+            self.account.provider in ("pollinations", "airforce")
+            and not self.account.api_key.strip()
         )
+        spatial: SpatialFrameAnalysis | None = None
         hud_scan = ""
-        if is_keyless_pollinations:
-            hud_scan = _extract_cpu_hud_telemetry(image_bytes)
+        if is_keyless_cloud:
+            spatial = analyze_frame_spatial_context(image_bytes)
+            hud_scan = spatial.to_prompt_telemetry()
             compact_sys = (
                 f"{profile.compact_system_prompt}\n\n"
                 f"# Reglas Clave ({profile.manifest.display_name}):\n"
                 f"{profile.compact_knowledge_base[:1200]}"
             )
             proactive_directive = (
-                "MODO COACH PROACTIVO (HUD_CPU_SCAN): Devolvé SIEMPRE should_intervene=true "
-                "con un consejo táctico concreto, breve y accionable para este momento de "
-                f"{profile.manifest.display_name}, sin repetir los consejos anteriores."
+                "MODO COACH PROACTIVO CON CONTEXTO ESPACIAL (COMPANEROS Y RIVALES): "
+                "Usá las posiciones de Compañeros, Rivales, Balance (2v1/1v2) y HUD_Recursos_Boost "
+                "de CONTEXTO_VISUAL_EN_VIVO para devolver SIEMPRE should_intervene=true con un "
+                f"consejo táctico específico para {profile.manifest.display_name}, sin repetir."
+            )
+            chosen_model = self.account.model.strip() or (
+                "openai-fast" if self.account.provider == "pollinations" else "open-mistral-nemo"
             )
             payload: dict[str, object] = {
-                "model": "openai-fast",
+                "model": chosen_model,
                 "temperature": self._settings.gemini_temperature,
                 "messages": [
                     {"role": "system", "content": compact_sys},
@@ -508,7 +786,11 @@ class OpenAICompatibleProvider(BaseAIProvider):
                     },
                 ],
             }
-            endpoint = "https://text.pollinations.ai/openai"
+            endpoint = (
+                "https://text.pollinations.ai/openai"
+                if self.account.provider == "pollinations"
+                else f"{base_url}/chat/completions"
+            )
         else:
             b64 = base64.b64encode(image_bytes).decode("ascii")
             max_tokens = {"eco": 85, "balanced": 115, "high": 150}.get(
@@ -545,15 +827,6 @@ class OpenAICompatibleProvider(BaseAIProvider):
             session = self._get_session()
             async with session.post(endpoint, headers=self._build_headers(), json=payload) as resp:
                 if resp.status != 200:
-                    if is_keyless_pollinations:
-                        return ProviderCallResult(
-                            response=_generate_local_cpu_tactical_tip(
-                                profile,
-                                hud_scan,
-                                recent_history,
-                                self._settings.coach_mode,
-                            )
-                        )
                     err_body = (await resp.text())[:220]
                     return ProviderCallResult(
                         error_code=resp.status,
@@ -565,39 +838,26 @@ class OpenAICompatibleProvider(BaseAIProvider):
                 first_msg = choices[0].get("message", {}) if choices else {}
                 content = first_msg.get("content") or ""
                 parsed = extract_coach_response_from_text(str(content))
-                if parsed is None or (is_keyless_pollinations and not parsed.should_intervene):
-                    if is_keyless_pollinations:
+                if parsed is None or (is_keyless_cloud and not parsed.should_intervene):
+                    if is_keyless_cloud and spatial is not None:
                         return ProviderCallResult(
                             response=_generate_local_cpu_tactical_tip(
                                 profile,
                                 hud_scan,
                                 recent_history,
                                 self._settings.coach_mode,
+                                spatial=spatial,
                             )
                         )
                     return ProviderCallResult(error_code=422, error_message="JSON inválido")
+                if is_keyless_cloud and spatial is not None and not parsed.match_context.strip():
+                    parsed = parsed.model_copy(
+                        update={"match_context": spatial.short_context_line(profile.manifest.display_name)}
+                    )
                 return ProviderCallResult(response=parsed)
         except TimeoutError:
-            if is_keyless_pollinations:
-                return ProviderCallResult(
-                    response=_generate_local_cpu_tactical_tip(
-                        profile,
-                        hud_scan,
-                        recent_history,
-                        self._settings.coach_mode,
-                    )
-                )
             return ProviderCallResult(error_code=408, error_message="timeout")
         except Exception as exc:
-            if is_keyless_pollinations:
-                return ProviderCallResult(
-                    response=_generate_local_cpu_tactical_tip(
-                        profile,
-                        hud_scan,
-                        recent_history,
-                        self._settings.coach_mode,
-                    )
-                )
             return ProviderCallResult(error_code=503, error_message=str(exc))
 
     async def test_connection(self) -> tuple[bool, str]:
@@ -763,41 +1023,178 @@ class AnthropicClaudeProvider(BaseAIProvider):
             self._http = None
 
 
+class LocalSpatialCPUProvider(BaseAIProvider):
+    """Zero-latency, 100% free no-login spatial vision coach running locally on CPU."""
+
+    async def analyze_frame(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+        profile: GameProfile,
+        *,
+        recent_history: str = "",
+        force_advice: bool = False,
+        text_language: str = "es",
+        voice_language: str = "es",
+    ) -> ProviderCallResult:
+        spatial = analyze_frame_spatial_context(image_bytes)
+        resp = _generate_local_cpu_tactical_tip(
+            profile,
+            spatial.to_prompt_telemetry(),
+            recent_history,
+            self._settings.coach_mode,
+            spatial=spatial,
+        )
+        return ProviderCallResult(response=resp)
+
+    async def test_connection(self) -> tuple[bool, str]:
+        return (
+            True,
+            "OK — Motor Visual Espacial HUDMind en CPU listo (0 ms · 100% Gratis SIN LOGIN).",
+        )
+
+
 def create_provider_adapter(account: ProviderAccount, settings: AppSettings) -> BaseAIProvider:
     """Factory instantiating the right Strategy adapter for a ProviderAccount."""
     if account.provider == "gemini":
         return GeminiProviderAdapter(account, settings)
     if account.provider == "claude":
         return AnthropicClaudeProvider(account, settings)
+    if account.provider == "local_cpu":
+        return LocalSpatialCPUProvider(account, settings)
     return OpenAICompatibleProvider(account, settings)
+
+
+# 10 Free No-Login Models Pool (rotates automatically without API keys or accounts)
+TEN_FREE_NOLOGIN_SPECS: list[tuple[str, str, ProviderKind, str, str, int]] = [
+    (
+        "auto-free-pollinations",
+        "1. Pollinations · GPT-OSS-20B Fast (Sin Login)",
+        "pollinations",
+        "openai-fast",
+        "https://text.pollinations.ai/openai",
+        981,
+    ),
+    (
+        "auto-free-pollinations-std",
+        "2. Pollinations · OpenAI Standard (Sin Login)",
+        "pollinations",
+        "openai",
+        "https://text.pollinations.ai/openai",
+        982,
+    ),
+    (
+        "auto-free-pollinations-mistral",
+        "3. Pollinations · Mistral Small (Sin Login)",
+        "pollinations",
+        "mistral",
+        "https://text.pollinations.ai/openai",
+        983,
+    ),
+    (
+        "auto-free-pollinations-qwen",
+        "4. Pollinations · Qwen 2.5 Instruct (Sin Login)",
+        "pollinations",
+        "qwen",
+        "https://text.pollinations.ai/openai",
+        984,
+    ),
+    (
+        "auto-free-pollinations-deepseek",
+        "5. Pollinations · DeepSeek V3 (Sin Login)",
+        "pollinations",
+        "deepseek",
+        "https://text.pollinations.ai/openai",
+        985,
+    ),
+    (
+        "auto-free-airforce-nemo",
+        "6. Airforce Cloud · Open-Mistral-Nemo (Sin Login)",
+        "airforce",
+        "open-mistral-nemo",
+        "https://api.airforce/v1",
+        986,
+    ),
+    (
+        "auto-free-airforce-large",
+        "7. Airforce Cloud · Mistral Large (Sin Login)",
+        "airforce",
+        "mistral-large-latest",
+        "https://api.airforce/v1",
+        987,
+    ),
+    (
+        "auto-free-airforce-codestral",
+        "8. Airforce Cloud · Codestral Latest (Sin Login)",
+        "airforce",
+        "codestral-latest",
+        "https://api.airforce/v1",
+        988,
+    ),
+    (
+        "auto-free-airforce-tiny",
+        "9. Airforce Cloud · Mistral Tiny (Sin Login)",
+        "airforce",
+        "mistral-tiny-latest",
+        "https://api.airforce/v1",
+        989,
+    ),
+    (
+        "auto-free-local-spatial",
+        "10. HUDMind · Spatial Vision CPU (Sin Login · 0ms)",
+        "local_cpu",
+        "hudmind-spatial-v2",
+        "http://localhost:11434/v1",
+        990,
+    ),
+]
+
+
+def build_ten_free_nologin_accounts(
+    existing: list[ProviderAccount] | None = None,
+) -> list[ProviderAccount]:
+    """Build or append the full 10-model free no-login rotation pool."""
+    result = list(existing) if existing else []
+    existing_keys = {(a.provider, a.model) for a in result}
+    base_prio = len(result) + 1
+
+    for offset, (acc_id, label, kind, model, base_url, _) in enumerate(TEN_FREE_NOLOGIN_SPECS):
+        if (kind, model) not in existing_keys:
+            result.append(
+                ProviderAccount(
+                    id=acc_id,
+                    label=label,
+                    provider=kind,
+                    model=model,
+                    base_url=base_url,
+                    priority=base_prio + offset,
+                    enabled=True,
+                )
+            )
+    return result
 
 
 def build_auto_free_fallback_accounts(
     existing: list[ProviderAccount],
 ) -> list[ProviderAccount]:
-    """Append built-in keyless free fallback providers at the bottom of the rotation pool.
+    """Append the 10 built-in keyless free fallback models at the bottom of the rotation pool.
 
     Ensures that if all user-configured API keys hit rate/quota limits (or if no keys
-    were configured at all), the router automatically continues iterating through free
-    no-login providers without interrupting gameplay.
+    were configured at all), the router automatically iterates through all 10 free
+    no-login models without interrupting gameplay.
     """
     result = list(existing)
-    existing_providers = {a.provider for a in result}
+    existing_pairs = {(a.provider, a.model) for a in result}
 
-    fallback_specs: list[tuple[str, ProviderKind, int]] = [
-        ("auto-free-pollinations", "pollinations", 990),
-        ("auto-free-ollama", "ollama", 991),
-    ]
-    for acc_id, kind, prio in fallback_specs:
-        if kind not in existing_providers:
-            preset = PROVIDER_PRESETS[kind]
+    for acc_id, label, kind, model, base_url, prio in TEN_FREE_NOLOGIN_SPECS:
+        if (kind, model) not in existing_pairs:
             result.append(
                 ProviderAccount(
                     id=acc_id,
-                    label=f"{preset.display_name} (Auto-Fallback)",
+                    label=label,
                     provider=kind,
-                    model=preset.default_model,
-                    base_url=preset.default_base_url,
+                    model=model,
+                    base_url=base_url,
                     priority=prio,
                     enabled=True,
                 )
@@ -981,12 +1378,18 @@ class ProviderFailoverRouter:
                     failed=(code not in (402, 429)),
                 )
 
-            if code in (401, 402, 403):
+            is_keyless_cloud = acc.provider in ("pollinations", "airforce") and not acc.api_key.strip()
+            if code in (401, 403):
                 cooldown_s = 600.0
-                reason = f"auth/créditos (HTTP {code})"
+                reason = f"auth/acceso (HTTP {code})"
+            elif code == 402 and is_keyless_cloud:
+                cooldown_s = 45.0
+                reason = "límite gratuito temporal por IP (HTTP 402)"
+            elif code == 402:
+                cooldown_s = 600.0
+                reason = "sin créditos (HTTP 402)"
             elif code == 429:
-                is_anon_poll = acc.provider == "pollinations" and not acc.api_key.strip()
-                cooldown_s = 12.0 if is_anon_poll else 60.0
+                cooldown_s = 30.0 if is_keyless_cloud else 60.0
                 reason = "cuota / rate limit (HTTP 429)"
             elif acc.provider == "ollama" and code == 503:
                 cooldown_s = 600.0

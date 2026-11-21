@@ -173,7 +173,7 @@ def is_provider_free_tier(provider: str, model: str) -> bool:
     """Return True if the provider/model operates on a $0 free tier."""
     p = provider.lower()
     m = model.lower()
-    if p in ("groq", "pollinations", "ollama", "custom"):
+    if p in ("groq", "pollinations", "airforce", "local_cpu", "ollama", "custom"):
         return True
     if p == "openrouter" and (":free" in m or m.endswith("/free")):
         return True
