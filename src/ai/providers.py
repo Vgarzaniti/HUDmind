@@ -22,7 +22,11 @@ from urllib.parse import quote
 import aiohttp
 from pydantic import SecretStr, ValidationError
 
-from src.ai.gemini_client import GeminiCoachClient, build_language_instruction
+from src.ai.gemini_client import (
+    GeminiCoachClient,
+    build_coach_mode_instruction,
+    build_language_instruction,
+)
 from src.config.settings import AppSettings, redact_secrets_in_text
 from src.config.user_store import ProviderAccount
 from src.pipeline.schemas import CoachResponse
@@ -91,6 +95,7 @@ def _compose_dynamic_turn_prompt(
     force_advice: bool,
     text_language: str,
     voice_language: str,
+    coach_mode: str = "match",
     include_json_reminder: bool = True,
 ) -> str:
     """Build the minimal per-frame dynamic prompt."""
@@ -98,6 +103,9 @@ def _compose_dynamic_turn_prompt(
         "Analizá este frame actual del juego usando los anclajes del HUD y las reglas del sistema.",
         build_language_instruction(text_language, voice_language),
     ]
+    mode_note = build_coach_mode_instruction(coach_mode)
+    if mode_note:
+        parts.append(mode_note)
     if force_advice:
         parts.append(
             "MANUAL PLAYER REQUEST (F10): the player explicitly asked for an immediate "
@@ -265,6 +273,7 @@ class OpenAICompatibleProvider(BaseAIProvider):
             force_advice=force_advice,
             text_language=text_language,
             voice_language=voice_language,
+            coach_mode=self._settings.coach_mode,
         )
 
         max_tokens = {"eco": 85, "balanced": 115, "high": 150}.get(
@@ -386,6 +395,7 @@ class AnthropicClaudeProvider(BaseAIProvider):
             force_advice=force_advice,
             text_language=text_language,
             voice_language=voice_language,
+            coach_mode=self._settings.coach_mode,
         )
         max_tokens = {"eco": 85, "balanced": 115, "high": 150}.get(
             self._settings.token_efficiency_mode, 115

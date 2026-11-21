@@ -1,0 +1,11 @@
+{
+  "game_id": "rocket_league",
+  "display_name": "Rocket League",
+  "process_names": ["RocketLeague.exe"],
+  "capture_fps": 1.5,
+  "phash_threshold": 8,
+  "cooldown_seconds": 8.0,
+  "max_resolution": [1280, 720],
+  "language": "es",
+  "notes": "Perfil táctico de rotaciones, gestión de boost, posicionamiento 2v2/3v3 y entrenamiento mecánico en Free Play / Custom Training."
+}

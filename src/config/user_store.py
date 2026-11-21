@@ -198,6 +198,7 @@ class ProviderAccount(BaseModel):
 _PERSISTED_SETTING_KEYS = (
     "text_language",
     "voice_language",
+    "coach_mode",
     "enable_voice",
     "enable_overlay",
     "enable_hotkeys",

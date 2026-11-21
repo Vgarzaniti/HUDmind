@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from src.ai.gemini_client import build_coach_mode_instruction
 from src.config.hotkeys import GlobalHotkeyManager
 from src.config.settings import AppSettings
 from src.output.tts import AudioPlayer, EdgeTTSEngine, TTSEngine, VoiceService
@@ -104,8 +105,19 @@ def test_multi_game_profiles_load_both_cs2_and_valorant() -> None:
     loader = GameProfileLoader(Path("profiles"))
     assert loader.get_by_id("example_cs2") is not None
     val = loader.get_by_id("example_valorant")
-    assert val is not None
-    assert val.matches_process("VALORANT-Win64-Shipping.exe")
+    assert val is not None and val.matches_process("VALORANT-Win64-Shipping.exe")
+
+    aoe2 = loader.get_by_id("aoe2_de")
+    assert aoe2 is not None and aoe2.matches_process("AoE2DE_s.exe")
+    assert "Modo Entrenamiento" in aoe2.knowledge_base
+
+    rl = loader.get_by_id("rocket_league")
+    assert rl is not None and rl.matches_process("RocketLeague.exe")
+    assert "Free Play" in rl.knowledge_base
+
+    assert build_coach_mode_instruction("match") == ""
+    training_note = build_coach_mode_instruction("training")
+    assert "TRAINING / PRACTICE MODE ACTIVE" in training_note
 
 
 async def test_edge_tts_in_memory_lru_cache_hits_and_eviction(

@@ -108,8 +108,15 @@ python -m src.main --health-check
 # Probar captura + filtros en CPU SIN gastar tokens ni necesitar API key
 python -m src.main --test-mode --dry-run
 
-# Elegir perfil de Valorant o CS2
+# Elegir perfil (CS2, VALORANT, Age of Empires II: DE o Rocket League)
+python -m src.main --test-mode --profile example_cs2
 python -m src.main --test-mode --profile example_valorant
+python -m src.main --test-mode --profile aoe2_de
+python -m src.main --test-mode --profile rocket_league
+
+# Activar Modo Entrenamiento / Práctica (Free Play, Art of War, Aim Botz, The Range)
+python -m src.main --test-mode --profile rocket_league --training-mode
+python -m src.main --test-mode --profile aoe2_de --training-mode
 
 # Probar con una carpeta de capturas de pantalla o un video (VideoMockCaptureStrategy)
 python -m src.main --test-mode --mock-source ./capturas_prueba --dry-run
@@ -146,8 +153,10 @@ Para detener limpiamente el copiloto en cualquier momento, presioná `Ctrl + C`.
 │   ├── test_plan_ieee29119.md   # Plan de pruebas, RTM y benchmarks (ISO/IEC/IEEE 29119)
 │   └── game_profiles_guide.md   # Cómo crear nuevos "cartuchos" de juegos
 ├── profiles/
-│   ├── example_cs2/             # Perfil completo Counter-Strike 2
-│   └── example_valorant/        # Perfil completo VALORANT
+│   ├── example_cs2/             # Perfil completo Counter-Strike 2 (Partida + Aim Botz/Lineups)
+│   ├── example_valorant/        # Perfil completo VALORANT (Partida + The Range)
+│   ├── aoe2_de/                 # Perfil completo Age of Empires II: DE (Macro/Counters + Art of War)
+│   └── rocket_league/           # Perfil completo Rocket League (Rotaciones/Boost + Free Play)
 ├── src/
 │   ├── main.py                  # Orquestador principal asyncio, diagnóstico y CLI
 │   ├── config/

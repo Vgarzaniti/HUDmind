@@ -454,6 +454,7 @@ class HUDMindGUI:
         s = self._settings
         # Control tab
         self._var_mode = tk.StringVar(value="test")
+        self._var_coach_mode = tk.StringVar(value=s.coach_mode)
         profile_ids = [p.manifest.game_id for p in self._profiles] or ["example_cs2"]
         self._var_profile = tk.StringVar(value=profile_ids[0])
         self._var_dry_run = tk.BooleanVar(value=False)
@@ -592,11 +593,29 @@ class HUDMindGUI:
             command=self._create_new_game_profile,
         ).pack(side="left")
 
+        tk.Label(top, text="Estilo del Coach:", bg=_BG_CARD, fg=_FG_TEXT).grid(
+            row=2, column=0, sticky="w", padx=6, pady=4
+        )
+        cmode_frame = tk.Frame(top, bg=_BG_CARD)
+        cmode_frame.grid(row=2, column=1, sticky="w", padx=6)
+        ttk.Radiobutton(
+            cmode_frame,
+            text="Partida Competitiva (Match)",
+            variable=self._var_coach_mode,
+            value="match",
+        ).pack(side="left", padx=(0, 12))
+        ttk.Radiobutton(
+            cmode_frame,
+            text="Modo Entrenamiento / Práctica (Free Play, Art of War, Aim Botz)",
+            variable=self._var_coach_mode,
+            value="training",
+        ).pack(side="left")
+
         ttk.Checkbutton(
             top,
             text="Dry-Run (probar captura y filtros sin consumir tokens IA)",
             variable=self._var_dry_run,
-        ).grid(row=2, column=1, sticky="w", padx=6, pady=2)
+        ).grid(row=3, column=1, sticky="w", padx=6, pady=2)
 
         # Control buttons
         btns = tk.Frame(self._tab_control, bg=_BG_CARD)
@@ -1032,6 +1051,7 @@ class HUDMindGUI:
             update={
                 "text_language": self._var_text_lang.get(),
                 "voice_language": self._var_voice_lang.get(),
+                "coach_mode": self._var_coach_mode.get(),
                 "enable_voice": bool(self._var_enable_voice.get()),
                 "enable_overlay": bool(self._var_enable_overlay.get()),
                 "enable_hotkeys": bool(self._var_hotkeys.get()),
@@ -1377,6 +1397,8 @@ class HUDMindGUI:
         cmd = [sys.executable, "-m", "src.main"]
         if self._var_mode.get() == "test":
             cmd.extend(["--test-mode", "--profile", self._var_profile.get()])
+        if self._var_coach_mode.get() == "training":
+            cmd.append("--training-mode")
         if self._var_dry_run.get():
             cmd.append("--dry-run")
 

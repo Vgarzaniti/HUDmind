@@ -116,6 +116,7 @@ class GameCopilotOrchestrator:
             compression_quality=settings.image_compression_quality,
             image_format=settings.image_format,
             efficiency_mode=settings.token_efficiency_mode,
+            cooldown_multiplier=0.7 if settings.coach_mode == "training" else 1.0,
         )
 
         # 5. Output Channels & Non-Intrusive Windows Global Hotkeys
@@ -156,6 +157,13 @@ class GameCopilotOrchestrator:
         self._user_paused = False
         self._force_analysis_pending = False
 
+    def _effective_cooldown(self, profile: GameProfile) -> float:
+        """Return shorter cooldown when in proactive training/practice mode."""
+        base = profile.manifest.cooldown_seconds
+        if self._settings.coach_mode == "training":
+            return max(3.5, round(base * 0.7, 1))
+        return base
+
     def _should_capture_now(self) -> bool:
         """Pre-capture gate: skip BitBlt/GPU capture & 6MB RAM allocation while in cooldown or unfocused."""
         profile = self._active_profile
@@ -168,7 +176,7 @@ class GameCopilotOrchestrator:
         if self._force_analysis_pending:
             return not self._state_machine.is_busy
         allowed, _ = self._state_machine.can_analyze(
-            cooldown_seconds=profile.manifest.cooldown_seconds,
+            cooldown_seconds=self._effective_cooldown(profile),
             min_inference_interval=self._settings.min_inference_interval_seconds,
         )
         return allowed
@@ -187,8 +195,9 @@ class GameCopilotOrchestrator:
         """Start all subsystems and run until interrupted or optional timeout expires."""
         logger.info("=" * 68)
         logger.info(
-            "HUDMind iniciado | modo=%s | dry_run=%s | modelo=%s",
+            "HUDMind iniciado | modo=%s | coach=%s | dry_run=%s | modelo=%s",
             "TEST-MODE" if self._test_mode else "AUTO-DETECT",
+            self._settings.coach_mode.upper(),
             self._dry_run,
             self._settings.default_model,
         )
@@ -345,8 +354,9 @@ class GameCopilotOrchestrator:
                 cached = await self._ai_client.prepare_session(profile)
                 cache_status = "CONTEXT-CACHE" if cached else "INLINE-FALLBACK"
 
+            mode_tag = "ENTRENAMIENTO" if self._settings.coach_mode == "training" else "PARTIDA"
             self._overlay.show_message(
-                text=f"Coach activo ({cache_status}) — observando partida",
+                text=f"Coach {mode_tag} ({cache_status}) — observando",
                 urgency="low",
                 title=profile.manifest.display_name,
                 duration_seconds=4.0,
@@ -432,7 +442,7 @@ class GameCopilotOrchestrator:
                     # Fast O(1) short-circuit in event loop: skip thread-pool handoff & pHash
                     # while Gemini is busy, in intervention cooldown, or within min interval.
                     can_run, _ = self._state_machine.can_analyze(
-                        cooldown_seconds=profile.manifest.cooldown_seconds,
+                        cooldown_seconds=self._effective_cooldown(profile),
                         min_inference_interval=self._settings.min_inference_interval_seconds,
                     )
                     if not can_run:
@@ -695,6 +705,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Abre la interfaz gráfica ligera de configuración y control de HUDMind.",
     )
     parser.add_argument(
+        "--training-mode",
+        action="store_true",
+        help="Activa el Modo Entrenamiento / Práctica (instructor proactivo en Free Play, Art of War, Aim Botz, The Range).",
+    )
+    parser.add_argument(
         "--test-mode",
         action="store_true",
         help="Permite probar el pipeline sobre cualquier ventana abierta (omite FocusFilter).",
@@ -761,6 +776,8 @@ def main(argv: list[str] | None = None) -> int:
     enable_windows_dpi_awareness()
     args = parse_args(argv)
     settings = load_effective_settings()
+    if args.training_mode:
+        settings = settings.model_copy(update={"coach_mode": "training"})
     accounts = load_accounts(settings)
 
     all_secrets = tuple(

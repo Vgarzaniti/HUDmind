@@ -144,14 +144,22 @@ class CooldownFilter(FrameFilter):
         self,
         state_machine: InterventionStateMachine,
         min_inference_interval: float = 2.5,
+        cooldown_multiplier: float = 1.0,
     ) -> None:
         super().__init__()
         self._state_machine = state_machine
         self._min_inference_interval = min_inference_interval
+        self._cooldown_multiplier = max(0.2, cooldown_multiplier)
 
     def _process(self, context: FrameContext) -> bool:
+        base_cd = context.profile.manifest.cooldown_seconds
+        effective_cd = (
+            max(3.5, round(base_cd * self._cooldown_multiplier, 1))
+            if self._cooldown_multiplier < 1.0
+            else base_cd
+        )
         allowed, reason = self._state_machine.can_analyze(
-            cooldown_seconds=context.profile.manifest.cooldown_seconds,
+            cooldown_seconds=effective_cd,
             min_inference_interval=self._min_inference_interval,
         )
         if not allowed:
@@ -250,10 +258,15 @@ class FilterPipeline:
         compression_quality: int = 78,
         image_format: str = "jpeg",
         efficiency_mode: str = "balanced",
+        cooldown_multiplier: float = 1.0,
     ) -> None:
         self.focus_filter = FocusFilter(detector)
         self.phash_filter = PerceptualHashFilter()
-        self.cooldown_filter = CooldownFilter(state_machine, min_inference_interval)
+        self.cooldown_filter = CooldownFilter(
+            state_machine,
+            min_inference_interval,
+            cooldown_multiplier=cooldown_multiplier,
+        )
         is_eco = efficiency_mode == "eco"
         # 896x504 keeps height <= 512px (halving 512x512 vision tiles from 4 to 2)
         # and aligns exactly to 28px/14px ViT patches (Qwen2.5-VL, Gemma-3, Llama-Vision).

@@ -48,6 +48,19 @@ def build_language_instruction(text_language: str = "es", voice_language: str = 
     )
 
 
+def build_coach_mode_instruction(coach_mode: str = "match") -> str:
+    """Return proactive practice instructions when running in training/drills mode."""
+    if coach_mode != "training":
+        return ""
+    return (
+        "TRAINING / PRACTICE MODE ACTIVE (coach_mode=training): "
+        "Do NOT ignore warmup, Free Play, The Range, Aim Botz, Art of War, or practice servers. "
+        "Act as a proactive mechanical & macro drill instructor: evaluate crosshair/car/build-order "
+        "execution in this frame and set should_intervene=true whenever you can offer a concrete "
+        "practice correction or next drill step."
+    )
+
+
 class GeminiCoachClient:
     """Manages Gemini Context Caching sessions, fault tolerance, and multimodal inference."""
 
@@ -350,6 +363,9 @@ class GeminiCoachClient:
             _FRAME_ANALYSIS_PROMPT,
             build_language_instruction(text_language, voice_language),
         ]
+        mode_note = build_coach_mode_instruction(self._settings.coach_mode)
+        if mode_note:
+            prompt_parts.append(mode_note)
         if force_advice:
             prompt_parts.append(
                 "SOLICITUD MANUAL DEL JUGADOR (F10): el jugador pidió una lectura táctica "

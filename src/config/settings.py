@@ -24,6 +24,7 @@ ImageFormatType = Literal["jpeg", "webp"]
 LanguageCode = Literal["es", "en"]
 OverlayTheme = Literal["cyber-dark", "minimal-glass", "high-contrast", "matrix-green", "tactical-amber"]
 TokenEfficiencyMode = Literal["eco", "balanced", "high"]
+CoachModeType = Literal["match", "training"]
 
 # Multi-provider secret detection patterns (ISO/IEC 27001 / OWASP CWE-532)
 _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -219,6 +220,10 @@ class AppSettings(BaseSettings):
     voice_language: LanguageCode = Field(
         default="es",
         description="Language for TTS spoken voice lines ('es' or 'en').",
+    )
+    coach_mode: CoachModeType = Field(
+        default="match",
+        description="Coaching style: 'match' (competitive match, silent by default) or 'training' (proactive practice/drills instructor).",
     )
 
     # --- Output Channels & Controls ---

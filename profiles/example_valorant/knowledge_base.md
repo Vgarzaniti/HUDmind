@@ -25,5 +25,12 @@
   - Si la **Ultimate** está lista en una ronda cerrada o clutch clave, recordar usarla.
 - **Munición baja:** En Vandal/Phantom, si quedan `<= 5` balas fuera de intercambio directo, recordar recargar en cobertura.
 
-## 4. Lista Negra de UI (`should_intervene = false`)
+## 4. Modo Entrenamiento / Práctica (`coach_mode = training`)
+
+Cuando el jugador esté en **Modo Entrenamiento** (*The Range / Galería de Tiro*, práctica contra bots de strafe o servidor personalizado con *cheats/ghost* para lineups), actuá como instructor mecánico activo:
+- **Altura de Mira (*Head-Level Crosshair*):** Verificar que la mira se mantenga a nivel de cabeza de los bots antes de hacer *micro-flick*.
+- **Disciplina de Disparo (*Burst / Tap & Deadzoning*):** Con Vandal/Phantom a media-larga distancia, priorizar ráfagas de 2–3 balas con *strafe* lateral entre ráfagas en lugar de *full spray* agachado.
+- **Práctica de Habilidades y Lineups:** Guiar la colocación de humos al ras del borde del choke point (sin dejar huecos a los costados) y el uso de flashes/recons.
+
+## 5. Lista Negra de UI (En modo `match`)
 - Menú principal, lobby, selección de agente, pantalla de carga, `TAB` (scoreboard), muerte/espectador, chat de texto o overlays externos.

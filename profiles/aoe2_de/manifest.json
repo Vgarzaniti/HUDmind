@@ -1,0 +1,11 @@
+{
+  "game_id": "aoe2_de",
+  "display_name": "Age of Empires II: Definitive Edition",
+  "process_names": ["AoE2DE_s.exe", "AoE2DE.exe"],
+  "capture_fps": 0.8,
+  "phash_threshold": 7,
+  "cooldown_seconds": 10.0,
+  "max_resolution": [1280, 720],
+  "language": "es",
+  "notes": "Perfil RTS de macroeconomía, build orders, counters y modo entrenamiento (El Arte de la Guerra / Escaramuza)."
+}
