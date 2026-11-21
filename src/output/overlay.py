@@ -48,6 +48,24 @@ class OverlayMessage:
     duration_seconds: float | None = None
 
 
+def enable_windows_dpi_awareness() -> None:
+    """Enable Per-Monitor DPI Awareness v2 on Windows so MSS & overlay align with physical pixels."""
+    if sys.platform != "win32":
+        return
+    # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+    with contextlib.suppress(Exception):
+        user32 = ctypes.windll.user32
+        user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        user32.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
+        if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    with contextlib.suppress(Exception):
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    with contextlib.suppress(Exception):
+        ctypes.windll.user32.SetProcessDPIAware()
+
+
 def _ensure_tcl_tk_env() -> None:
     """Fix Windows Python 3.13+ virtualenv missing TCL_LIBRARY/TK_LIBRARY paths."""
     if sys.platform != "win32":

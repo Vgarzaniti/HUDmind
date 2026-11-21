@@ -1,9 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "hudmind"
-version = "0.2.0"
+version = "0.3.0"
 description = "HUDMind — Real-time Windows gaming coach powered by Gemini multimodal API, Context Caching, transparent click-through overlay, and async TTS."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
+
+[project.scripts]
+hudmind = "src.main:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

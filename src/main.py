@@ -20,11 +20,12 @@ from src.ai.gemini_client import GeminiCoachClient
 from src.capture.base import CapturedFrame, CaptureStrategy
 from src.capture.mss_capture import MSSCaptureStrategy, VideoMockCaptureStrategy
 from src.capture.observer import ScreenObserver
+from src.config.hotkeys import GlobalHotkeyManager
 from src.config.settings import AppSettings, RuntimeMetrics, configure_logging
-from src.output.overlay import TransparentOverlay
+from src.output.overlay import TransparentOverlay, enable_windows_dpi_awareness
 from src.output.tts import AudioPlayer, VoiceService
-from src.pipeline.filters import FilterPipeline
-from src.pipeline.schemas import CoachResponse, InterventionStateMachine
+from src.pipeline.filters import FilterPipeline, FrameContext
+from src.pipeline.schemas import CoachResponse, InterventionMemory, InterventionStateMachine
 from src.profiles.loader import GameProfile, GameProfileLoader
 
 logger = logging.getLogger("copilot.main")
@@ -44,6 +45,7 @@ class GameCopilotOrchestrator:
         dry_run: bool = False,
         enable_voice: bool | None = None,
         enable_overlay: bool | None = None,
+        enable_hotkeys: bool | None = None,
         ai_client: GeminiCoachClient | None = None,
     ) -> None:
         self._settings = settings
@@ -54,6 +56,7 @@ class GameCopilotOrchestrator:
 
         voice_enabled = settings.enable_voice if enable_voice is None else enable_voice
         overlay_enabled = settings.enable_overlay if enable_overlay is None else enable_overlay
+        hotkeys_enabled = settings.enable_hotkeys if enable_hotkeys is None else enable_hotkeys
 
         # 1. Profile Loader & Windows Process Detector
         self._profile_loader = GameProfileLoader(settings.profiles_dir)
@@ -70,8 +73,9 @@ class GameCopilotOrchestrator:
         # 3. Screen Observer (Async Pub-Sub with Drop-Oldest)
         self._observer = ScreenObserver(strategy=self._capture_strategy, target_fps=1.0)
 
-        # 4. Intervention State Machine + Chain of Responsibility Filter Pipeline
+        # 4. Intervention State Machine + Anti-Repetition Memory + Filter Pipeline
         self._state_machine = InterventionStateMachine()
+        self._memory = InterventionMemory(max_items=3, ttl_seconds=90.0)
         self._filter_pipeline = FilterPipeline(
             detector=self._profile_loader.detector,
             state_machine=self._state_machine,
@@ -89,7 +93,7 @@ class GameCopilotOrchestrator:
         else:
             self._ai_client = GeminiCoachClient(settings)
 
-        # 6. Output Channels (Click-Through Overlay & Async Voice)
+        # 6. Output Channels & Non-Intrusive Windows Global Hotkeys
         self._overlay = TransparentOverlay(
             enabled=overlay_enabled,
             position=settings.overlay_position,
@@ -98,10 +102,17 @@ class GameCopilotOrchestrator:
             default_duration_seconds=settings.overlay_duration_seconds,
         )
         self._voice = VoiceService(settings=settings, enabled=voice_enabled)
+        self._hotkeys = GlobalHotkeyManager(
+            enabled=hotkeys_enabled,
+            on_toggle_pause=self.toggle_user_pause,
+            on_analyze_now=self.trigger_on_demand_analysis,
+        )
 
         self._active_profile: GameProfile | None = None
         self._profile_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
+        self._user_paused = False
+        self._force_analysis_pending = False
 
     async def run(self, max_runtime_seconds: float | None = None) -> None:
         """Start all subsystems and run until interrupted or optional timeout expires."""
@@ -116,6 +127,7 @@ class GameCopilotOrchestrator:
 
         self._overlay.start()
         await self._voice.start()
+        self._hotkeys.start(loop=asyncio.get_running_loop())
 
         frame_queue = self._observer.subscribe("ai-pipeline")
 
@@ -177,6 +189,47 @@ class GameCopilotOrchestrator:
         """Signal the orchestrator to begin graceful shutdown."""
         self._stop_event.set()
 
+    def toggle_user_pause(self) -> None:
+        """Toggle manual pause/mute state (bound to F9 hotkey)."""
+        self._user_paused = not self._user_paused
+        title = self._active_profile.manifest.display_name if self._active_profile else "HUDMind"
+        if self._user_paused:
+            self._observer.pause()
+            logger.info("Coach PAUSADO por el usuario (F9 para reanudar).")
+            self._overlay.show_message(
+                text="Coach PAUSADO — presioná F9 para reanudar",
+                urgency="low",
+                title=title,
+                duration_seconds=2.5,
+            )
+        else:
+            if self._active_profile is not None:
+                self._observer.resume()
+            logger.info("Coach REANUDADO por el usuario.")
+            self._overlay.show_message(
+                text="Coach ACTIVO — observando partida",
+                urgency="low",
+                title=title,
+                duration_seconds=2.5,
+            )
+
+    def trigger_on_demand_analysis(self) -> None:
+        """Request immediate tactical analysis on next frame bypassing pHash & cooldown (F10)."""
+        if self._active_profile is None:
+            logger.info("Solicitud manual (F10) ignorada: no hay perfil de juego activo.")
+            return
+        self._force_analysis_pending = True
+        if self._user_paused:
+            self._user_paused = False
+            self._observer.resume()
+        logger.info("Análisis táctico bajo demanda solicitado (F10).")
+        self._overlay.show_message(
+            text="Analizando situación actual...",
+            urgency="low",
+            title=self._active_profile.manifest.display_name,
+            duration_seconds=2.0,
+        )
+
     def _resolve_test_profile(self) -> GameProfile | None:
         """Select forced profile for --test-mode (defaults to example_cs2 or first profile)."""
         if self._forced_profile_id:
@@ -204,8 +257,10 @@ class GameCopilotOrchestrator:
             self._active_profile = profile
             self._filter_pipeline.reset()
             self._state_machine.reset()
+            self._memory.clear()
             self._observer.update_fps(profile.manifest.capture_fps)
-            self._observer.resume()
+            if not self._user_paused:
+                self._observer.resume()
 
             logger.info(
                 "Perfil activado: %s (%s) | FPS=%.1f | pHash>=%d | cooldown=%.1fs",
@@ -251,7 +306,7 @@ class GameCopilotOrchestrator:
                         or self._active_profile.manifest.game_id != detected.manifest.game_id
                     ):
                         await self._activate_profile(detected)
-                    else:
+                    elif not self._user_paused:
                         self._observer.resume()
                 elif self._active_profile is not None:
                     await self._deactivate_profile()
@@ -271,43 +326,60 @@ class GameCopilotOrchestrator:
                 raise
 
             profile = self._active_profile
-            if profile is None:
+            if profile is None or self._user_paused:
                 continue
 
-            # Fast O(1) short-circuit in event loop: skip thread-pool handoff & pHash
-            # while Gemini is busy, in intervention cooldown, or within min interval.
-            can_run, _ = self._state_machine.can_analyze(
-                cooldown_seconds=profile.manifest.cooldown_seconds,
-                min_inference_interval=self._settings.min_inference_interval_seconds,
-            )
-            if not can_run:
-                self.metrics.record_filter(0.0, passed=False)
-                continue
+            force_now = self._force_analysis_pending
+            if force_now:
+                self._force_analysis_pending = False
 
-            # Run deterministic CPU Chain of Responsibility off the event loop
-            t_filter_start = time.perf_counter()
-            filtered = await asyncio.to_thread(
-                self._filter_pipeline.run,
-                frame,
-                profile,
-                self._test_mode,
-            )
-            filter_ms = (time.perf_counter() - t_filter_start) * 1000.0
+            if force_now:
+                if self._state_machine.is_busy:
+                    continue
+                t_filter_start = time.perf_counter()
+                raw_ctx = FrameContext(frame=frame, profile=profile, test_mode=True)
+                filtered = await asyncio.to_thread(
+                    self._filter_pipeline.image_optimizer.handle,
+                    raw_ctx,
+                )
+                filter_ms = (time.perf_counter() - t_filter_start) * 1000.0
+            else:
+                # Fast O(1) short-circuit in event loop: skip thread-pool handoff & pHash
+                # while Gemini is busy, in intervention cooldown, or within min interval.
+                can_run, _ = self._state_machine.can_analyze(
+                    cooldown_seconds=profile.manifest.cooldown_seconds,
+                    min_inference_interval=self._settings.min_inference_interval_seconds,
+                )
+                if not can_run:
+                    self.metrics.record_filter(0.0, passed=False)
+                    continue
+
+                # Run deterministic CPU Chain of Responsibility off the event loop
+                t_filter_start = time.perf_counter()
+                filtered = await asyncio.to_thread(
+                    self._filter_pipeline.run,
+                    frame,
+                    profile,
+                    self._test_mode,
+                )
+                filter_ms = (time.perf_counter() - t_filter_start) * 1000.0
 
             if filtered is None or filtered.encoded_bytes is None:
                 self.metrics.record_filter(filter_ms, passed=False)
                 continue
 
-            # Frame passed Focus + pHash + Cooldown + Resize/Compress
-            self._filter_pipeline.commit_analyzed_frame(filtered)
+            # Frame passed pipeline (or manual F10 request)
+            if filtered.phash is not None:
+                self._filter_pipeline.commit_analyzed_frame(filtered)
             size_kb = len(filtered.encoded_bytes) / 1024.0
             self.metrics.record_filter(filter_ms, passed=True, payload_kb=size_kb)
 
             if self._dry_run or self._ai_client is None:
                 self._state_machine.begin_analysis()
                 logger.info(
-                    "[DRY-RUN] Frame #%d aprobó pipeline | filter=%.1fms | pHash_dist=%s | payload=%.1f KB (%s)",
+                    "[DRY-RUN] Frame #%d aprobó pipeline%s | filter=%.1fms | pHash_dist=%s | payload=%.1f KB (%s)",
                     frame.frame_id,
+                    " [F10]" if force_now else "",
                     filter_ms,
                     filtered.phash_distance,
                     size_kb,
@@ -326,12 +398,15 @@ class GameCopilotOrchestrator:
                 filtered.mime_type,
             )
 
+            recent_history = self._memory.format_prompt_context()
             t_inf_start = time.perf_counter()
             try:
                 response = await self._ai_client.analyze_frame(
                     image_bytes=filtered.encoded_bytes,
                     mime_type=filtered.mime_type,
                     profile=profile,
+                    recent_history=recent_history,
+                    force_advice=force_now,
                 )
             except asyncio.CancelledError:
                 self._state_machine.abort_analysis()
@@ -379,12 +454,14 @@ class GameCopilotOrchestrator:
         if response.voice_line.strip():
             self._voice.enqueue(response.voice_line)
 
+        self._memory.record(response)
         self._state_machine.complete_delivery()
         return True
 
     async def shutdown(self) -> None:
         """Release all active resources cleanly and emit ISO/IEC 25010 telemetry summary."""
         logger.info("Deteniendo HUDMind...")
+        self._hotkeys.stop()
         await self._observer.stop()
         await self._voice.stop()
         if self._ai_client is not None:
@@ -568,6 +645,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Desactiva el overlay transparente para esta ejecución.",
     )
     parser.add_argument(
+        "--no-hotkeys",
+        action="store_true",
+        help="Desactiva los atajos de teclado globales (F9/F10) para esta ejecución.",
+    )
+    parser.add_argument(
         "--log-level",
         type=str,
         default=None,
@@ -578,6 +660,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint."""
+    enable_windows_dpi_awareness()
     args = parse_args(argv)
     settings = AppSettings()
     raw_secret = settings.get_api_key_value()
@@ -607,6 +690,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         enable_voice=False if args.no_voice else None,
         enable_overlay=False if args.no_overlay else None,
+        enable_hotkeys=False if args.no_hotkeys else None,
     )
 
     try:

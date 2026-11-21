@@ -77,7 +77,14 @@ En `--test-mode`:
 - Se fuerza el perfil indicado (`example_cs2` por defecto).
 - Podés calibrar en vivo el umbral de `pHash`, la frecuencia de captura y la cadencia de voz/overlay.
 
-### 3. Otras Opciones Útiles de CLI y Calidad (ISO/IEEE)
+### 3. Controles en Partida (Hotkeys Nativos Windows)
+
+Sin hacer `Alt+Tab` y usando la API oficial Win32 `RegisterHotKey` (sin hooks intrusivos de teclado):
+- **`F9`**: Pausar / Reanudar el coach al instante (muestra confirmación discreta en el overlay).
+- **`F10`**: Pedir lectura táctica inmediata (*on-demand*), salteando `pHash` y `cooldown`.
+- **Memoria anti-repetición:** El coach recuerda las últimas 3 intervenciones (TTL 90s) para no repetir el mismo consejo seguido.
+
+### 4. Otras Opciones Útiles de CLI y Calidad (ISO/IEEE)
 
 ```powershell
 # Diagnóstico integral de entorno (perfiles, Win32, captura, overlay click-through, audio)
@@ -86,11 +93,14 @@ python -m src.main --health-check
 # Probar captura + filtros en CPU SIN gastar tokens ni necesitar API key
 python -m src.main --test-mode --dry-run
 
+# Elegir perfil de Valorant o CS2
+python -m src.main --test-mode --profile example_valorant
+
 # Probar con una carpeta de capturas de pantalla o un video (VideoMockCaptureStrategy)
 python -m src.main --test-mode --mock-source ./capturas_prueba --dry-run
 
-# Desactivar voz u overlay temporalmente
-python -m src.main --test-mode --no-voice
+# Desactivar voz, overlay o hotkeys temporalmente
+python -m src.main --test-mode --no-voice --no-hotkeys
 python -m src.main --test-mode --no-overlay
 
 # Ejecutar suite de calidad (pytest + ruff + mypy)

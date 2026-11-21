@@ -181,6 +181,9 @@ class GeminiCoachClient:
         image_bytes: bytes,
         mime_type: str,
         profile: GameProfile,
+        *,
+        recent_history: str = "",
+        force_advice: bool = False,
     ) -> CoachResponse | None:
         """Analyze a single compressed game frame and return a structured CoachResponse."""
         if self.is_circuit_open:
@@ -199,7 +202,13 @@ class GeminiCoachClient:
         for attempt in range(self._max_retries + 1):
             try:
                 response = await asyncio.wait_for(
-                    self._invoke_model(image_bytes, mime_type, profile),
+                    self._invoke_model(
+                        image_bytes,
+                        mime_type,
+                        profile,
+                        recent_history=recent_history,
+                        force_advice=force_advice,
+                    ),
                     timeout=self._settings.gemini_timeout_seconds,
                 )
                 parsed = self._parse_response(response)
@@ -268,9 +277,22 @@ class GeminiCoachClient:
         image_bytes: bytes,
         mime_type: str,
         profile: GameProfile,
+        *,
+        recent_history: str = "",
+        force_advice: bool = False,
     ) -> Any:
         """Execute multimodal generate_content using either Context Cache or inline fallback."""
         image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+
+        prompt_parts = [_FRAME_ANALYSIS_PROMPT]
+        if force_advice:
+            prompt_parts.append(
+                "SOLICITUD MANUAL DEL JUGADOR (F10): el jugador pidió una lectura táctica "
+                "inmediata de este frame. Entregá el mejor consejo concreto disponible."
+            )
+        if recent_history.strip():
+            prompt_parts.append(recent_history.strip())
+        prompt_text = "\n\n".join(prompt_parts)
 
         if self._using_cache and self._cache_name:
             # IMPORTANT: Do NOT pass system_instruction when cached_content is set
@@ -282,7 +304,7 @@ class GeminiCoachClient:
             )
             contents: list[types.Part | str] = [
                 image_part,
-                _FRAME_ANALYSIS_PROMPT,
+                prompt_text,
             ]
         else:
             # Standard fallback mode: send system prompt + knowledge base inline
@@ -295,7 +317,7 @@ class GeminiCoachClient:
             contents = [
                 f"# Knowledge Base: {profile.manifest.display_name}\n\n{profile.knowledge_base}",
                 image_part,
-                _FRAME_ANALYSIS_PROMPT,
+                prompt_text,
             ]
 
         return await self._client.aio.models.generate_content(

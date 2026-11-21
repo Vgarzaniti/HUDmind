@@ -185,9 +185,13 @@ class AppSettings(BaseSettings):
         description="Cooldown period while the circuit breaker is open.",
     )
 
-    # --- Output Channels ---
+    # --- Output Channels & Controls ---
     enable_voice: bool = Field(default=True, description="Enable asynchronous TTS output.")
     enable_overlay: bool = Field(default=True, description="Enable click-through overlay.")
+    enable_hotkeys: bool = Field(
+        default=True,
+        description="Enable native Windows global hotkeys (F9=pause/mute, F10=analyze now).",
+    )
 
     # --- TTS Configuration ---
     tts_engine: TTSEngineType = Field(default="edge", description="Active TTS engine strategy.")

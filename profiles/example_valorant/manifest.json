@@ -1,0 +1,11 @@
+{
+  "game_id": "example_valorant",
+  "display_name": "VALORANT",
+  "process_names": ["VALORANT-Win64-Shipping.exe"],
+  "capture_fps": 1.0,
+  "phash_threshold": 8,
+  "cooldown_seconds": 10.0,
+  "max_resolution": [1280, 720],
+  "language": "es",
+  "notes": "Perfil táctico competitivo 5v5 para VALORANT."
+}

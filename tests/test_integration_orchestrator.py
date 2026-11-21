@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from src.config.settings import AppSettings
@@ -17,6 +18,8 @@ class _MockCoachClient:
         self.sessions_prepared = 0
         self.sessions_closed = 0
         self.frames_analyzed = 0
+        self.received_histories: list[str] = []
+        self.received_force_flags: list[bool] = []
 
     async def prepare_session(self, profile: GameProfile) -> bool:
         self.sessions_prepared += 1
@@ -27,8 +30,13 @@ class _MockCoachClient:
         image_bytes: bytes,
         mime_type: str,
         profile: GameProfile,
+        *,
+        recent_history: str = "",
+        force_advice: bool = False,
     ) -> CoachResponse | None:
         self.frames_analyzed += 1
+        self.received_histories.append(recent_history)
+        self.received_force_flags.append(force_advice)
         assert len(image_bytes) > 0
         assert mime_type in ("image/webp", "image/jpeg")
         return CoachResponse(
@@ -46,6 +54,7 @@ async def test_orchestrator_dry_run_end_to_end() -> None:
     settings = AppSettings(
         enable_voice=False,
         enable_overlay=False,
+        enable_hotkeys=False,
         min_inference_interval_seconds=0.5,
     )
     orchestrator = GameCopilotOrchestrator(
@@ -55,15 +64,16 @@ async def test_orchestrator_dry_run_end_to_end() -> None:
         use_synthetic_mock=True,
         dry_run=True,
     )
-    await orchestrator.run(max_runtime_seconds=1.6)
+    await orchestrator.run(max_runtime_seconds=2.5)
     snap = orchestrator.metrics.snapshot()
     assert snap["frames_filtered"] >= 1
 
 
-async def test_orchestrator_mocked_ai_intervention_and_cooldown() -> None:
+async def test_orchestrator_mocked_ai_intervention_cooldown_and_f10_on_demand() -> None:
     settings = AppSettings(
         enable_voice=False,
         enable_overlay=False,
+        enable_hotkeys=False,
         min_inference_interval_seconds=0.5,
     )
     mock_client: Any = _MockCoachClient()
@@ -75,12 +85,23 @@ async def test_orchestrator_mocked_ai_intervention_and_cooldown() -> None:
         dry_run=False,
         ai_client=mock_client,
     )
-    await orchestrator.run(max_runtime_seconds=2.2)
+
+    async def _trigger_f10_mid_run() -> None:
+        await asyncio.sleep(1.3)
+        # During 10s cooldown, pressing F10 must force an immediate 2nd analysis
+        # carrying the 1st intervention in anti-repetition recent_history!
+        orchestrator.trigger_on_demand_analysis()
+
+    trigger_task = asyncio.create_task(_trigger_f10_mid_run())
+    await orchestrator.run(max_runtime_seconds=2.7)
+    await trigger_task
 
     snap = orchestrator.metrics.snapshot()
     assert mock_client.sessions_prepared == 1
     assert mock_client.sessions_closed == 1
-    # Cooldown of 10s in example_cs2 guarantees only 1 intervention within 2.2s
-    assert mock_client.frames_analyzed == 1
-    assert snap["interventions_delivered"] == 1
+    assert mock_client.frames_analyzed == 2
+    assert mock_client.received_force_flags == [False, True]
+    assert mock_client.received_histories[0] == ""
+    assert "C4 plantado" in mock_client.received_histories[1]
+    assert snap["interventions_delivered"] == 2
     assert snap["api_errors"] == 0

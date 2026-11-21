@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
@@ -176,3 +178,64 @@ class InterventionStateMachine:
         self._last_analysis_time = 0.0
         self._last_intervention_time = 0.0
         self._last_urgency = None
+
+
+@dataclass(frozen=True, slots=True)
+class InterventionRecord:
+    """Snapshot of a delivered coaching tip stored for short-term anti-repetition memory."""
+
+    timestamp: float
+    urgency: UrgencyLevel
+    overlay_text: str
+    voice_line: str
+
+
+class InterventionMemory:
+    """Bounded rolling memory of recent interventions to prevent repetitive callouts."""
+
+    def __init__(self, max_items: int = 3, ttl_seconds: float = 90.0) -> None:
+        self._max_items = max(1, max_items)
+        self._ttl_seconds = max(5.0, ttl_seconds)
+        self._records: deque[InterventionRecord] = deque(maxlen=self._max_items)
+
+    def record(self, response: CoachResponse, now: float | None = None) -> None:
+        """Store an actionable coach response."""
+        if not response.is_actionable:
+            return
+        current = time.monotonic() if now is None else now
+        self._records.append(
+            InterventionRecord(
+                timestamp=current,
+                urgency=response.urgency,
+                overlay_text=response.overlay_text.strip(),
+                voice_line=response.voice_line.strip(),
+            )
+        )
+
+    def recent(self, now: float | None = None) -> list[InterventionRecord]:
+        """Return unexpired recent interventions in chronological order."""
+        current = time.monotonic() if now is None else now
+        cutoff = current - self._ttl_seconds
+        while self._records and self._records[0].timestamp < cutoff:
+            self._records.popleft()
+        return list(self._records)
+
+    def format_prompt_context(self, now: float | None = None) -> str:
+        """Format a compact anti-repetition reminder for Gemini, or empty string if none."""
+        current = time.monotonic() if now is None else now
+        items = self.recent(now=current)
+        if not items:
+            return ""
+        lines = [
+            "Intervenciones recientes ya comunicadas al jugador "
+            "(NO repitas el mismo consejo salvo escalada crítica):"
+        ]
+        for rec in items:
+            age_s = max(0, int(current - rec.timestamp))
+            summary = rec.overlay_text or rec.voice_line
+            lines.append(f"- hace {age_s}s [{rec.urgency.upper()}]: {summary}")
+        return "\n".join(lines)
+
+    def clear(self) -> None:
+        """Erase rolling memory when switching game profiles."""
+        self._records.clear()
