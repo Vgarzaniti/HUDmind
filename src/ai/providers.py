@@ -372,6 +372,7 @@ class GeminiProviderAdapter(BaseAIProvider):
         text_language: str = "es",
         voice_language: str = "es",
     ) -> ProviderCallResult:
+        prev_img: bytes | None = getattr(self, "_previous_image_bytes", None)
         resp = await self._client.analyze_frame(
             image_bytes=image_bytes,
             mime_type=mime_type,
@@ -380,6 +381,7 @@ class GeminiProviderAdapter(BaseAIProvider):
             force_advice=force_advice,
             text_language=text_language,
             voice_language=voice_language,
+            previous_image_bytes=prev_img,
         )
         if resp is not None:
             return ProviderCallResult(response=resp)
@@ -946,6 +948,8 @@ class ProviderFailoverRouter:
         self._active_index: int = 0
         self._hud_analyzer = RealTimeHUDAnalyzer()
         self._last_detected_mode: str = "match"
+        self._previous_frame_bytes: bytes | None = None
+        self._previous_frame_ts: float = 0.0
 
     @property
     def account_count(self) -> int:
@@ -974,6 +978,8 @@ class ProviderFailoverRouter:
         self._prepared_ids.clear()
         self._active_profile = profile
         self._hud_analyzer.reset()
+        self._previous_frame_bytes = None
+        self._previous_frame_ts = 0.0
 
         if not self._providers:
             logger.error("No hay cuentas IA habilitadas en el pool de proveedores.")
@@ -1051,6 +1057,15 @@ class ProviderFailoverRouter:
                         live_hud.score_text,
                     )
 
+        # Attach previous frame only if captured recently (<= 6s ago) so Gemini sees real motion!
+        prev_for_motion = (
+            self._previous_frame_bytes
+            if (self._previous_frame_bytes and (now - self._previous_frame_ts) <= 6.0)
+            else None
+        )
+        self._previous_frame_bytes = image_bytes if len(image_bytes) > 64 else None
+        self._previous_frame_ts = now
+
         keyless_cloud_attempts = 0
 
         for idx, prov in candidates:
@@ -1068,6 +1083,7 @@ class ProviderFailoverRouter:
 
             prov._current_live_hud = live_hud  # type: ignore[attr-defined]
             prov._effective_mode = effective_coach_mode  # type: ignore[attr-defined]
+            prov._previous_image_bytes = prev_for_motion  # type: ignore[attr-defined]
 
             t_call_start = time.monotonic()
             result = await prov.analyze_frame(

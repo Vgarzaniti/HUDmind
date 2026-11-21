@@ -31,18 +31,20 @@ class _CoachWireSchema(BaseModel):
 
 
 def build_universal_game_context_instruction() -> str:
-    """Universal cross-game visual context + real human eSports coach persona (zero canned examples)."""
+    """Universal cross-game visual context + high-value real-time eSports coach protocol."""
     return (
-        "REAL ESPORTS COACH PERSONA & LIVE CONTEXT PROTOCOL (applies to ANY game): "
-        "1) SPEAK LIKE A REAL HUMAN COACH ON DISCORD (NOT A TEXTBOOK): Improvise 100% original, "
-        "natural, concise, direct coaching commentary reacting strictly to what is happening right now. "
-        "Vary your tone naturally across moments (encouragement, urgent warning, clock/score reading, "
-        "or quick adjustment). Never use stock phrases or robotic textbook wording. "
-        "2) TEAMMATES, RIVALS & SCORE IN REAL TIME: Read visible ally/enemy positions, scoreboard, timer, "
-        "and HUD resources. Adapt urgency to score & clock. "
-        "3) MATCH MEMORY (`match_context`): Record a compact 1-line summary (score/timer, teammates, rivals, HUD) "
-        "so consecutive frames track match momentum. "
-        "4) STRICT ANTI-REPETITION: Never repeat the same phrase, idea, or topic from recent history."
+        "REAL ESPORTS COACH PERSONA & MOTION-AWARE PROTOCOL (applies to ANY game): "
+        "1) HIGH-VALUE MACRO & PATTERN COACHING (NEVER LATE MICRO-REFLEXES): Because audio takes ~1s to hear, "
+        "NEVER give split-second twitch commands that expire in 0.5s. Instead, coach positioning, rotation, "
+        "boost/resource economy, spacing with teammates, opponent habits, and clock/score strategy that stay "
+        "actionable for the next 10-30 seconds and genuinely help the player win. "
+        "2) PROVE YOU ARE WATCHING LIVE: When 2 frames are attached (Frame 1 = ~1s ago, Frame 2 = NOW), read "
+        "actual motion, trajectory, and HUD changes between them. Mention a concrete live detail you just saw "
+        "(exact boost/HP/score/timer, or where a teammate/rival just moved) naturally in your callout. "
+        "3) HUMAN DISCORD COACH TONE: Improvise concise, natural, energetic Spanish/English coaching (no textbook "
+        "wording, no stock phrases). Vary tone: encouragement, urgent warning, clock reading, or positioning tweak. "
+        "4) MATCH MEMORY (`match_context`) & ANTI-REPETITION: Always fill `match_context` (max 16 words: score/clock, "
+        "teammates, rivals, HUD). Never repeat any phrase or topic from recent history."
     )
 
 _FRAME_ANALYSIS_PROMPT = (
@@ -257,8 +259,9 @@ class GeminiCoachClient:
         force_advice: bool = False,
         text_language: str = "es",
         voice_language: str = "es",
+        previous_image_bytes: bytes | None = None,
     ) -> CoachResponse | None:
-        """Analyze a single compressed game frame and return a structured CoachResponse."""
+        """Analyze current (and optional previous) compressed game frame for motion-aware coaching."""
         if self.is_circuit_open:
             logger.debug("Circuit Breaker abierto; omitiendo llamada a Gemini.")
             return None
@@ -289,6 +292,7 @@ class GeminiCoachClient:
                         force_advice=force_advice,
                         text_language=text_language,
                         voice_language=voice_language,
+                        previous_image_bytes=previous_image_bytes,
                     ),
                     timeout=self._settings.gemini_timeout_seconds,
                 )
@@ -377,15 +381,27 @@ class GeminiCoachClient:
         force_advice: bool = False,
         text_language: str = "es",
         voice_language: str = "es",
+        previous_image_bytes: bytes | None = None,
     ) -> Any:
         """Execute multimodal generate_content using either Context Cache or inline fallback."""
         image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+        image_parts: list[types.Part | str] = []
+        if previous_image_bytes:
+            prev_part = types.Part.from_bytes(data=previous_image_bytes, mime_type=mime_type)
+            image_parts.extend([prev_part, image_part])
+        else:
+            image_parts.append(image_part)
 
         prompt_parts = [
             _FRAME_ANALYSIS_PROMPT,
             build_universal_game_context_instruction(),
             build_language_instruction(text_language, voice_language),
         ]
+        if previous_image_bytes:
+            prompt_parts.append(
+                "MOTION SEQUENCE ATTACHED: Image 1 is from ~1s ago; Image 2 is NOW. "
+                "Read actual movement, ball/enemy trajectory, and HUD changes between Image 1 and Image 2."
+            )
         mode_note = build_coach_mode_instruction(self._settings.coach_mode)
         if mode_note:
             prompt_parts.append(mode_note)
@@ -398,42 +414,53 @@ class GeminiCoachClient:
             prompt_parts.append(recent_history.strip())
         prompt_text = "\n\n".join(prompt_parts)
 
-        max_out = {"eco": 85, "balanced": 115, "high": 150}.get(
-            self._settings.token_efficiency_mode, 115
+        max_out = {"eco": 95, "balanced": 125, "high": 160}.get(
+            self._settings.token_efficiency_mode, 125
         )
-        # Disable hidden internal thinking tokens on Gemini 2.5 Flash for sub-second latency
-        # and ~70-85% lower output token consumption on real-time coaching frames.
-        thinking_cfg = (
-            types.ThinkingConfig(thinking_budget=0) if "2.5" in self._model.lower() else None
+        # Minimize hidden internal thinking tokens for sub-second real-time coaching:
+        # Gemini 2.5 uses thinking_budget=0; Gemini 3.x uses thinking_level=MINIMAL (2.5x faster!).
+        m_low = self._model.lower()
+        thinking_cfg: types.ThinkingConfig | None = None
+        if "2.5" in m_low:
+            thinking_cfg = types.ThinkingConfig(thinking_budget=0)
+        elif "3." in m_low or "3-" in m_low:
+            thinking_cfg = types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL)
+
+        media_res = (
+            types.MediaResolution.MEDIA_RESOLUTION_LOW
+            if previous_image_bytes or self._settings.token_efficiency_mode in ("eco",)
+            else None
         )
 
         if self._using_cache and self._cache_name:
             # IMPORTANT: Do NOT pass system_instruction when cached_content is set
             config = types.GenerateContentConfig(
                 cached_content=self._cache_name,
-                temperature=self._settings.gemini_temperature,
+                temperature=min(0.65, max(0.35, self._settings.gemini_temperature + 0.15)),
                 max_output_tokens=max_out,
                 thinking_config=thinking_cfg,
+                media_resolution=media_res,
                 response_mime_type="application/json",
                 response_schema=_CoachWireSchema,
             )
             contents: list[types.Part | str] = [
-                image_part,
+                *image_parts,
                 prompt_text,
             ]
         else:
             # Standard fallback mode: send system prompt + compact knowledge base inline
             config = types.GenerateContentConfig(
                 system_instruction=profile.system_prompt,
-                temperature=self._settings.gemini_temperature,
+                temperature=min(0.65, max(0.35, self._settings.gemini_temperature + 0.15)),
                 max_output_tokens=max_out,
                 thinking_config=thinking_cfg,
+                media_resolution=media_res,
                 response_mime_type="application/json",
                 response_schema=_CoachWireSchema,
             )
             contents = [
                 f"# Knowledge Base: {profile.manifest.display_name}\n\n{profile.compact_knowledge_base}",
-                image_part,
+                *image_parts,
                 prompt_text,
             ]
 

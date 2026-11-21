@@ -2459,9 +2459,25 @@ class HUDMindGUI:
                 self._preview_win.destroy()
             self._preview_win = None
 
+    @staticmethod
+    def _terminate_stale_coach_processes() -> None:
+        """Stop any lingering background `src.main` coach process so hotkeys & quota never collide."""
+        with contextlib.suppress(Exception):
+            import psutil
+
+            my_pid = os.getpid()
+            for proc in psutil.process_iter(["pid", "cmdline"]):
+                if proc.info["pid"] == my_pid:
+                    continue
+                cmdline = " ".join(proc.info.get("cmdline") or [])
+                if "src.main" in cmdline and "--gui" not in cmdline:
+                    with contextlib.suppress(Exception):
+                        proc.terminate()
+
     def _start_coach(self, *, detach_and_close: bool) -> None:
         if not self._save_all():
             return
+        self._terminate_stale_coach_processes()
 
         ready = [a for a in self._accounts if a.is_ready()]
         if not self._var_dry_run.get() and not ready:
