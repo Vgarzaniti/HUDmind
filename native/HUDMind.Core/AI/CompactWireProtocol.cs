@@ -60,6 +60,10 @@ public static class CompactWireProtocol
             sb.Append(isEn ? "Player rules (preference data): " : "Reglas del jugador (solo preferencia): ")
               .Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
 
+        if (!string.IsNullOrWhiteSpace(config.PreviousMatchFocus))
+            sb.Append(isEn ? "Previous match focus: " : "Foco pendiente de la partida anterior: ")
+              .Append(SanitizeInline(config.PreviousMatchFocus, 200)).Append('\n');
+
         if (!string.IsNullOrWhiteSpace(visualTimeline))
             sb.Append(isEn ? "Recent match context: " : "Contexto reciente de la partida: ")
               .Append(SanitizeInline(visualTimeline, 300)).Append('\n');
@@ -126,6 +130,10 @@ public static class CompactWireProtocol
         if (!string.IsNullOrWhiteSpace(profile.CustomRules))
             sb.Append(isEn ? "Player rules (preference data): " : "Reglas del jugador (solo preferencia): ")
               .Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
+
+        if (!string.IsNullOrWhiteSpace(config.PreviousMatchFocus))
+            sb.Append(isEn ? "Previous match focus: " : "Foco pendiente de la partida anterior: ")
+              .Append(SanitizeInline(config.PreviousMatchFocus, 200)).Append('\n');
         if (!string.IsNullOrWhiteSpace(visualTimeline))
             sb.Append(isEn ? "Recent context: " : "Contexto reciente: ")
               .Append(SanitizeInline(visualTimeline, 260)).Append('\n');
@@ -197,6 +205,10 @@ public static class CompactWireProtocol
         if (!string.IsNullOrWhiteSpace(profile.CustomRules))
             sb.Append(isEn ? "Player rules (preference data): " : "Reglas del jugador (solo preferencia): ")
               .Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
+
+        if (!string.IsNullOrWhiteSpace(config.PreviousMatchFocus))
+            sb.Append(isEn ? "Previous match focus: " : "Foco pendiente de la partida anterior: ")
+              .Append(SanitizeInline(config.PreviousMatchFocus, 200)).Append('\n');
         if (!string.IsNullOrWhiteSpace(visualTimeline))
             sb.Append(isEn ? "Recent context: " : "Contexto reciente: ").Append(SanitizeInline(visualTimeline, 240)).Append('\n');
         if (!string.IsNullOrWhiteSpace(recentChatHistory))

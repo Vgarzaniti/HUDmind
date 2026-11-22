@@ -301,6 +301,9 @@ public sealed class UserConfig
     [JsonPropertyName("enable_audio_cues")]
     public bool EnableAudioCues { get; set; } = true;
 
+    [JsonIgnore]
+    public string PreviousMatchFocus { get; set; } = string.Empty;
+
     /// <summary>
     /// Synchronizes mutable runtime preferences when a caller provides a separate UserConfig instance.
     /// </summary>
@@ -334,6 +337,7 @@ public sealed class UserConfig
         ImageCompressionQuality = source.ImageCompressionQuality;
         TokenEfficiencyMode = source.TokenEfficiencyMode;
         EnableAudioCues = source.EnableAudioCues;
+        PreviousMatchFocus = source.PreviousMatchFocus;
         SetCommunicationMode(source.CommunicationMode);
     }
 

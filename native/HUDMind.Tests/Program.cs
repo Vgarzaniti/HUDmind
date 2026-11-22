@@ -999,6 +999,106 @@ await RunTest("31. ConfigRepository.SavePostMatchReview persists timestamped mar
     return Task.CompletedTask;
 });
 
+// 32. Embedded Default Profile Seeding, Manifest Updates & Safe Custom Profile Deletion
+await RunTest("32. ConfigRepository seeds 7 embedded profiles cleanly, updates manifest & deletes custom profile safely", () =>
+{
+    var tmp = Path.Combine(Path.GetTempPath(), $"hudmind_t32_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmp);
+    try
+    {
+        var repo = new ConfigRepository(tmp);
+        int seeded = repo.EnsureDefaultProfilesSeeded();
+        Assert(seeded >= 14, $"Expected embedded resource files for 7 games (>=14 files), seeded={seeded}");
+
+        // Second call when profiles exist must be no-op (never overwrites user tweaks)
+        int secondSeed = repo.EnsureDefaultProfilesSeeded();
+        Assert(secondSeed == 0, "Re-seeding non-empty profiles dir must be a no-op");
+
+        var loaded = repo.LoadProfiles();
+        Assert(loaded.Count == 7 && loaded.Any(p => p.Manifest.GameId == "rocket_league") && loaded.Any(p => p.Manifest.GameId == "cs2"),
+            $"All 7 built-in profiles must load after seeding (got {loaded.Count})");
+
+        var created = repo.CreateNewGameProfile("custom_arena", "Custom Arena", ["arena_client"]);
+        repo.UpdateProfileManifest(created, ["arena_dx12", "arena_client.exe"], cooldownSeconds: 14.5, phashThreshold: 11);
+        Assert(created.Manifest.CooldownSeconds == 14.5 && created.Manifest.PhashThreshold == 11 &&
+               created.Manifest.ProcessNames.SequenceEqual(["arena_dx12.exe", "arena_client.exe"], StringComparer.OrdinalIgnoreCase),
+            "UpdateProfileManifest must clamp & persist updated manifest");
+
+        // Reject deleting universal
+        var univ = ConfigRepository.CreateUniversalProfile(repo.ProfilesDir);
+        bool blockedUniv = false;
+        try { repo.DeleteGameProfile(univ); } catch (InvalidOperationException) { blockedUniv = true; }
+        Assert(blockedUniv, "Must never delete universal profile");
+
+        repo.DeleteGameProfile(created);
+        Assert(!Directory.Exists(created.DirectoryPath), "Deleted custom profile directory must be removed");
+    }
+    finally
+    {
+        if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
+    }
+    return Task.CompletedTask;
+});
+
+// 33. LoadLatestPostMatchFocus Injection & Redaction Across Live & Classic Prompts
+await RunTest("33. LoadLatestPostMatchFocus injects redacted drill into Live & Classic prompts", () =>
+{
+    var tmp = Path.Combine(Path.GetTempPath(), $"hudmind_t33_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(Path.Combine(tmp, "profiles"));
+    try
+    {
+        var repo = new ConfigRepository(tmp);
+        repo.SavePostMatchReview(
+            "Rocket League",
+            "groq:scout",
+            "1) Top errores: double commit.\n3) Ejercicio 5 min: shadow defense 1v1 con gsk_leak_token_value_123456.",
+            new DateTimeOffset(2026, 11, 22, 18, 0, 0, TimeSpan.Zero));
+
+        var focus = repo.LoadLatestPostMatchFocus("Rocket League");
+        Assert(!string.IsNullOrWhiteSpace(focus) && focus.Contains("shadow defense", StringComparison.OrdinalIgnoreCase) && !focus.Contains("gsk_leak_token_value_123456"),
+            $"Focus extraction/redaction failed: {focus}");
+
+        var prof = new GameProfile { DirectoryPath = tmp, Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League" } };
+        var cfg = new UserConfig { PreviousMatchFocus = focus };
+        var livePrompt = CoachingPersonaBuilder.BuildLiveSystemInstruction(cfg, prof);
+        var wirePrompt = CompactWireProtocol.BuildRealtimePrompt(prof, cfg, "", false);
+        Assert(livePrompt.Contains("shadow defense") && wirePrompt.Contains("shadow defense"),
+            "PreviousMatchFocus must appear in both Live and Classic system prompts");
+    }
+    finally
+    {
+        if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
+    }
+    return Task.CompletedTask;
+});
+
+// 34. BlackScreenDiagnostic Streak Warning & Auto Re-Arm
+await RunTest("34. BlackScreenDiagnostic emits one Borderless warning on >=6 black frames & re-arms cleanly", () =>
+{
+    var cap = new MutableBlackCapture();
+    var diag = new BlackScreenDiagnostic();
+    var logs = new List<string>();
+    var ov = new RecordingOverlay();
+    var p = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "CS2" } };
+
+    cap.BlackCount = 5;
+    diag.Observe(cap, p, testMode: false, logs.Add, ov, enableOverlay: true);
+    Assert(logs.Count == 0 && ov.Shown.Count == 0, "Threshold=6 must not trigger at 5 frames");
+
+    cap.BlackCount = 6;
+    diag.Observe(cap, p, testMode: false, logs.Add, ov, enableOverlay: true);
+    diag.Observe(cap, p, testMode: false, logs.Add, ov, enableOverlay: true);
+    Assert(logs.Count == 1 && logs[0].Contains("Borderless", StringComparison.OrdinalIgnoreCase) && ov.Shown.Count == 1,
+        $"Expected exactly 1 Borderless warning across sustained black streak, got logs={logs.Count}");
+
+    cap.BlackCount = 0;
+    diag.Observe(cap, p, testMode: false, logs.Add, ov, enableOverlay: true);
+    cap.BlackCount = 6;
+    diag.Observe(cap, p, testMode: false, logs.Add, ov, enableOverlay: true);
+    Assert(logs.Count == 2, "Diagnostic should re-arm after healthy non-black frames resume");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -1070,6 +1170,17 @@ sealed class MutableWindowDetector(string exe) : IForegroundWindowDetector
     public volatile string CurrentExe = exe;
     public string? GetForegroundExecutable() => CurrentExe;
     public (int Left, int Top, int Width, int Height)? GetForegroundClientRect() => (0, 0, 1280, 720);
+}
+
+sealed class MutableBlackCapture : IScreenCaptureService
+{
+    public int BlackCount { get; set; }
+    public int ConsecutiveBlackFrames => BlackCount;
+    public (CapturedFrameData? Frame, bool SkippedByHash) CaptureIfChanged(
+        int monitorIndex, (int Left, int Top, int Width, int Height)? regionRect,
+        int targetWidth, int targetHeight, int jpegQuality, long frameId,
+        ulong? lastAcceptedHash, int phashThreshold, bool isForced) => (null, true);
+    public void Dispose() { }
 }
 
 sealed class StubCapture : IScreenCaptureService

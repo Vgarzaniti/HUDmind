@@ -234,7 +234,7 @@
                         </DockPanel>
                     </Border>
 
-                    <ListView x:Name="LstAccounts" Grid.Row="1" Background="#0F172A" Foreground="#F1F5F9" BorderBrush="#1E293B" Margin="0,0,0,10">
+                    <ListView x:Name="LstAccounts" Grid.Row="1" Background="#0F172A" Foreground="#F1F5F9" BorderBrush="#1E293B" Margin="0,0,0,10" MouseDoubleClick="LstAccounts_MouseDoubleClick">
                         <ListView.View>
                             <GridView>
                                 <GridViewColumn Header="#" Width="36" DisplayMemberBinding="{Binding Priority}" />
@@ -258,16 +258,18 @@
                             <Grid Grid.Row="0">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="120" />
-                                    <ColumnDefinition Width="170" />
-                                    <ColumnDefinition Width="210" />
+                                    <ColumnDefinition Width="165" />
+                                    <ColumnDefinition Width="200" />
                                     <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <ComboBox x:Name="CmbNewProvider" Grid.Column="0" Margin="0,0,6,0" SelectionChanged="CmbNewProvider_SelectionChanged" />
                                 <TextBox x:Name="TxtNewLabel" Grid.Column="1" Margin="0,0,6,0" Text="Groq LPU Gratis (~0.4s)" />
                                 <TextBox x:Name="TxtNewModel" Grid.Column="2" Margin="0,0,6,0" Text="meta-llama/llama-4-scout-17b-16e-instruct" />
                                 <PasswordBox x:Name="PwdNewApiKey" Grid.Column="3" Margin="0,0,6,0" ToolTip="Pegá tu API Key (oculta para seguridad en OBS/Discord)" />
-                                <Button Grid.Column="4" Content="+ Agregar #1" Background="#059669" BorderBrush="#10B981" Click="BtnAddAccount_Click" />
+                                <Button x:Name="BtnAddAccount" Grid.Column="4" Content="+ Agregar #1" Background="#059669" BorderBrush="#10B981" Click="BtnAddAccount_Click" />
+                                <Button x:Name="BtnCancelEdit" Grid.Column="5" Content="Cancelar" Visibility="Collapsed" Margin="6,0,0,0" Click="BtnCancelEdit_Click" />
                             </Grid>
                             <Grid Grid.Row="1" Margin="0,8,0,0">
                                 <Grid.ColumnDefinitions>
@@ -297,6 +299,7 @@
                     <StackPanel Grid.Row="3" Orientation="Horizontal">
                         <Button Content="↑ Subir" Click="BtnMoveUp_Click" Margin="0,0,6,0" />
                         <Button Content="↓ Bajar" Click="BtnMoveDown_Click" Margin="0,0,6,0" />
+                        <Button x:Name="BtnEditAccount" Content="✏ Editar" Click="BtnEditAccount_Click" Margin="0,0,6,0" />
                         <Button Content="Activar / Pausar" Click="BtnToggleAccount_Click" Margin="0,0,6,0" />
                         <Button x:Name="BtnTestAccount" Content="🔍 Probar Conexión" Click="BtnTestAccount_Click" Margin="0,0,6,0" />
                         <Button Content="Eliminar" Background="#7F1D1D" BorderBrush="#EF4444" Click="BtnDeleteAccount_Click" />
@@ -308,6 +311,7 @@
             <TabItem Header="🎮 Reglas por Juego">
                 <Grid Margin="12">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
@@ -340,8 +344,26 @@
                             <Button x:Name="BtnCreateProfile" Grid.Column="7" Content="➕ Crear Perfil" Background="#059669" BorderBrush="#10B981" Click="BtnCreateProfile_Click" />
                         </Grid>
                     </Border>
+                    <Border Grid.Row="2" Background="#0F172A" CornerRadius="8" Padding="8" Margin="0,0,0,8" BorderBrush="#1E293B" BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="65" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="55" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="EXEs:" Foreground="#94A3B8" VerticalAlignment="Center" Margin="2,0,6,0" />
+                            <TextBox x:Name="TxtProfileExes" Grid.Column="1" Margin="0,0,12,0" ToolTip="Ejecutables del perfil actual separados por coma (manifest.json)" />
+                            <TextBlock Grid.Column="2" Text="Cooldown (s):" Foreground="#94A3B8" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <TextBox x:Name="TxtProfileCooldown" Grid.Column="3" Margin="0,0,12,0" ToolTip="Segundos entre consejos automáticos (1..120)" />
+                            <TextBlock Grid.Column="4" Text="pHash:" Foreground="#94A3B8" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <TextBox x:Name="TxtProfilePhash" Grid.Column="5" ToolTip="Sensibilidad de cambio visual (1..64, menor = más sensible)" />
+                        </Grid>
+                    </Border>
                     <TextBox x:Name="TxtCustomRules"
-                             Grid.Row="2"
+                             Grid.Row="3"
                              MaxLength="600"
                              AcceptsReturn="True"
                              TextWrapping="Wrap"
@@ -349,9 +371,10 @@
                              FontFamily="Consolas"
                              FontSize="12.5"
                              TextChanged="TxtCustomRules_TextChanged" />
-                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
-                        <Button Content="💾 Guardar Reglas" Background="#0284C7" BorderBrush="#38BDF8" Click="BtnSaveRules_Click" />
-                    </StackPanel>
+                    <DockPanel Grid.Row="4" Margin="0,10,0,0">
+                        <Button x:Name="BtnDeleteProfile" DockPanel.Dock="Left" Content="🗑 Eliminar Perfil" Background="#7F1D1D" BorderBrush="#EF4444" Click="BtnDeleteProfile_Click" />
+                        <Button Content="💾 Guardar Reglas y Perfil" HorizontalAlignment="Right" Background="#0284C7" BorderBrush="#38BDF8" Click="BtnSaveRules_Click" />
+                    </DockPanel>
                 </Grid>
             </TabItem>
 
@@ -438,8 +461,8 @@
 
                         <TextBlock Grid.Row="6" Grid.Column="0" Text="Voz Modo Clásico:" VerticalAlignment="Center" />
                         <ComboBox x:Name="CmbVoiceStyle" Grid.Row="6" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbVoiceSettings_SelectionChanged">
-                            <ComboBoxItem Content="🎙 Humana Neural Argentina (Tomas / Elena)" Tag="neural" />
-                            <ComboBoxItem Content="⚡ Instantánea Windows OneCore (~8ms, Tiempo Real)" Tag="instant" />
+                            <ComboBoxItem Content="🎙 Windows Natural / OneCore (0% Red · Tu Parlante)" Tag="neural" />
+                            <ComboBoxItem Content="⚡ Instantánea SAPI/OneCore (~8ms, Tiempo Real)" Tag="instant" />
                         </ComboBox>
 
                         <TextBlock Grid.Row="7" Grid.Column="0" Text="Idioma del Coach:" VerticalAlignment="Center" />

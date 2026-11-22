@@ -5,4 +5,8 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../../profiles/**/*.json" LogicalName="HUDMind.DefaultProfiles/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="../../profiles/**/*.md" Exclude="../../profiles/**/custom_rules.md" LogicalName="HUDMind.DefaultProfiles/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>

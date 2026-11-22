@@ -24,6 +24,8 @@ public interface IScreenCaptureService : IDisposable
         ulong? lastAcceptedHash,
         int phashThreshold,
         bool isForced);
+
+    int ConsecutiveBlackFrames => 0;
 }
 
 public interface IVoiceOutputService : IDisposable
@@ -31,6 +33,7 @@ public interface IVoiceOutputService : IDisposable
     string EngineName { get; }
     void WarmUp(string language, double volume, string gender = "male", string style = "neural");
     void UpdateSettings(string language, double volume, string gender = "male", string style = "neural");
+    void SetOutputDevice(string? deviceName) { }
     double SpeakInstant(string text);
     void StopSpeaking();
 }

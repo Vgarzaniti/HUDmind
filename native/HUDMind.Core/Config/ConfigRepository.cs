@@ -324,7 +324,72 @@ public sealed partial class ConfigRepository
         if (Directory.Exists(Path.Combine(desktopRepo, "profiles")))
             return desktopRepo;
 
-        return Directory.GetCurrentDirectory();
+        var portableDir = AppContext.BaseDirectory;
+        if (Directory.Exists(Path.Combine(portableDir, "profiles")))
+            return portableDir;
+
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "HUDMind");
+    }
+
+    /// <summary>
+    /// Populates the 7 built-in game profiles from embedded assembly resources when running
+    /// standalone on a new PC where `profiles/` does not yet exist or is completely empty.
+    /// Never overwrites existing user or test profiles.
+    /// </summary>
+    public int EnsureDefaultProfilesSeeded()
+    {
+        var fullProfilesRoot = Path.GetFullPath(ProfilesDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (Directory.Exists(fullProfilesRoot))
+        {
+            if ((File.GetAttributes(fullProfilesRoot) & FileAttributes.ReparsePoint) != 0)
+                return 0;
+            if (Directory.EnumerateDirectories(fullProfilesRoot).Any())
+                return 0;
+        }
+
+        const string prefix = "HUDMind.DefaultProfiles/";
+        var asm = typeof(ConfigRepository).Assembly;
+        int extracted = 0;
+
+        Directory.CreateDirectory(fullProfilesRoot);
+        foreach (var resName in asm.GetManifestResourceNames())
+        {
+            if (!resName.StartsWith(prefix, StringComparison.Ordinal))
+                continue;
+
+            var rel = resName[prefix.Length..].Replace('\\', '/').Trim('/');
+            var parts = rel.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 2)
+                continue;
+
+            var gameId = parts[0].ToLowerInvariant();
+            var fileName = parts[1];
+            if (!SafeGameIdRegex().IsMatch(gameId) ||
+                fileName is not ("manifest.json" or "system_prompt.md" or "knowledge_base.md"))
+            {
+                continue;
+            }
+
+            var targetDir = Path.GetFullPath(Path.Combine(fullProfilesRoot, gameId));
+            var targetFile = Path.GetFullPath(Path.Combine(targetDir, fileName));
+            if (!targetFile.StartsWith(fullProfilesRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            Directory.CreateDirectory(targetDir);
+            if (File.Exists(targetFile))
+                continue;
+
+            using var stream = asm.GetManifestResourceStream(resName);
+            if (stream is null)
+                continue;
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            AtomicWrite(targetFile, reader.ReadToEnd());
+            extracted++;
+        }
+
+        return extracted;
     }
 
     public UserConfig LoadUserConfig()
@@ -513,20 +578,18 @@ public sealed partial class ConfigRepository
         };
     }
 
-    public void SaveCustomRules(GameProfile profile, string rulesText)
+    private (string ProfileDir, string TargetFile) ValidateProfileSubpath(GameProfile profile, string? fileName = null)
     {
-        var trimmed = (rulesText ?? string.Empty).Trim();
-        if (trimmed.Length > MaxCustomRulesChars)
-            throw new ArgumentException($"Las reglas personalizadas no pueden superar {MaxCustomRulesChars} caracteres.");
-
         var fullProfilesRoot = Path.GetFullPath(ProfilesDir) + Path.DirectorySeparatorChar;
         var fullProfileDir = Path.GetFullPath(profile.DirectoryPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var fullRootNoSlash = fullProfilesRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         if (string.Equals(fullProfileDir, fullRootNoSlash, StringComparison.OrdinalIgnoreCase))
-            throw new UnauthorizedAccessException("Las reglas deben guardarse dentro de una subcarpeta de perfil (CWE-22).");
+            throw new UnauthorizedAccessException("La operación debe ejecutarse dentro de una subcarpeta de perfil (CWE-22).");
 
-        var fullTarget = Path.GetFullPath(Path.Combine(fullProfileDir, "custom_rules.md"));
-        if (!fullTarget.StartsWith(fullProfilesRoot, StringComparison.OrdinalIgnoreCase))
+        var candidate = string.IsNullOrEmpty(fileName)
+            ? fullProfileDir + Path.DirectorySeparatorChar
+            : Path.GetFullPath(Path.Combine(fullProfileDir, fileName));
+        if (!candidate.StartsWith(fullProfilesRoot, StringComparison.OrdinalIgnoreCase))
             throw new UnauthorizedAccessException("Ruta de perfil fuera del directorio permitido (CWE-22).");
 
         if (Directory.Exists(fullProfileDir) &&
@@ -534,6 +597,32 @@ public sealed partial class ConfigRepository
         {
             throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en perfiles.");
         }
+
+        return (fullProfileDir, string.IsNullOrEmpty(fileName) ? fullProfileDir : candidate);
+    }
+
+    private static List<string> NormalizeProcessNames(IEnumerable<string> processNames)
+    {
+        var list = processNames
+            .Select(p => (p ?? string.Empty).Trim())
+            .Where(p => p.Length is >= 2 and <= 80 &&
+                        !p.Contains('/') && !p.Contains('\\') && !p.Contains("..", StringComparison.Ordinal) &&
+                        p.All(c => !char.IsControl(c)))
+            .Select(p => p.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? p : $"{p}.exe")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (list.Count == 0)
+            throw new ArgumentException("Ingresá al menos un nombre de ejecutable válido (ej: MiJuego.exe).", nameof(processNames));
+        return list;
+    }
+
+    public void SaveCustomRules(GameProfile profile, string rulesText)
+    {
+        var trimmed = (rulesText ?? string.Empty).Trim();
+        if (trimmed.Length > MaxCustomRulesChars)
+            throw new ArgumentException($"Las reglas personalizadas no pueden superar {MaxCustomRulesChars} caracteres.");
+
+        var (fullProfileDir, fullTarget) = ValidateProfileSubpath(profile, "custom_rules.md");
 
         if (string.IsNullOrEmpty(trimmed))
         {
@@ -546,6 +635,41 @@ public sealed partial class ConfigRepository
         Directory.CreateDirectory(fullProfileDir);
         AtomicWrite(fullTarget, trimmed);
         profile.CustomRules = trimmed;
+    }
+
+    /// <summary>
+    /// Updates process executables, cooldown, and pHash sensitivity in a profile's manifest.json safely.
+    /// </summary>
+    public void UpdateProfileManifest(
+        GameProfile profile,
+        IEnumerable<string> processNames,
+        double cooldownSeconds,
+        int phashThreshold)
+    {
+        if (string.Equals(profile.Manifest.GameId, "universal", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("El perfil dinámico 'universal' no usa archivo manifest editable.");
+
+        var validProcs = NormalizeProcessNames(processNames);
+        var (_, manifestPath) = ValidateProfileSubpath(profile, "manifest.json");
+
+        profile.Manifest.ProcessNames = validProcs;
+        profile.Manifest.CooldownSeconds = Math.Round(Math.Clamp(cooldownSeconds, 1.0, 120.0), 1);
+        profile.Manifest.PhashThreshold = Math.Clamp(phashThreshold, 1, 64);
+
+        AtomicWrite(manifestPath, JsonSerializer.Serialize(profile.Manifest, JsonOpts));
+    }
+
+    /// <summary>
+    /// Safely deletes a profile directory under `profiles/` (refusing `universal`, symlinks, and CWE-22).
+    /// </summary>
+    public void DeleteGameProfile(GameProfile profile)
+    {
+        if (string.Equals(profile.Manifest.GameId, "universal", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("No se puede eliminar el perfil dinámico 'universal'.");
+
+        var (fullProfileDir, _) = ValidateProfileSubpath(profile);
+        if (Directory.Exists(fullProfileDir))
+            Directory.Delete(fullProfileDir, recursive: true);
     }
 
     /// <summary>
@@ -565,17 +689,7 @@ public sealed partial class ConfigRepository
         var cleanName = string.IsNullOrWhiteSpace(displayName) ? id : displayName.Trim();
         if (cleanName.Length > 64) cleanName = cleanName[..64];
 
-        var validProcs = processNames
-            .Select(p => (p ?? string.Empty).Trim())
-            .Where(p => p.Length is >= 2 and <= 80 &&
-                        !p.Contains('/') && !p.Contains('\\') && !p.Contains("..", StringComparison.Ordinal) &&
-                        p.All(c => !char.IsControl(c)))
-            .Select(p => p.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? p : $"{p}.exe")
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (validProcs.Count == 0)
-            throw new ArgumentException("Ingresá al menos un nombre de ejecutable válido (ej: MiJuego.exe).", nameof(processNames));
+        var validProcs = NormalizeProcessNames(processNames);
 
         var fullProfilesRoot = Path.GetFullPath(ProfilesDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var fullTargetDir = Path.GetFullPath(Path.Combine(fullProfilesRoot, id));
@@ -657,6 +771,68 @@ public sealed partial class ConfigRepository
 
         AtomicWrite(destPath, md);
         return destPath;
+    }
+
+    /// <summary>
+    /// Loads a concise, secret-redacted training focus hint from the latest post-match review under `logs/reviews/`.
+    /// </summary>
+    public string LoadLatestPostMatchFocus(string? gameDisplayName = null, int maxChars = 220)
+    {
+        try
+        {
+            var logsDir = Path.GetFullPath(Path.Combine(WorkspaceRoot, "logs"));
+            var reviewsFull = Path.GetFullPath(ReviewsDir);
+            if (!Directory.Exists(reviewsFull))
+                return string.Empty;
+            if ((Directory.Exists(logsDir) && (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) != 0) ||
+                (File.GetAttributes(reviewsFull) & FileAttributes.ReparsePoint) != 0)
+            {
+                return string.Empty;
+            }
+
+            var files = Directory.GetFiles(reviewsFull, "*.md", SearchOption.TopDirectoryOnly)
+                .Where(f => (File.GetAttributes(f) & FileAttributes.ReparsePoint) == 0)
+                .OrderByDescending(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (files.Count == 0)
+                return string.Empty;
+
+            string? chosen = null;
+            if (!string.IsNullOrWhiteSpace(gameDisplayName))
+            {
+                var slug = new string(gameDisplayName.Trim().ToLowerInvariant()
+                    .Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_').ToArray()).Trim('_');
+                if (!string.IsNullOrEmpty(slug))
+                    chosen = files.FirstOrDefault(f => Path.GetFileName(f).Contains($"_{slug}.md", StringComparison.OrdinalIgnoreCase));
+            }
+            chosen ??= files[0];
+
+            var raw = ReadBoundedText(chosen, 4096);
+            if (string.IsNullOrWhiteSpace(raw))
+                return string.Empty;
+
+            var bodyLines = raw.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(l => l.Trim())
+                .Where(l => !l.StartsWith('#') && !l.StartsWith("- **Fecha:", StringComparison.OrdinalIgnoreCase) && !l.StartsWith("- **Modelo", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (bodyLines.Count == 0)
+                return string.Empty;
+
+            // Prefer the drill / top mistakes summary concisely
+            var preferred = bodyLines
+                .Where(l => l.StartsWith("3)", StringComparison.Ordinal) ||
+                            l.Contains("ejercicio", StringComparison.OrdinalIgnoreCase) ||
+                            l.Contains("drill", StringComparison.OrdinalIgnoreCase) ||
+                            l.StartsWith("1)", StringComparison.Ordinal))
+                .ToList();
+            var picked = preferred.Count > 0 ? preferred : bodyLines.Take(2).ToList();
+            var joined = string.Join(" · ", picked).Replace("**", "", StringComparison.Ordinal);
+            return AI.CoachingPersonaBuilder.SanitizeField(SecretRedactor.Redact(joined), maxChars);
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     private static string ReadBoundedText(string path, int maxChars)

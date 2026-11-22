@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -51,16 +52,30 @@ public partial class MainWindow : Window
     private bool _rulesDirty;
     private bool _onboardingDismissed;
     private string? _lastRulesGameId;
+    private string? _editingAccountId;
+    private readonly bool _smokeMode;
 
-    public MainWindow()
+    public MainWindow(bool smokeMode = false)
     {
+        _smokeMode = smokeMode;
+        if (_smokeMode)
+        {
+            ShowInTaskbar = false;
+            ShowActivated = false;
+            Left = -32000;
+            Top = -32000;
+            Opacity = 0;
+        }
+
         InitializeComponent();
         LstLiveLogs.ItemsSource = _logEntries;
 
         _sharedVoice = new HybridVoiceService(_repo.WorkspaceRoot);
         _config = _repo.LoadUserConfig();
         _sharedVoice.SetSpeechRate(_config.TtsRate);
+        _sharedVoice.SetOutputDevice(_config.AudioOutputDeviceName);
         _accounts = _repo.LoadAccounts();
+        _repo.EnsureDefaultProfilesSeeded();
         _profiles = _repo.LoadProfiles();
         _profiles.Insert(0, ConfigRepository.CreateUniversalProfile(_repo.ProfilesDir));
 
@@ -79,6 +94,11 @@ public partial class MainWindow : Window
             isPaused: () => _coordinator.IsPaused,
             isRunning: () => _coordinator.IsRunning);
         _trayIcon.Attach(this);
+        if (_smokeMode)
+        {
+            _ = Dispatcher.BeginInvoke(Close);
+            return;
+        }
         if (_config.MinimizeToTray && WindowState == WindowState.Minimized)
         {
             Hide();
@@ -171,8 +191,6 @@ public partial class MainWindow : Window
 
         AppendLog($"HUDMind Native (.NET 9 · 0% GPU) listo | Workspace: {_repo.WorkspaceRoot}");
         AppendLog($"Perfiles cargados: {_profiles.Count} | Cuentas IA listas: {_accounts.Count(a => a.IsReady())}");
-        if (_config.VoiceStyle == "neural" && !_sharedVoice.IsNeuralWorkerPresent)
-            AppendLog("ℹ️ Modo standalone: usando voces Windows OneCore instantáneas (~8ms, 0 internet requerido).");
     }
 
     private void RefreshMonitorsList()
@@ -355,6 +373,12 @@ public partial class MainWindow : Window
             bool testMode = GetSelectedTag(CmbRunMode) == "test";
             string? forcedId = CmbGameProfile.SelectedItem?.ToString();
             bool wantLive = GetSelectedTag(CmbEngineType) == "live";
+            var hintGameName = forcedId is not null
+                ? _profiles.FirstOrDefault(p => p.Manifest.GameId == forcedId)?.Manifest.DisplayName
+                : null;
+            _config.PreviousMatchFocus = _repo.LoadLatestPostMatchFocus(hintGameName);
+            if (!string.IsNullOrWhiteSpace(_config.PreviousMatchFocus))
+                AppendLog($"🎯 Foco de partida anterior activo: {_config.PreviousMatchFocus}");
 
             try
             {
@@ -539,7 +563,7 @@ public partial class MainWindow : Window
 
     private void CmbNewProvider_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (TxtNewLabel is null || TxtNewModel is null) return;
+        if (_syncingUi || TxtNewLabel is null || TxtNewModel is null) return;
         var prov = CmbNewProvider.SelectedItem?.ToString() ?? "groq";
         var preset = ProviderRegistry.FindPreset(prov);
         if (preset is not null)
@@ -554,6 +578,58 @@ public partial class MainWindow : Window
             if (CmbNewVisionOverride is not null)
                 CmbNewVisionOverride.SelectedIndex = 0;
         }
+    }
+
+    private void LstAccounts_MouseDoubleClick(object sender, MouseButtonEventArgs e) =>
+        BeginEditSelectedAccount();
+
+    private void BtnEditAccount_Click(object sender, RoutedEventArgs e) =>
+        BeginEditSelectedAccount();
+
+    private void BtnCancelEdit_Click(object sender, RoutedEventArgs e) =>
+        CancelAccountEdit();
+
+    private void BeginEditSelectedAccount()
+    {
+        if (LstAccounts.SelectedItem is not AccountRowView row) return;
+        var acc = row.Source;
+        _editingAccountId = acc.Id;
+
+        _syncingUi = true;
+        try
+        {
+            CmbNewProvider.SelectedItem = acc.Provider;
+            TxtNewLabel.Text = acc.Label;
+            TxtNewModel.Text = acc.Model;
+            TxtNewBaseUrl.Text = acc.BaseUrl;
+            string visionTag = acc.SupportsVisionOverride switch
+            {
+                true => "vision",
+                false => "text",
+                _ => "auto"
+            };
+            SelectByTag(CmbNewVisionOverride, visionTag);
+        }
+        finally
+        {
+            _syncingUi = false;
+        }
+
+        PwdNewApiKey.Clear();
+        PwdNewApiKey.ToolTip = "Editando: dejá vacío para conservar la API Key actual, o pegá una nueva";
+        BtnAddAccount.Content = $"💾 Guardar #{acc.Priority}";
+        BtnCancelEdit.Visibility = Visibility.Visible;
+        TxtNewModel.Focus();
+    }
+
+    private void CancelAccountEdit()
+    {
+        _editingAccountId = null;
+        BtnAddAccount.Content = "+ Agregar #1";
+        BtnCancelEdit.Visibility = Visibility.Collapsed;
+        PwdNewApiKey.Clear();
+        PwdNewApiKey.ToolTip = "Pegá tu API Key (oculta para seguridad en OBS/Discord)";
+        CmbNewProvider_SelectionChanged(CmbNewProvider, null!);
     }
 
     private void BtnAddAccount_Click(object sender, RoutedEventArgs e)
@@ -586,6 +662,35 @@ public partial class MainWindow : Window
         };
 
         var apiKey = PwdNewApiKey.Password.Trim();
+
+        if (!string.IsNullOrEmpty(_editingAccountId))
+        {
+            var existing = _accounts.FirstOrDefault(a => a.Id == _editingAccountId);
+            if (existing is not null)
+            {
+                existing.Provider = prov;
+                existing.Label = string.IsNullOrWhiteSpace(TxtNewLabel.Text) ? prov : TxtNewLabel.Text.Trim();
+                existing.Model = model;
+                existing.BaseUrl = customBaseUrl;
+                existing.SupportsVisionOverride = visionOverride;
+                if (!string.IsNullOrEmpty(apiKey))
+                    existing.ApiKey = apiKey;
+
+                if (!existing.IsKeylessAllowed && string.IsNullOrWhiteSpace(existing.ApiKey))
+                {
+                    System.Windows.MessageBox.Show("Este proveedor requiere una API Key.", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                CancelAccountEdit();
+                RefreshAccountsList();
+                _repo.SaveAccounts(_accounts);
+                AppendLog($"Cuenta #{existing.Priority} actualizada: {existing.Label} [{existing.Provider}:{existing.Model} · {(existing.SupportsVision ? "Visión" : "OCR/Logs")}]");
+                return;
+            }
+            CancelAccountEdit();
+        }
+
         var acc = new ProviderAccount
         {
             Label = string.IsNullOrWhiteSpace(TxtNewLabel.Text) ? prov : TxtNewLabel.Text.Trim(),
@@ -637,7 +742,10 @@ public partial class MainWindow : Window
     {
         int idx = LstAccounts.SelectedIndex;
         if (idx < 0) return;
+        bool deletingEdited = _editingAccountId == _accounts[idx].Id;
         _accounts.RemoveAt(idx);
+        if (deletingEdited)
+            CancelAccountEdit();
         RefreshAccountsList();
         _repo.SaveAccounts(_accounts);
     }
@@ -706,8 +814,33 @@ public partial class MainWindow : Window
         _syncingUi = true;
         try { TxtCustomRules.Text = prof?.CustomRules ?? string.Empty; }
         finally { _syncingUi = false; }
+        PopulateManifestFields(prof);
         _rulesDirty = false;
         UpdateRulesCounterUi();
+    }
+
+    private void PopulateManifestFields(GameProfile? prof)
+    {
+        if (TxtProfileExes is null || TxtProfileCooldown is null || TxtProfilePhash is null || BtnDeleteProfile is null)
+            return;
+
+        bool isUniversal = prof is null || string.Equals(prof.Manifest.GameId, "universal", StringComparison.OrdinalIgnoreCase);
+        TxtProfileExes.IsEnabled = !isUniversal;
+        TxtProfileCooldown.IsEnabled = !isUniversal;
+        TxtProfilePhash.IsEnabled = !isUniversal;
+        BtnDeleteProfile.IsEnabled = !isUniversal;
+
+        if (prof is null || isUniversal)
+        {
+            TxtProfileExes.Text = "(Cualquier juego en foreground)";
+            TxtProfileCooldown.Text = "8.0";
+            TxtProfilePhash.Text = "6";
+            return;
+        }
+
+        TxtProfileExes.Text = string.Join(", ", prof.Manifest.ProcessNames);
+        TxtProfileCooldown.Text = prof.Manifest.CooldownSeconds.ToString("0.0", CultureInfo.InvariantCulture);
+        TxtProfilePhash.Text = prof.Manifest.PhashThreshold.ToString(CultureInfo.InvariantCulture);
     }
 
     private void TxtCustomRules_TextChanged(object sender, TextChangedEventArgs e)
@@ -734,14 +867,84 @@ public partial class MainWindow : Window
         if (prof is null) return;
         try
         {
+            if (!string.Equals(prof.Manifest.GameId, "universal", StringComparison.OrdinalIgnoreCase))
+            {
+                var exes = (TxtProfileExes.Text ?? string.Empty)
+                    .Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var cdText = (TxtProfileCooldown.Text ?? "8").Trim().Replace(',', '.');
+                if (!double.TryParse(cdText, NumberStyles.Float, CultureInfo.InvariantCulture, out double cooldown))
+                {
+                    System.Windows.MessageBox.Show("Cooldown inválido (ej: 8 o 10.0).", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                if (!int.TryParse((TxtProfilePhash.Text ?? "6").Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int phash))
+                {
+                    System.Windows.MessageBox.Show("Valor pHash inválido (1 a 64).", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                _repo.UpdateProfileManifest(prof, exes, cooldown, phash);
+                PopulateManifestFields(prof);
+            }
+
             _repo.SaveCustomRules(prof, TxtCustomRules.Text);
             _rulesDirty = false;
             _coordinator.RefreshPersona($"reglas {prof.Manifest.DisplayName}");
-            AppendLog($"Reglas guardadas y aplicadas para '{prof.Manifest.DisplayName}'.");
+            AppendLog($"Reglas y perfil guardados/aplicados para '{prof.Manifest.DisplayName}'.");
         }
         catch (Exception ex)
         {
             System.Windows.MessageBox.Show(ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void BtnDeleteProfile_Click(object sender, RoutedEventArgs e)
+    {
+        var id = CmbRulesGame.SelectedItem?.ToString();
+        var prof = _profiles.FirstOrDefault(p => p.Manifest.GameId == id);
+        if (prof is null || string.Equals(prof.Manifest.GameId, "universal", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var ans = System.Windows.MessageBox.Show(
+            $"¿Eliminar permanentemente el perfil '{prof.Manifest.DisplayName}' (profiles/{prof.Manifest.GameId})?",
+            "HUDMind · Eliminar Perfil",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (ans != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            _repo.DeleteGameProfile(prof);
+            _profiles.Remove(prof);
+
+            var ids = _profiles.Select(p => p.Manifest.GameId).ToList();
+            var prevMain = CmbGameProfile.SelectedItem?.ToString();
+
+            _syncingUi = true;
+            try
+            {
+                CmbGameProfile.ItemsSource = ids;
+                CmbGameProfile.SelectedItem = (prevMain is not null && ids.Contains(prevMain)) ? prevMain : ids.FirstOrDefault();
+
+                _rulesDirty = false;
+                CmbRulesGame.ItemsSource = ids;
+                if (ids.Count > 0) CmbRulesGame.SelectedIndex = 0;
+                var nextProf = _profiles.FirstOrDefault();
+                _lastRulesGameId = nextProf?.Manifest.GameId;
+                TxtCustomRules.Text = nextProf?.CustomRules ?? string.Empty;
+                PopulateManifestFields(nextProf);
+            }
+            finally
+            {
+                _syncingUi = false;
+            }
+
+            UpdateRulesCounterUi();
+            AppendLog($"Perfil eliminado: {prof.Manifest.DisplayName} ({prof.Manifest.GameId})");
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(SecretRedactor.Redact(ex.Message), "Error al eliminar perfil", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
@@ -787,6 +990,7 @@ public partial class MainWindow : Window
                 CmbRulesGame.SelectedItem = created.Manifest.GameId;
                 _lastRulesGameId = created.Manifest.GameId;
                 TxtCustomRules.Text = created.CustomRules;
+                PopulateManifestFields(created);
             }
             finally
             {
@@ -1077,6 +1281,7 @@ public partial class MainWindow : Window
         if (!_config.EnableOverlay)
             _overlay.HideImmediately();
 
+        _sharedVoice.SetOutputDevice(_config.AudioOutputDeviceName);
         _sharedVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
         _coordinator.ApplyLiveSettings(_config);
         RefreshHotkeyButtonLabels();

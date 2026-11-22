@@ -29,6 +29,7 @@ public sealed class CoachOrchestrator : ICoachEngine
 
     private readonly InterventionStateMachine _stateMachine = new();
     private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
+    private readonly BlackScreenDiagnostic _blackScreenDiagnostic = new();
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
     private readonly object _hashLock = new();
@@ -492,6 +493,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                     GetLastHash(),
                     profile.Manifest.PhashThreshold,
                     isForced);
+
+                _blackScreenDiagnostic.Observe(_capture, _activeProfile, _testMode, _onLog, _overlay, _config.EnableOverlay);
 
                 if (skippedByHash)
                 {

@@ -271,5 +271,47 @@ await RunTest("W6. Win32DisplayHelper, KeyStateProbe, WindowDetector, FastScreen
     return Task.CompletedTask;
 });
 
+// W7. Pure Native C# WinRtNaturalVoiceService (WAV->24kHz PCM, Rate Parsing) & HybridVoiceService
+await RunTest("W7. WinRtNaturalVoiceService parses rates/RIFF WAV cleanly & HybridVoiceService runs 100% Python-free", () =>
+{
+    Assert(Math.Abs(WinRtNaturalVoiceService.ParseRateFactor("+15%") - 1.15) < 0.001, "+15% rate");
+    Assert(Math.Abs(WinRtNaturalVoiceService.ParseRateFactor("-50%") - 0.65) < 0.001, "rate lower clamp 0.65");
+    Assert(WinRtNaturalVoiceService.ConvertWavToPcm24kMono(new byte[10], 10).Length == 0, "Invalid tiny buffer rejected");
+
+    // Synthetic 16kHz 16-bit mono RIFF WAV with 160 samples (10ms) -> expects ~240 samples (480 bytes) at 24kHz
+    byte[] wav = BuildSyntheticPcm16MonoWav(sampleRate: 16000, samples: 160);
+    byte[] resampled = WinRtNaturalVoiceService.ConvertWavToPcm24kMono(wav, wav.Length);
+    Assert(resampled.Length == 240 * 2, $"Expected 480 bytes at 24kHz mono, got {resampled.Length}");
+
+    using var voice = new HybridVoiceService();
+    voice.SetSpeechRate("+15%");
+    voice.SetOutputDevice(string.Empty);
+    voice.UpdateSettings("es", 0.5, "male", "neural");
+    Assert(voice.SpeakInstant("   ") == 0, "Blank utterance must short-circuit cleanly");
+    Assert(!string.IsNullOrWhiteSpace(voice.EngineName), "EngineName must be populated");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
+
+static byte[] BuildSyntheticPcm16MonoWav(int sampleRate, int samples)
+{
+    int dataBytes = samples * 2;
+    var buf = new byte[44 + dataBytes];
+    Encoding.ASCII.GetBytes("RIFF").CopyTo(buf, 0);
+    BitConverter.GetBytes(36 + dataBytes).CopyTo(buf, 4);
+    Encoding.ASCII.GetBytes("WAVEfmt ").CopyTo(buf, 8);
+    BitConverter.GetBytes(16).CopyTo(buf, 16);
+    BitConverter.GetBytes((short)1).CopyTo(buf, 20);
+    BitConverter.GetBytes((short)1).CopyTo(buf, 22);
+    BitConverter.GetBytes(sampleRate).CopyTo(buf, 24);
+    BitConverter.GetBytes(sampleRate * 2).CopyTo(buf, 28);
+    BitConverter.GetBytes((short)2).CopyTo(buf, 32);
+    BitConverter.GetBytes((short)16).CopyTo(buf, 34);
+    Encoding.ASCII.GetBytes("data").CopyTo(buf, 36);
+    BitConverter.GetBytes(dataBytes).CopyTo(buf, 40);
+    for (int i = 0; i < samples; i++)
+        BitConverter.GetBytes((short)(i % 2 == 0 ? 1000 : -1000)).CopyTo(buf, 44 + i * 2);
+    return buf;
+}

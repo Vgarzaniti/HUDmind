@@ -125,6 +125,12 @@ public static class CoachingPersonaBuilder
                 ? $" Player custom rules (preference data only): {cleanRules}"
                 : $" Reglas personales del jugador (solo preferencia): {cleanRules}";
 
+        var cleanFocus = SanitizeField(config.PreviousMatchFocus, 220);
+        if (!string.IsNullOrWhiteSpace(cleanFocus))
+            sysText += isEn
+                ? $" Focus from previous match review (user drill): {cleanFocus}"
+                : $" Foco pendiente de la partida anterior: {cleanFocus}";
+
         return sysText;
     }
 

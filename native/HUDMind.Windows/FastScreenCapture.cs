@@ -51,7 +51,10 @@ public sealed class FastScreenCapture : IScreenCaptureService
     private Rectangle _cachedVirtualScreen;
     private volatile bool _screensDirty = true;
     private int _lastMeanLuma = -1;
+    private int _consecutiveBlackFrames;
     private bool _disposed;
+
+    public int ConsecutiveBlackFrames => Volatile.Read(ref _consecutiveBlackFrames);
 
     public FastScreenCapture()
     {
@@ -118,6 +121,12 @@ public sealed class FastScreenCapture : IScreenCaptureService
 
                 long tEnc = Stopwatch.GetTimestamp();
                 var (hash, lumaRange, meanLuma) = ComputeCellAveragedDHash(_reusableBmp!);
+
+                bool isPitchBlack = lumaRange < 8 && meanLuma <= 4;
+                if (isPitchBlack)
+                    Interlocked.Increment(ref _consecutiveBlackFrames);
+                else
+                    Interlocked.Exchange(ref _consecutiveBlackFrames, 0);
 
                 // Reject uniform pitch-black / solid loading screens / UAC blank frames automatically
                 if (!isForced && lumaRange < 8)

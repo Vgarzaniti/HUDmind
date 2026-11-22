@@ -33,6 +33,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private readonly Action<bool>? _onPauseChanged;
 
     private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
+    private readonly BlackScreenDiagnostic _blackScreenDiagnostic = new();
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
     private readonly SemaphoreSlim _turnGate = new(1, 1);
@@ -819,6 +820,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             lastAcceptedHash: prevHash,
             phashThreshold: phash,
             isForced: force);
+
+        _blackScreenDiagnostic.Observe(_capture, _activeProfile, _testMode, _onLog, _overlay, _config.EnableOverlay);
 
         if (skipped || frame is null)
             return null;
