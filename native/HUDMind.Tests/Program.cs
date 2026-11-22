@@ -351,8 +351,8 @@ sealed class RecordingVoice : IVoiceOutputService
 {
     public List<string> Spoken { get; } = [];
     public string EngineName => "recording-test";
-    public void WarmUp(string language, double volume) { }
-    public void UpdateSettings(string language, double volume) { }
+    public void WarmUp(string language, double volume, string gender = "male", string style = "neural") { }
+    public void UpdateSettings(string language, double volume, string gender = "male", string style = "neural") { }
     public double SpeakInstant(string text) { Spoken.Add(text); return 1.0; }
     public void StopSpeaking() { }
     public void Dispose() { }

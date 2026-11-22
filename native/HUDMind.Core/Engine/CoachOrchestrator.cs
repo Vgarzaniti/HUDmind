@@ -93,7 +93,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
         var ct = _runCts.Token;
 
         if (_config.EnableVoice)
-            _voice.WarmUp(_config.VoiceLanguage, _config.TtsVolume);
+            _voice.WarmUp(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
 
         await _router.PrewarmAsync(ct);
 
@@ -120,8 +120,8 @@ public sealed class CoachOrchestrator : IAsyncDisposable
         EmitStats();
     }
 
-    public void UpdateVoiceLive(string language, double volume) =>
-        _voice.UpdateSettings(language, volume);
+    public void UpdateVoiceLive(string language, double volume, string gender, string style) =>
+        _voice.UpdateSettings(language, volume, gender, style);
 
     public void TogglePause()
     {

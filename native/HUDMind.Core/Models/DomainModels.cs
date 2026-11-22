@@ -124,6 +124,12 @@ public sealed class UserConfig
     [JsonPropertyName("tts_engine")]
     public string TtsEngine { get; set; } = "pyttsx3";
 
+    [JsonPropertyName("voice_gender")]
+    public string VoiceGender { get; set; } = "male";
+
+    [JsonPropertyName("voice_style")]
+    public string VoiceStyle { get; set; } = "neural";
+
     [JsonPropertyName("tts_volume")]
     public double TtsVolume { get; set; } = 0.75;
 

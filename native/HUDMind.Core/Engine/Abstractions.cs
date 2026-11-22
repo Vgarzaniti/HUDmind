@@ -29,8 +29,8 @@ public interface IScreenCaptureService : IDisposable
 public interface IVoiceOutputService : IDisposable
 {
     string EngineName { get; }
-    void WarmUp(string language, double volume);
-    void UpdateSettings(string language, double volume);
+    void WarmUp(string language, double volume, string gender = "male", string style = "neural");
+    void UpdateSettings(string language, double volume, string gender = "male", string style = "neural");
     double SpeakInstant(string text);
     void StopSpeaking();
 }

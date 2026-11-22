@@ -68,10 +68,16 @@
                             <ComboBox x:Name="CmbGameProfile" Width="165" Margin="0,0,12,4" />
 
                             <TextBlock Text="Sesión:" VerticalAlignment="Center" Foreground="#94A3B8" Margin="0,0,6,4" />
-                            <ComboBox x:Name="CmbCoachMode" Width="155" Margin="0,0,0,4">
+                            <ComboBox x:Name="CmbCoachMode" Width="145" Margin="0,0,12,4">
                                 <ComboBoxItem Content="Automático (IA)" Tag="auto" />
                                 <ComboBoxItem Content="Partida Competitiva" Tag="match" />
                                 <ComboBoxItem Content="Entrenamiento" Tag="training" />
+                            </ComboBox>
+
+                            <TextBlock Text="Voz:" VerticalAlignment="Center" Foreground="#94A3B8" Margin="0,0,6,4" />
+                            <ComboBox x:Name="CmbQuickGender" Width="125" Margin="0,0,0,4" SelectionChanged="CmbQuickGender_SelectionChanged">
+                                <ComboBoxItem Content="👨 Hombre" Tag="male" />
+                                <ComboBoxItem Content="👩 Mujer" Tag="female" />
                             </ComboBox>
                         </WrapPanel>
                     </Border>
@@ -230,16 +236,16 @@
 
             <!-- TAB 4: VOICE, OVERLAY & HOTKEYS -->
             <TabItem Header="⚙ Voz, Overlay y Teclas">
-                <StackPanel Margin="16" MaxWidth="680" HorizontalAlignment="Left">
-                    <CheckBox x:Name="ChkEnableVoice" Content="Habilitar Voz Instantánea SAPI5 (~5ms offline, 0% GPU)" Foreground="#F1F5F9" Margin="0,0,0,8" />
+                <StackPanel Margin="16" MaxWidth="720" HorizontalAlignment="Left">
+                    <CheckBox x:Name="ChkEnableVoice" Content="Habilitar Voz del Coach (Hombre / Mujer · Neural Humana o Instantánea ~8ms)" Foreground="#F1F5F9" Margin="0,0,0,8" />
                     <CheckBox x:Name="ChkEnableOverlay" Content="Habilitar Overlay Transparente Click-Through (0% GPU)" Foreground="#F1F5F9" Margin="0,0,0,8" />
                     <CheckBox x:Name="ChkEnableHotkeys" Content="Habilitar Teclas Globales (Win32 RegisterHotKey)" Foreground="#F1F5F9" Margin="0,0,0,14" />
 
                     <Grid Margin="0,0,0,10">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="180" />
-                            <ColumnDefinition Width="210" />
-                            <ColumnDefinition Width="100" />
+                            <ColumnDefinition Width="185" />
+                            <ColumnDefinition Width="330" />
+                            <ColumnDefinition Width="90" />
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="36" />
@@ -249,23 +255,37 @@
                             <RowDefinition Height="36" />
                             <RowDefinition Height="36" />
                             <RowDefinition Height="36" />
+                            <RowDefinition Height="36" />
+                            <RowDefinition Height="36" />
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Idioma del Coach:" VerticalAlignment="Center" />
-                        <ComboBox x:Name="CmbLanguage" Grid.Row="0" Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Género de Voz:" VerticalAlignment="Center" />
+                        <ComboBox x:Name="CmbVoiceGender" Grid.Row="0" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbVoiceSettings_SelectionChanged">
+                            <ComboBoxItem Content="👨 Hombre (Tomas Argentino / Raul)" Tag="male" />
+                            <ComboBoxItem Content="👩 Mujer (Elena Argentina / Sabina)" Tag="female" />
+                        </ComboBox>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Calidad / Motor de Voz:" VerticalAlignment="Center" />
+                        <ComboBox x:Name="CmbVoiceStyle" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbVoiceSettings_SelectionChanged">
+                            <ComboBoxItem Content="🎙 Humana Neural Argentina (Voz Real, ~1.5s red)" Tag="neural" />
+                            <ComboBoxItem Content="⚡ Instantánea Windows OneCore (~8ms, Tiempo Real)" Tag="instant" />
+                        </ComboBox>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Idioma del Coach:" VerticalAlignment="Center" />
+                        <ComboBox x:Name="CmbLanguage" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center">
                             <ComboBoxItem Content="es" />
                             <ComboBoxItem Content="en" />
                         </ComboBox>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Perfil de Latencia:" VerticalAlignment="Center" />
-                        <ComboBox x:Name="CmbEfficiency" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Perfil de Latencia IA:" VerticalAlignment="Center" />
+                        <ComboBox x:Name="CmbEfficiency" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center">
                             <ComboBoxItem Content="eco" />
                             <ComboBoxItem Content="balanced" />
                             <ComboBoxItem Content="high" />
                         </ComboBox>
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Posición del Overlay:" VerticalAlignment="Center" />
-                        <ComboBox x:Name="CmbOverlayPos" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Posición del Overlay:" VerticalAlignment="Center" />
+                        <ComboBox x:Name="CmbOverlayPos" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center">
                             <ComboBoxItem Content="top-right" />
                             <ComboBoxItem Content="top-left" />
                             <ComboBoxItem Content="top-center" />
@@ -273,18 +293,18 @@
                             <ComboBoxItem Content="bottom-left" />
                         </ComboBox>
 
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Monitor (1..N):" VerticalAlignment="Center" />
-                        <ComboBox x:Name="CmbMonitor" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Monitor (1..N):" VerticalAlignment="Center" />
+                        <ComboBox x:Name="CmbMonitor" Grid.Row="5" Grid.Column="1" VerticalAlignment="Center" />
 
-                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Tecla Pausar:" VerticalAlignment="Center" />
-                        <TextBox x:Name="TxtPauseKey" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Tecla Pausar:" VerticalAlignment="Center" />
+                        <TextBox x:Name="TxtPauseKey" Grid.Row="6" Grid.Column="1" VerticalAlignment="Center" />
 
-                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Tecla Analizar Ahora:" VerticalAlignment="Center" />
-                        <TextBox x:Name="TxtAnalyzeKey" Grid.Row="5" Grid.Column="1" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="7" Grid.Column="0" Text="Tecla Analizar Ahora:" VerticalAlignment="Center" />
+                        <TextBox x:Name="TxtAnalyzeKey" Grid.Row="7" Grid.Column="1" VerticalAlignment="Center" />
 
-                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Volumen Voz:" VerticalAlignment="Center" />
-                        <Slider x:Name="SldVolume" Grid.Row="6" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldVolume_ValueChanged" />
-                        <TextBlock x:Name="LblVolumePct" Grid.Row="6" Grid.Column="2" Text="75%" Foreground="#38BDF8" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
+                        <TextBlock Grid.Row="8" Grid.Column="0" Text="Volumen Voz:" VerticalAlignment="Center" />
+                        <Slider x:Name="SldVolume" Grid.Row="8" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldVolume_ValueChanged" />
+                        <TextBlock x:Name="LblVolumePct" Grid.Row="8" Grid.Column="2" Text="75%" Foreground="#38BDF8" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
                     </Grid>
 
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">

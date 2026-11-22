@@ -35,18 +35,20 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<string> _logEntries = [];
     private readonly OverlayWindow _overlay = new();
     private readonly Win32GlobalHotkeyManager _hotkeys = new();
-    private readonly InstantSapiVoiceService _previewVoice = new();
+    private readonly HybridVoiceService _previewVoice;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
 
     private CoachOrchestrator? _orchestrator;
     private bool _shutdownComplete;
     private bool _closingInProgress;
+    private bool _syncingVoiceUi;
 
     public MainWindow()
     {
         InitializeComponent();
         LstLiveLogs.ItemsSource = _logEntries;
 
+        _previewVoice = new HybridVoiceService(_repo.WorkspaceRoot);
         _config = _repo.LoadUserConfig();
         _accounts = _repo.LoadAccounts();
         _profiles = _repo.LoadProfiles();
@@ -67,10 +69,21 @@ public partial class MainWindow : Window
         CmbMonitor.ItemsSource = Enumerable.Range(1, screenCount).ToList();
         CmbMonitor.SelectedItem = Math.Clamp(_config.CaptureMonitor, 1, screenCount);
 
-        SelectByTag(CmbCoachMode, _config.CoachMode);
-        SelectByContent(CmbLanguage, _config.VoiceLanguage);
-        SelectByContent(CmbEfficiency, _config.TokenEfficiencyMode);
-        SelectByContent(CmbOverlayPos, _config.OverlayPosition);
+        _syncingVoiceUi = true;
+        try
+        {
+            SelectByTag(CmbCoachMode, _config.CoachMode);
+            SelectByTag(CmbVoiceGender, _config.VoiceGender);
+            SelectByTag(CmbQuickGender, _config.VoiceGender);
+            SelectByTag(CmbVoiceStyle, _config.VoiceStyle);
+            SelectByContent(CmbLanguage, _config.VoiceLanguage);
+            SelectByContent(CmbEfficiency, _config.TokenEfficiencyMode);
+            SelectByContent(CmbOverlayPos, _config.OverlayPosition);
+        }
+        finally
+        {
+            _syncingVoiceUi = false;
+        }
 
         ChkEnableVoice.IsChecked = _config.EnableVoice;
         ChkEnableOverlay.IsChecked = _config.EnableOverlay;
@@ -195,7 +208,7 @@ public partial class MainWindow : Window
             var router = new ProviderFailoverRouter(_accounts, onLog: AppendLog);
             var windowDetector = new Win32WindowDetector();
             var capture = new FastScreenCapture();
-            var voice = new InstantSapiVoiceService();
+            var voice = new HybridVoiceService(_repo.WorkspaceRoot);
 
             _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
 
@@ -432,19 +445,51 @@ public partial class MainWindow : Window
         }
     }
 
+    private void CmbQuickGender_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingVoiceUi || CmbVoiceGender is null) return;
+        var g = GetSelectedTag(CmbQuickGender);
+        _syncingVoiceUi = true;
+        try { SelectByTag(CmbVoiceGender, g); }
+        finally { _syncingVoiceUi = false; }
+
+        _config.VoiceGender = g;
+        _repo.SaveUserConfig(_config);
+        _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
+        _previewVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
+        AppendLog($"Voz cambiada en vivo a: {(g == "female" ? "👩 Mujer" : "👨 Hombre")} ({_config.VoiceStyle}).");
+    }
+
+    private void CmbVoiceSettings_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingVoiceUi || CmbVoiceGender is null || CmbVoiceStyle is null || CmbQuickGender is null) return;
+        var g = GetSelectedTag(CmbVoiceGender);
+        var st = GetSelectedTag(CmbVoiceStyle);
+        _syncingVoiceUi = true;
+        try { SelectByTag(CmbQuickGender, g); }
+        finally { _syncingVoiceUi = false; }
+
+        _config.VoiceGender = g;
+        _config.VoiceStyle = st;
+        _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, _config.TtsVolume, g, st);
+        _previewVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, g, st);
+    }
+
     private void SldVolume_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (LblVolumePct is null) return;
         double vol = Math.Round(SldVolume.Value, 2);
         LblVolumePct.Text = $"{(int)Math.Round(vol * 100)}%";
         _config.TtsVolume = vol;
-        _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, vol);
-        _previewVoice.UpdateSettings(_config.VoiceLanguage, vol);
+        _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, vol, _config.VoiceGender, _config.VoiceStyle);
+        _previewVoice.UpdateSettings(_config.VoiceLanguage, vol, _config.VoiceGender, _config.VoiceStyle);
     }
 
     private void ApplyConfigFromUi()
     {
         _config.CoachMode = GetSelectedTag(CmbCoachMode);
+        _config.VoiceGender = GetSelectedTag(CmbVoiceGender);
+        _config.VoiceStyle = GetSelectedTag(CmbVoiceStyle);
         _config.TextLanguage = (CmbLanguage.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "es";
         _config.VoiceLanguage = _config.TextLanguage;
         _config.TokenEfficiencyMode = (CmbEfficiency.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "eco";
@@ -463,11 +508,11 @@ public partial class MainWindow : Window
         ApplyConfigFromUi();
         _repo.SaveUserConfig(_config);
         _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
-        _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, _config.TtsVolume);
-        _previewVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume);
+        _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
+        _previewVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
         RefreshHotkeyButtonLabels();
         RegisterActiveHotkeys();
-        AppendLog("Preferencias guardadas y aplicadas en vivo (preservando campos Python).");
+        AppendLog($"Preferencias guardadas y aplicadas en vivo ({(_config.VoiceGender == "female" ? "Mujer" : "Hombre")} · {_config.VoiceStyle}).");
     }
 
     private void BtnPreviewOverlay_Click(object sender, RoutedEventArgs e)
@@ -478,13 +523,15 @@ public partial class MainWindow : Window
         if (_config.EnableVoice)
         {
             string lang = _config.VoiceLanguage;
+            string gender = _config.VoiceGender;
+            string style = _config.VoiceStyle;
             double vol = _config.TtsVolume;
             _ = Task.Run(() =>
             {
-                _previewVoice.WarmUp(lang, vol);
-                _previewVoice.UpdateSettings(lang, vol);
+                _previewVoice.WarmUp(lang, vol, gender, style);
+                _previewVoice.UpdateSettings(lang, vol, gender, style);
                 double ms = _previewVoice.SpeakInstant("Rotá segundo palo, tenés dieciocho de boost.");
-                AppendLog($"Preview Voz SAPI5 disparado en {ms:F1} ms (sin cortar audio).");
+                AppendLog($"Preview Voz [{_previewVoice.EngineName}] disparado en {ms:F1} ms.");
             });
         }
     }
