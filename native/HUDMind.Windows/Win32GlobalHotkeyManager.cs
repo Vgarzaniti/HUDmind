@@ -6,6 +6,7 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
 {
     private const int WmHotkey = 0x0312;
     private const int WmQuit = 0x0012;
+    private const uint PmNoRemove = 0x0000;
     private const uint ModAlt = 0x0001;
     private const uint ModControl = 0x0002;
     private const uint ModShift = 0x0004;
@@ -30,6 +31,9 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
     [DllImport("user32.dll")]
+    private static extern bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
+    [DllImport("user32.dll")]
     private static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
 
     [DllImport("user32.dll")]
@@ -39,11 +43,16 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
     private static extern uint GetCurrentThreadId();
 
     private Thread? _thread;
-    private uint _threadId;
+    private volatile uint _threadId;
     private Action? _onPause;
     private Action? _onAnalyze;
 
-    public void Start(string pauseHotkey, string analyzeHotkey, Action onPause, Action onAnalyze)
+    public (bool PauseOk, bool AnalyzeOk) Start(
+        string pauseHotkey,
+        string analyzeHotkey,
+        Action onPause,
+        Action onAnalyze,
+        Action<string>? onWarning = null)
     {
         Stop();
         _onPause = onPause;
@@ -52,11 +61,25 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
         var (pMod, pVk) = ParseHotkey(pauseHotkey, 0x78);   // default F9
         var (aMod, aVk) = ParseHotkey(analyzeHotkey, 0x79); // default F10
 
+        bool pauseOk = false;
+        bool analyzeOk = false;
+        using var readyEv = new ManualResetEventSlim(false);
+
         _thread = new Thread(() =>
         {
+            // Force Win32 message queue creation BEFORE publishing _threadId (eliminates PostThreadMessage race)
+            _ = PeekMessage(out _, IntPtr.Zero, 0, 0, PmNoRemove);
             _threadId = GetCurrentThreadId();
-            RegisterHotKey(IntPtr.Zero, 1, pMod | ModNoRepeat, pVk);
-            RegisterHotKey(IntPtr.Zero, 2, aMod | ModNoRepeat, aVk);
+
+            pauseOk = RegisterHotKey(IntPtr.Zero, 1, pMod | ModNoRepeat, pVk);
+            if (!pauseOk)
+                onWarning?.Invoke($"No se pudo registrar tecla Pausar '{pauseHotkey}' (Win32 err={Marshal.GetLastWin32Error()}).");
+
+            analyzeOk = RegisterHotKey(IntPtr.Zero, 2, aMod | ModNoRepeat, aVk);
+            if (!analyzeOk)
+                onWarning?.Invoke($"No se pudo registrar tecla Analizar '{analyzeHotkey}' (Win32 err={Marshal.GetLastWin32Error()}).");
+
+            readyEv.Set();
             try
             {
                 while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
@@ -64,15 +87,22 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
                     if (msg.message == WmHotkey)
                     {
                         int id = (int)msg.wParam;
-                        if (id == 1) _onPause?.Invoke();
-                        else if (id == 2) _onAnalyze?.Invoke();
+                        try
+                        {
+                            if (id == 1) _onPause?.Invoke();
+                            else if (id == 2) _onAnalyze?.Invoke();
+                        }
+                        catch (Exception ex)
+                        {
+                            onWarning?.Invoke($"Error en callback de hotkey: {ex.Message}");
+                        }
                     }
                 }
             }
             finally
             {
-                UnregisterHotKey(IntPtr.Zero, 1);
-                UnregisterHotKey(IntPtr.Zero, 2);
+                if (pauseOk) UnregisterHotKey(IntPtr.Zero, 1);
+                if (analyzeOk) UnregisterHotKey(IntPtr.Zero, 2);
             }
         })
         {
@@ -80,14 +110,17 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
             Name = "HUDMind-Win32-Hotkeys"
         };
         _thread.Start();
+        readyEv.Wait(TimeSpan.FromSeconds(2));
+        return (pauseOk, analyzeOk);
     }
 
     public void Stop()
     {
-        if (_thread is { IsAlive: true } && _threadId != 0)
+        uint tid = _threadId;
+        if (_thread is { IsAlive: true } && tid != 0)
         {
-            PostThreadMessage(_threadId, WmQuit, UIntPtr.Zero, IntPtr.Zero);
-            _thread.Join(TimeSpan.FromMilliseconds(500));
+            PostThreadMessage(tid, WmQuit, UIntPtr.Zero, IntPtr.Zero);
+            _thread.Join(TimeSpan.FromMilliseconds(800));
         }
         _thread = null;
         _threadId = 0;
@@ -108,6 +141,16 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
             else if (t == "SHIFT") mods |= ModShift;
             else if (t.StartsWith('F') && int.TryParse(t[1..], out int fNum) && fNum is >= 1 and <= 24)
                 vk = (uint)(0x70 + (fNum - 1));
+            else if (t.StartsWith("NUM") && int.TryParse(t[3..], out int nNum) && nNum is >= 0 and <= 9)
+                vk = (uint)(0x60 + nNum);
+            else if (t is "INSERT" or "INS") vk = 0x2D;
+            else if (t == "DELETE" || t == "DEL") vk = 0x2E;
+            else if (t == "HOME") vk = 0x24;
+            else if (t == "END") vk = 0x23;
+            else if (t is "PAGEUP" or "PGUP") vk = 0x21;
+            else if (t is "PAGEDOWN" or "PGDN") vk = 0x22;
+            else if (t == "PAUSE") vk = 0x13;
+            else if (t == "SPACE") vk = 0x20;
             else if (t.Length == 1 && char.IsLetterOrDigit(t[0]))
                 vk = t[0];
         }

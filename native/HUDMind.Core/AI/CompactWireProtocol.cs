@@ -10,41 +10,48 @@ public static class CompactWireProtocol
         GameProfile profile,
         UserConfig config,
         string recentHistory,
-        bool forceAdvice)
+        bool forceAdvice,
+        string spatialTelemetry = "")
     {
         var lang = (config.VoiceLanguage ?? config.TextLanguage ?? "es").Trim().ToLowerInvariant();
-        var langDesc = lang == "en"
-            ? "English (concise, natural Discord eSports coach)"
-            : "Spanish (español natural y directo, estilo coach en Discord)";
+        var langTag = lang == "en" ? "en (concise Discord coach)" : "es (español natural, estilo coach Discord)";
 
         var modeRule = config.CoachMode.Trim().ToLowerInvariant() switch
         {
-            "training" => "Mode=TRAINING: coach mechanics, positioning & consistency like a live trainer.",
-            "auto" => "Auto-detect: if menu/lobby/loading -> NONE; if training/free play -> coach mechanics; if live match -> coach rotation, teammates, resources & clock.",
-            _ => "Mode=MATCH: coach rotation, teammates, resources & score/clock. If menu -> NONE."
+            "training" => "TRAINING: coach mechanics & positioning.",
+            "auto" => "AUTO: menu/lobby->NONE; training->mechanics; match->rotation, teammates, resources & clock.",
+            _ => "MATCH: coach rotation, teammates, resources & clock; menu->NONE."
         };
 
-        var sb = new StringBuilder(384);
-        sb.Append("Live human eSports coach watching ").Append(profile.Manifest.DisplayName).Append(". Language: ").Append(langDesc).Append(".\n");
+        var sb = new StringBuilder(320);
+        sb.Append("Live eSports coach for ").Append(SanitizeInline(profile.Manifest.DisplayName, 48))
+          .Append(". Lang: ").Append(langTag).Append(".\n");
         sb.Append(modeRule).Append('\n');
-        sb.Append("Give 1 improvised macro/positioning/economy callout useful for the next 10-25s (never late split-second reflexes, never robotic textbook phrasing). Reference 1 concrete HUD/player detail you see.\n");
+        sb.Append("Improvise 1 macro/positioning/economy tip valid 10-25s referencing 1 real HUD detail (never robotic/textbook).\n");
+
+        if (!string.IsNullOrWhiteSpace(profile.TacticalSummary))
+            sb.Append("Focus: ").Append(SanitizeInline(profile.TacticalSummary, 180)).Append('\n');
 
         if (!string.IsNullOrWhiteSpace(profile.CustomRules))
-        {
-            var trimmed = profile.CustomRules.Trim();
-            if (trimmed.Length > 260)
-                trimmed = trimmed[..260];
-            sb.Append("Player rules: ").Append(trimmed).Append('\n');
-        }
+            sb.Append("Player rules: ").Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
+
+        if (!string.IsNullOrWhiteSpace(spatialTelemetry))
+            sb.Append("HUD_SCAN: ").Append(SanitizeInline(spatialTelemetry, 200)).Append('\n');
 
         if (forceAdvice)
-            sb.Append("PLAYER PRESSED F10: give your best tactical read NOW (do not reply NONE).\n");
+            sb.Append("F10 MANUAL: give best tactical tip NOW (do not reply NONE).\n");
 
         if (!string.IsNullOrWhiteSpace(recentHistory))
-            sb.Append("Do NOT repeat: ").Append(recentHistory).Append('\n');
+            sb.Append("No repeat: ").Append(SanitizeInline(recentHistory, 220)).Append('\n');
 
-        sb.Append("Reply STRICTLY 1 line: H|<max 8 words> OR M|<max 8 words> OR L|<max 8 words> OR NONE.");
+        sb.Append("Output STRICTLY 1 line: H|<max 8 words> OR M|<max 8 words> OR L|<max 8 words> OR NONE.");
         return sb.ToString();
+    }
+
+    private static string SanitizeInline(string raw, int maxLen)
+    {
+        var clean = string.Join(' ', raw.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()));
+        return clean.Length <= maxLen ? clean : clean[..maxLen];
     }
 
     public static CoachResponse? ParseCompactLine(string? rawText)
@@ -62,7 +69,6 @@ public static class CompactWireProtocol
         if (string.IsNullOrWhiteSpace(text))
             return null;
 
-        // JSON fallback if a provider returns JSON
         if (text.StartsWith('{'))
         {
             var jsonParsed = TryParseJson(text);
@@ -90,17 +96,13 @@ public static class CompactWireProtocol
                     return CoachResponse.Silent();
 
                 var ctx = parts.Length >= 3 ? Truncate(parts[2], 150) : string.Empty;
-                var shortCallout = Truncate(callout, 115);
-                return new CoachResponse(true, urg, shortCallout, Truncate(callout, 170), ctx);
+                return new CoachResponse(true, urg, Truncate(callout, 115), Truncate(callout, 170), ctx);
             }
         }
 
-        // Graceful fallback for direct single-line coach sentence
         var cleaned = firstLine.Trim('"', '\'', '`', ' ');
         if (cleaned.Length is >= 4 and <= 135 && !cleaned.StartsWith('{'))
-        {
             return new CoachResponse(true, UrgencyLevel.Medium, Truncate(cleaned, 115), cleaned);
-        }
 
         return null;
     }

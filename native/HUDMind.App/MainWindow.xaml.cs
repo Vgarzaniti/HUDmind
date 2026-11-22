@@ -1,6 +1,9 @@
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Forms;
 using HUDMind.Core.AI;
 using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
@@ -22,39 +25,52 @@ public sealed class AccountRowView
 
 public partial class MainWindow : Window
 {
+    private const int MaxLogEntries = 180;
+
     private readonly ConfigRepository _repo = new();
     private UserConfig _config;
     private List<ProviderAccount> _accounts;
     private List<GameProfile> _profiles;
 
+    private readonly ObservableCollection<string> _logEntries = [];
     private readonly OverlayWindow _overlay = new();
     private readonly Win32GlobalHotkeyManager _hotkeys = new();
+    private readonly InstantSapiVoiceService _previewVoice = new();
+    private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+
     private CoachOrchestrator? _orchestrator;
+    private bool _shutdownComplete;
+    private bool _closingInProgress;
 
     public MainWindow()
     {
         InitializeComponent();
+        LstLiveLogs.ItemsSource = _logEntries;
+
         _config = _repo.LoadUserConfig();
         _accounts = _repo.LoadAccounts();
         _profiles = _repo.LoadProfiles();
 
         BindInitialUi();
-        Closing += async (_, _) => await ShutdownEngineAsync();
+        Closing += MainWindow_Closing;
     }
 
     private void BindInitialUi()
     {
         CmbGameProfile.ItemsSource = _profiles.Select(p => p.Manifest.GameId).ToList();
-        if (CmbGameProfile.Items.Count > 0)
-            CmbGameProfile.SelectedIndex = 0;
+        if (CmbGameProfile.Items.Count > 0) CmbGameProfile.SelectedIndex = 0;
 
         CmbRulesGame.ItemsSource = _profiles.Select(p => p.Manifest.GameId).ToList();
-        if (CmbRulesGame.Items.Count > 0)
-            CmbRulesGame.SelectedIndex = 0;
+        if (CmbRulesGame.Items.Count > 0) CmbRulesGame.SelectedIndex = 0;
+
+        int screenCount = Math.Max(1, Screen.AllScreens.Length);
+        CmbMonitor.ItemsSource = Enumerable.Range(1, screenCount).ToList();
+        CmbMonitor.SelectedItem = Math.Clamp(_config.CaptureMonitor, 1, screenCount);
 
         SelectByTag(CmbCoachMode, _config.CoachMode);
         SelectByContent(CmbLanguage, _config.VoiceLanguage);
         SelectByContent(CmbEfficiency, _config.TokenEfficiencyMode);
+        SelectByContent(CmbOverlayPos, _config.OverlayPosition);
 
         ChkEnableVoice.IsChecked = _config.EnableVoice;
         ChkEnableOverlay.IsChecked = _config.EnableOverlay;
@@ -62,11 +78,26 @@ public partial class MainWindow : Window
         TxtPauseKey.Text = _config.HotkeyTogglePause;
         TxtAnalyzeKey.Text = _config.HotkeyAnalyzeNow;
         SldVolume.Value = _config.TtsVolume;
+        LblVolumePct.Text = $"{(int)Math.Round(_config.TtsVolume * 100)}%";
+        RefreshHotkeyButtonLabels();
 
-        _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity);
+        _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
         RefreshAccountsList();
-        AppendLog($"HUDMind Native (.NET 9) listo | Workspace: {_repo.WorkspaceRoot}");
+
+        if (!string.IsNullOrWhiteSpace(_repo.LastLoadWarning))
+            AppendLog($"⚠ AVISO: {_repo.LastLoadWarning}");
+
+        AppendLog($"HUDMind Native (.NET 9 · 0% GPU) listo | Workspace: {_repo.WorkspaceRoot}");
         AppendLog($"Perfiles cargados: {_profiles.Count} | Cuentas IA listas: {_accounts.Count(a => a.IsReady())}");
+    }
+
+    private void RefreshHotkeyButtonLabels()
+    {
+        BtnAnalyzeNow.Content = $"🎯 Analizar ({_config.HotkeyAnalyzeNow})";
+        bool paused = _orchestrator?.IsPaused == true;
+        BtnPause.Content = paused
+            ? $"▶ Reanudar ({_config.HotkeyTogglePause})"
+            : $"⏸ Pausar ({_config.HotkeyTogglePause})";
     }
 
     private void RefreshAccountsList()
@@ -78,94 +109,169 @@ public partial class MainWindow : Window
 
     private void AppendLog(string message)
     {
+        if (_shutdownComplete) return;
+        var safeMsg = SecretRedactor.Redact(message, _accounts.Select(a => a.ApiKey));
+        var line = $"[{DateTime.Now:HH:mm:ss}] {safeMsg}";
         Dispatcher.BeginInvoke(() =>
         {
-            var line = $"[{DateTime.Now:HH:mm:ss}] {message}\n";
-            TxtLiveLogs.AppendText(line);
-            if (TxtLiveLogs.Text.Length > 28000)
-                TxtLiveLogs.Text = TxtLiveLogs.Text[^18000..];
-            TxtLiveLogs.ScrollToEnd();
+            if (_shutdownComplete) return;
+            _logEntries.Add(line);
+            while (_logEntries.Count > MaxLogEntries)
+                _logEntries.RemoveAt(0);
+            if (_logEntries.Count > 0)
+                LstLiveLogs.ScrollIntoView(_logEntries[^1]);
         });
     }
 
     private void UpdateStatsUi(CoachRuntimeStats stats)
     {
+        if (_shutdownComplete) return;
         Dispatcher.BeginInvoke(() =>
         {
+            if (_shutdownComplete) return;
             StatCaptureMs.Text = stats.LastCaptureMs > 0 ? $"{stats.LastCaptureMs:F1} ms" : "— ms";
             StatAiMs.Text = stats.LastAiMs > 0 ? $"{stats.LastAiMs:F0} ms" : "— ms";
             StatVoiceMs.Text = stats.LastVoiceMs > 0 ? $"{stats.LastVoiceMs:F1} ms" : "— ms";
             StatInterventions.Text = $"{stats.Interventions} · {stats.ActiveGame}";
-            HeaderStatusText.Text = $"Activo · {stats.ActiveProvider}";
+            HeaderStatusText.Text = stats.IsPaused
+                ? $"Pausado · {stats.ActiveProvider}"
+                : $"Activo · {stats.ActiveProvider}";
+            PauseBadge.Visibility = stats.IsPaused ? Visibility.Visible : Visibility.Collapsed;
+            RefreshHotkeyButtonLabels();
         });
+    }
+
+    private void OnPauseChanged(bool paused)
+    {
+        if (_shutdownComplete) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_shutdownComplete) return;
+            PauseBadge.Visibility = paused ? Visibility.Visible : Visibility.Collapsed;
+            RefreshHotkeyButtonLabels();
+        });
+    }
+
+    private async void MainWindow_Closing(object? sender, CancelEventArgs e)
+    {
+        if (_shutdownComplete)
+            return;
+
+        e.Cancel = true;
+        if (_closingInProgress)
+            return;
+        _closingInProgress = true;
+
+        try
+        {
+            await ShutdownEngineAsync(isAppClosing: true);
+            _previewVoice.Dispose();
+            _overlay.ShutdownCleanly();
+        }
+        finally
+        {
+            _shutdownComplete = true;
+            _ = Dispatcher.BeginInvoke(Close);
+        }
     }
 
     private async void BtnStartStop_Click(object sender, RoutedEventArgs e)
     {
-        if (_orchestrator is { IsRunning: true })
-        {
-            await ShutdownEngineAsync();
-            return;
-        }
-
-        ApplyConfigFromUi();
-        _repo.SaveUserConfig(_config);
-
-        bool testMode = GetSelectedTag(CmbRunMode) == "test";
-        string? forcedId = CmbGameProfile.SelectedItem?.ToString();
-
-        var router = new ProviderFailoverRouter(_accounts, onLog: AppendLog);
-        var windowDetector = new Win32WindowDetector();
-        var capture = new FastScreenCapture();
-        var voice = new InstantSapiVoiceService();
-
-        _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity);
-
-        _orchestrator = new CoachOrchestrator(
-            _config,
-            _profiles,
-            router,
-            windowDetector,
-            capture,
-            voice,
-            _overlay,
-            testMode: testMode,
-            forcedGameId: forcedId,
-            onLog: AppendLog,
-            onStats: UpdateStatsUi
-        );
-
-        BtnStartStop.IsEnabled = false;
+        await _lifecycleLock.WaitAsync();
         try
         {
-            await _orchestrator.StartAsync();
-            if (_config.EnableHotkeys)
+            if (_orchestrator is { IsRunning: true })
             {
-                _hotkeys.Start(
-                    _config.HotkeyTogglePause,
-                    _config.HotkeyAnalyzeNow,
-                    () => _orchestrator?.TogglePause(),
-                    () => _orchestrator?.TriggerOnDemandAnalysis()
-                );
+                await ShutdownEngineCoreAsync(isAppClosing: false);
+                return;
             }
 
-            BtnStartStop.Content = "⏹ Detener Coach";
-            BtnAnalyzeNow.IsEnabled = true;
-            BtnPause.IsEnabled = true;
-            HeaderStatusText.Text = $"Corriendo · {router.ActiveProviderLabel}";
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"Error iniciando motor: {ex.Message}");
-            await ShutdownEngineAsync();
+            ApplyConfigFromUi();
+            _repo.SaveUserConfig(_config);
+
+            bool testMode = GetSelectedTag(CmbRunMode) == "test";
+            string? forcedId = CmbGameProfile.SelectedItem?.ToString();
+
+            var router = new ProviderFailoverRouter(_accounts, onLog: AppendLog);
+            var windowDetector = new Win32WindowDetector();
+            var capture = new FastScreenCapture();
+            var voice = new InstantSapiVoiceService();
+
+            _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
+
+            _orchestrator = new CoachOrchestrator(
+                _config,
+                _profiles,
+                router,
+                windowDetector,
+                capture,
+                voice,
+                _overlay,
+                testMode: testMode,
+                forcedGameId: forcedId,
+                onLog: AppendLog,
+                onStats: UpdateStatsUi,
+                onPauseChanged: OnPauseChanged
+            );
+
+            BtnStartStop.IsEnabled = false;
+            try
+            {
+                await _orchestrator.StartAsync();
+                RegisterActiveHotkeys();
+
+                BtnStartStop.Content = "⏹ Detener Coach";
+                BtnAnalyzeNow.IsEnabled = true;
+                BtnPause.IsEnabled = true;
+                PauseBadge.Visibility = Visibility.Collapsed;
+                RefreshHotkeyButtonLabels();
+                HeaderStatusText.Text = $"Corriendo · {router.ActiveProviderLabel}";
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"Error iniciando motor: {ex.Message}");
+                await ShutdownEngineCoreAsync(isAppClosing: false);
+            }
+            finally
+            {
+                BtnStartStop.IsEnabled = true;
+            }
         }
         finally
         {
-            BtnStartStop.IsEnabled = true;
+            _lifecycleLock.Release();
         }
     }
 
-    private async Task ShutdownEngineAsync()
+    private void RegisterActiveHotkeys()
+    {
+        _hotkeys.Stop();
+        if (_config.EnableHotkeys && _orchestrator is { IsRunning: true })
+        {
+            _hotkeys.Start(
+                _config.HotkeyTogglePause,
+                _config.HotkeyAnalyzeNow,
+                () => _orchestrator?.TogglePause(),
+                () => _orchestrator?.TriggerOnDemandAnalysis(),
+                onWarning: AppendLog
+            );
+        }
+    }
+
+    private async Task ShutdownEngineAsync(bool isAppClosing)
+    {
+        await _lifecycleLock.WaitAsync();
+        try
+        {
+            await ShutdownEngineCoreAsync(isAppClosing);
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
+    private async Task ShutdownEngineCoreAsync(bool isAppClosing)
     {
         _hotkeys.Stop();
         if (_orchestrator is not null)
@@ -173,25 +279,25 @@ public partial class MainWindow : Window
             await _orchestrator.DisposeAsync();
             _orchestrator = null;
         }
-        _overlay.Hide();
-        Dispatcher.Invoke(() =>
+        if (!isAppClosing)
         {
+            _overlay.Hide();
             BtnStartStop.Content = "▶ Iniciar Coach";
             BtnAnalyzeNow.IsEnabled = false;
             BtnPause.IsEnabled = false;
+            PauseBadge.Visibility = Visibility.Collapsed;
             HeaderStatusText.Text = "Estado: Detenido";
-        });
+        }
     }
 
     private void BtnAnalyzeNow_Click(object sender, RoutedEventArgs e) =>
         _orchestrator?.TriggerOnDemandAnalysis();
 
-    private void BtnPause_Click(object sender, RoutedEventArgs e)
-    {
-        if (_orchestrator is null) return;
-        _orchestrator.TogglePause();
-        BtnPause.Content = _orchestrator.IsPaused ? "▶ Reanudar (F9)" : "⏸ Pausar (F9)";
-    }
+    private void BtnPause_Click(object sender, RoutedEventArgs e) =>
+        _orchestrator?.TogglePause();
+
+    private void BtnClearLogs_Click(object sender, RoutedEventArgs e) =>
+        _logEntries.Clear();
 
     private void CmbNewProvider_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -201,6 +307,7 @@ public partial class MainWindow : Window
         {
             "groq" => ("Groq LPU Gratis (~0.4s)", "meta-llama/llama-4-scout-17b-16e-instruct"),
             "gemini" => ("Gemini 2.5 Flash (~0.8s)", "gemini-2.5-flash"),
+            "claude" => ("Anthropic Claude Haiku", "claude-3-5-haiku-latest"),
             "openrouter" => ("OpenRouter :free", "google/gemma-3-27b-it:free"),
             "openai" => ("OpenAI GPT-4o-mini", "gpt-4o-mini"),
             _ => ("Pollinations Gratis Sin Login", "openai-fast")
@@ -210,12 +317,13 @@ public partial class MainWindow : Window
     private void BtnAddAccount_Click(object sender, RoutedEventArgs e)
     {
         var prov = (CmbNewProvider.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "groq";
+        var apiKey = PwdNewApiKey.Password.Trim();
         var acc = new ProviderAccount
         {
             Label = string.IsNullOrWhiteSpace(TxtNewLabel.Text) ? prov : TxtNewLabel.Text.Trim(),
             Provider = prov,
             Model = TxtNewModel.Text.Trim(),
-            ApiKey = TxtNewApiKey.Text.Trim(),
+            ApiKey = apiKey,
             Priority = 1,
             Enabled = true
         };
@@ -225,7 +333,7 @@ public partial class MainWindow : Window
             return;
         }
         _accounts.Insert(0, acc);
-        TxtNewApiKey.Clear();
+        PwdNewApiKey.Clear();
         RefreshAccountsList();
         _repo.SaveAccounts(_accounts);
         AppendLog($"Cuenta agregada en prioridad #1: {acc.Label} [{acc.Provider}:{acc.Model}]");
@@ -265,17 +373,35 @@ public partial class MainWindow : Window
     private async void BtnTestAccount_Click(object sender, RoutedEventArgs e)
     {
         if (LstAccounts.SelectedItem is not AccountRowView row) return;
-        await using var adapter = ProviderFailoverRouter.CreateDefaultAdapter(row.Source);
-        var (ok, msg) = await adapter.TestConnectionAsync();
-        AppendLog($"Test [{row.Label}]: {(ok ? "OK" : "ERROR")} — {msg}");
-        System.Windows.MessageBox.Show(msg, ok ? "Conexión Exitosa" : "Error de Conexión", MessageBoxButton.OK, ok ? MessageBoxImage.Information : MessageBoxImage.Error);
+        try
+        {
+            await using var adapter = ProviderFailoverRouter.CreateDefaultAdapter(row.Source);
+            var (ok, msg) = await adapter.TestConnectionAsync();
+            AppendLog($"Test [{row.Label}]: {(ok ? "OK" : "ERROR")} — {msg}");
+            System.Windows.MessageBox.Show(msg, ok ? "Conexión Exitosa" : "Error de Conexión", MessageBoxButton.OK, ok ? MessageBoxImage.Information : MessageBoxImage.Error);
+        }
+        catch (Exception ex)
+        {
+            var safe = SecretRedactor.Redact(ex.Message, [row.Source.ApiKey]);
+            AppendLog($"Test [{row.Label}] falló: {safe}");
+            System.Windows.MessageBox.Show(safe, "Error de Conexión", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
-    private void BtnOpenGroq_Click(object sender, RoutedEventArgs e) =>
-        Process.Start(new ProcessStartInfo("https://console.groq.com/keys") { UseShellExecute = true });
+    private void BtnOpenGroq_Click(object sender, RoutedEventArgs e) => OpenExternalUrl("https://console.groq.com/keys");
+    private void BtnOpenGemini_Click(object sender, RoutedEventArgs e) => OpenExternalUrl("https://aistudio.google.com/apikey");
 
-    private void BtnOpenGemini_Click(object sender, RoutedEventArgs e) =>
-        Process.Start(new ProcessStartInfo("https://aistudio.google.com/apikey") { UseShellExecute = true });
+    private void OpenExternalUrl(string url)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"No se pudo abrir navegador: {ex.Message}");
+        }
+    }
 
     private void CmbRulesGame_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -287,7 +413,7 @@ public partial class MainWindow : Window
     private void TxtCustomRules_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (LblRulesCount is not null)
-            LblRulesCount.Text = $"{TxtCustomRules.Text.Length} / 2000 caracteres";
+            LblRulesCount.Text = $"{TxtCustomRules.Text.Length} / {ConfigRepository.MaxCustomRulesChars} caracteres (envío íntegro en tiempo real)";
     }
 
     private void BtnSaveRules_Click(object sender, RoutedEventArgs e)
@@ -306,12 +432,24 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SldVolume_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (LblVolumePct is null) return;
+        double vol = Math.Round(SldVolume.Value, 2);
+        LblVolumePct.Text = $"{(int)Math.Round(vol * 100)}%";
+        _config.TtsVolume = vol;
+        _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, vol);
+        _previewVoice.UpdateSettings(_config.VoiceLanguage, vol);
+    }
+
     private void ApplyConfigFromUi()
     {
         _config.CoachMode = GetSelectedTag(CmbCoachMode);
         _config.TextLanguage = (CmbLanguage.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "es";
         _config.VoiceLanguage = _config.TextLanguage;
         _config.TokenEfficiencyMode = (CmbEfficiency.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "eco";
+        _config.OverlayPosition = (CmbOverlayPos.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "top-right";
+        _config.CaptureMonitor = CmbMonitor.SelectedItem is int m ? m : 1;
         _config.EnableVoice = ChkEnableVoice.IsChecked == true;
         _config.EnableOverlay = ChkEnableOverlay.IsChecked == true;
         _config.EnableHotkeys = ChkEnableHotkeys.IsChecked == true;
@@ -324,20 +462,30 @@ public partial class MainWindow : Window
     {
         ApplyConfigFromUi();
         _repo.SaveUserConfig(_config);
-        AppendLog("Preferencias guardadas en config/user_config.json.");
+        _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
+        _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, _config.TtsVolume);
+        _previewVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume);
+        RefreshHotkeyButtonLabels();
+        RegisterActiveHotkeys();
+        AppendLog("Preferencias guardadas y aplicadas en vivo (preservando campos Python).");
     }
 
     private void BtnPreviewOverlay_Click(object sender, RoutedEventArgs e)
     {
         ApplyConfigFromUi();
-        _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity);
+        _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
         _overlay.ShowCallout("Rotá segundo palo, tenés 18 de boost.", UrgencyLevel.High, "Rocket League", 4.0);
         if (_config.EnableVoice)
         {
-            using var previewVoice = new InstantSapiVoiceService();
-            previewVoice.WarmUp(_config.VoiceLanguage, _config.TtsVolume);
-            double ms = previewVoice.SpeakInstant("Rotá segundo palo, tenés dieciocho de boost.");
-            AppendLog($"Preview Voz SAPI5 disparado en {ms:F1} ms.");
+            string lang = _config.VoiceLanguage;
+            double vol = _config.TtsVolume;
+            _ = Task.Run(() =>
+            {
+                _previewVoice.WarmUp(lang, vol);
+                _previewVoice.UpdateSettings(lang, vol);
+                double ms = _previewVoice.SpeakInstant("Rotá segundo palo, tenés dieciocho de boost.");
+                AppendLog($"Preview Voz SAPI5 disparado en {ms:F1} ms (sin cortar audio).");
+            });
         }
     }
 

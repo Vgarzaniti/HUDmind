@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Threading.Channels;
 using HUDMind.Core.AI;
 using HUDMind.Core.Models;
@@ -7,7 +6,7 @@ using HUDMind.Core.Pipeline;
 namespace HUDMind.Core.Engine;
 
 /// <summary>
-/// Event-driven bounded-channel (DropOldest) real-time coach engine with zero-wait F10 wakeup.
+/// Event-driven bounded-channel (DropOldest) real-time coach engine with latched zero-wait F10 wakeup.
 /// </summary>
 public sealed class CoachOrchestrator : IAsyncDisposable
 {
@@ -20,23 +19,24 @@ public sealed class CoachOrchestrator : IAsyncDisposable
     private readonly IOverlayOutputService _overlay;
     private readonly Action<string>? _onLog;
     private readonly Action<CoachRuntimeStats>? _onStats;
+    private readonly Action<bool>? _onPauseChanged;
     private readonly bool _testMode;
     private readonly string? _forcedGameId;
 
     private readonly InterventionStateMachine _stateMachine = new();
     private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 420.0);
     private readonly Channel<CapturedFrameData> _frameChannel;
+    private readonly SemaphoreSlim _wakeSignal = new(0, 1);
+    private readonly object _hashLock = new();
 
     private CancellationTokenSource? _runCts;
-    private CancellationTokenSource _wakeCts = new();
-    private readonly object _wakeLock = new();
     private Task? _producerTask;
     private Task? _consumerTask;
 
-    private GameProfile? _activeProfile;
+    private volatile GameProfile? _activeProfile;
     private ulong? _lastAcceptedHash;
     private volatile bool _userPaused;
-    private volatile bool _forceAnalysisPending;
+    private int _forceAnalysisPending;
 
     private long _framesCaptured;
     private long _framesFiltered;
@@ -60,7 +60,8 @@ public sealed class CoachOrchestrator : IAsyncDisposable
         bool testMode = false,
         string? forcedGameId = null,
         Action<string>? onLog = null,
-        Action<CoachRuntimeStats>? onStats = null)
+        Action<CoachRuntimeStats>? onStats = null,
+        Action<bool>? onPauseChanged = null)
     {
         _config = config;
         _profiles = profiles;
@@ -73,6 +74,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
         _forcedGameId = forcedGameId;
         _onLog = onLog;
         _onStats = onStats;
+        _onPauseChanged = onPauseChanged;
 
         _frameChannel = Channel.CreateBounded<CapturedFrameData>(new BoundedChannelOptions(1)
         {
@@ -118,10 +120,14 @@ public sealed class CoachOrchestrator : IAsyncDisposable
         EmitStats();
     }
 
+    public void UpdateVoiceLive(string language, double volume) =>
+        _voice.UpdateSettings(language, volume);
+
     public void TogglePause()
     {
         _userPaused = !_userPaused;
         var title = _activeProfile?.Manifest.DisplayName ?? "HUDMind";
+        _onPauseChanged?.Invoke(_userPaused);
         if (_userPaused)
         {
             _voice.StopSpeaking();
@@ -136,6 +142,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
             if (_config.EnableOverlay)
                 _overlay.ShowCallout("Coach ACTIVO — observando", UrgencyLevel.Low, title, 2.5);
         }
+        EmitStats();
     }
 
     public void TriggerOnDemandAnalysis()
@@ -143,50 +150,58 @@ public sealed class CoachOrchestrator : IAsyncDisposable
         if (_activeProfile is null && _profiles.Count > 0 && _testMode)
             _activeProfile = _profiles[0];
 
-        if (_activeProfile is null)
+        var active = _activeProfile;
+        if (active is null)
         {
-            _onLog?.Invoke("F10 ignorado: todavía no hay un juego activo detectado.");
+            _onLog?.Invoke($"{_config.HotkeyAnalyzeNow} ignorado: todavía no hay un juego activo detectado.");
             return;
         }
 
-        _userPaused = false;
-        _forceAnalysisPending = true;
+        if (_userPaused)
+        {
+            _userPaused = false;
+            _onPauseChanged?.Invoke(false);
+        }
+
+        Interlocked.Exchange(ref _forceAnalysisPending, 1);
         WakeNow();
         _onLog?.Invoke($"Análisis inmediato ({_config.HotkeyAnalyzeNow}) disparado (<1ms wake).");
         if (_config.EnableOverlay)
-            _overlay.ShowCallout("Analizando jugada...", UrgencyLevel.Low, _activeProfile.Manifest.DisplayName, 1.8);
+            _overlay.ShowCallout("Analizando jugada...", UrgencyLevel.Low, active.Manifest.DisplayName, 1.8);
     }
 
     public void WakeNow()
     {
-        lock (_wakeLock)
+        if (_wakeSignal.CurrentCount == 0)
         {
-            try { _wakeCts.Cancel(); } catch { /* ignored */ }
+            try { _wakeSignal.Release(); }
+            catch (SemaphoreFullException) { /* already latched */ }
+            catch (ObjectDisposedException) { /* shutting down */ }
         }
     }
 
     private async Task WaitInterruptibleAsync(TimeSpan delay, CancellationToken ct)
     {
-        CancellationTokenSource localWake;
-        lock (_wakeLock)
-        {
-            if (_wakeCts.IsCancellationRequested)
-            {
-                _wakeCts.Dispose();
-                _wakeCts = new CancellationTokenSource();
-            }
-            localWake = _wakeCts;
-        }
-
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, localWake.Token);
+        if (delay <= TimeSpan.Zero)
+            return;
         try
         {
-            await Task.Delay(delay, linked.Token);
+            await _wakeSignal.WaitAsync(delay, ct);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            // Woken up early via WakeNow()!
+            // Ignored
         }
+    }
+
+    private ulong? GetLastHash()
+    {
+        lock (_hashLock) return _lastAcceptedHash;
+    }
+
+    private void SetLastHash(ulong? hash)
+    {
+        lock (_hashLock) _lastAcceptedHash = hash;
     }
 
     private (int W, int H, int Quality) ResolveTargetResolution() =>
@@ -225,7 +240,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                     if (matched is not null && !ReferenceEquals(matched, _activeProfile))
                     {
                         _activeProfile = matched;
-                        _lastAcceptedHash = null;
+                        SetLastHash(null);
                         _stateMachine.Reset();
                         _memory.Clear();
                         _onLog?.Invoke($"Juego detectado automáticamente: {matched.Manifest.DisplayName} ({fg})");
@@ -247,24 +262,56 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                     continue;
                 }
 
-                bool forced = _forceAnalysisPending;
-                bool canRun = forced
-                    ? !_stateMachine.IsBusy
-                    : _stateMachine.CanAnalyze(EffectiveCooldown(profile), _config.MinInferenceIntervalSeconds);
-
-                if (canRun)
+                bool hasPendingForce = Volatile.Read(ref _forceAnalysisPending) == 1;
+                if (hasPendingForce && _stateMachine.IsBusy)
                 {
-                    var (w, h, q) = ResolveTargetResolution();
-                    var region = _testMode ? null : _windowDetector.GetForegroundClientRect();
-                    var frame = _capture.CaptureCompressedFrame(
-                        _config.CaptureMonitor, region, w, h, q, Interlocked.Increment(ref frameCounter));
+                    await WaitInterruptibleAsync(TimeSpan.FromMilliseconds(150), ct);
+                    continue;
+                }
 
-                    if (frame is not null)
+                bool isForced = false;
+                if (hasPendingForce)
+                {
+                    isForced = Interlocked.Exchange(ref _forceAnalysisPending, 0) == 1;
+                }
+                else
+                {
+                    var waitRem = _stateMachine.GetWaitUntilReady(
+                        EffectiveCooldown(profile),
+                        _config.MinInferenceIntervalSeconds);
+                    if (waitRem > TimeSpan.Zero)
                     {
-                        Interlocked.Increment(ref _framesCaptured);
-                        _lastCaptureMs = frame.CaptureMs + frame.EncodeMs;
-                        _frameChannel.Writer.TryWrite(frame);
+                        // Sleep cleanly until cooldown expires (interruptible in <1ms by F10!)
+                        var boundedWait = waitRem > TimeSpan.FromMilliseconds(900)
+                            ? TimeSpan.FromMilliseconds(900)
+                            : waitRem;
+                        await WaitInterruptibleAsync(boundedWait, ct);
+                        continue;
                     }
+                }
+
+                var (w, h, q) = ResolveTargetResolution();
+                var region = _testMode ? null : _windowDetector.GetForegroundClientRect();
+                var (frame, skippedByHash) = _capture.CaptureIfChanged(
+                    _config.CaptureMonitor,
+                    region,
+                    w,
+                    h,
+                    q,
+                    Interlocked.Increment(ref frameCounter),
+                    GetLastHash(),
+                    profile.Manifest.PhashThreshold,
+                    isForced);
+
+                if (skippedByHash)
+                {
+                    Interlocked.Increment(ref _framesFiltered);
+                }
+                else if (frame is not null)
+                {
+                    Interlocked.Increment(ref _framesCaptured);
+                    _lastCaptureMs = frame.CaptureMs + frame.EncodeMs;
+                    _frameChannel.Writer.TryWrite(frame);
                 }
 
                 var fps = Math.Clamp(profile.Manifest.CaptureFps, 0.5, 4.0);
@@ -290,40 +337,30 @@ public sealed class CoachOrchestrator : IAsyncDisposable
             if (profile is null || _userPaused)
                 continue;
 
-            bool forceNow = _forceAnalysisPending;
-            if (forceNow)
-                _forceAnalysisPending = false;
-
-            if (!forceNow)
+            bool forceNow = frame.IsForced;
+            if (!forceNow && !_stateMachine.CanAnalyze(EffectiveCooldown(profile), _config.MinInferenceIntervalSeconds))
             {
-                if (_lastAcceptedHash.HasValue)
-                {
-                    int dist = PerceptualHasher.HammingDistance(frame.PerceptualHash, _lastAcceptedHash.Value);
-                    if (dist < profile.Manifest.PhashThreshold)
-                    {
-                        Interlocked.Increment(ref _framesFiltered);
-                        continue;
-                    }
-                }
-
-                if (!_stateMachine.CanAnalyze(EffectiveCooldown(profile), _config.MinInferenceIntervalSeconds))
-                {
-                    Interlocked.Increment(ref _framesFiltered);
-                    continue;
-                }
+                Interlocked.Increment(ref _framesFiltered);
+                continue;
             }
 
             if (!_stateMachine.TryBeginAnalysis())
                 continue;
 
-            _lastAcceptedHash = frame.PerceptualHash;
+            SetLastHash(frame.PerceptualHash);
             bool delivered = false;
             try
             {
                 Interlocked.Increment(ref _aiCalls);
                 var history = _memory.FormatCompactHistory();
                 var (resp, aiMs, model) = await _router.AnalyzeFrameAsync(
-                    frame.JpegBytes, profile, _config, history, forceNow, ct);
+                    frame.JpegBytes,
+                    profile,
+                    _config,
+                    history,
+                    forceNow,
+                    frame.SpatialTelemetry,
+                    ct);
                 _lastAiMs = aiMs;
 
                 if (resp is { ShouldIntervene: true } && !string.IsNullOrWhiteSpace(resp.OverlayText))
@@ -349,7 +386,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                         double totalMs = frame.CaptureMs + frame.EncodeMs + aiMs + voiceMs;
                         _onLog?.Invoke(
                             $"[{resp.Urgency.ToString().ToUpperInvariant()}] \"{resp.OverlayText}\" | " +
-                            $"TOTAL={totalMs:F0}ms (cap={frame.CaptureMs + frame.EncodeMs:F0}ms + IA={aiMs:F0}ms + voz={voiceMs:F1}ms) [{model}]");
+                            $"TOTAL={totalMs:F0}ms (cap={frame.CaptureMs + frame.EncodeMs:F1}ms + IA={aiMs:F0}ms + voz={voiceMs:F1}ms) [{model}]");
                     }
                 }
                 else
@@ -368,6 +405,8 @@ public sealed class CoachOrchestrator : IAsyncDisposable
             finally
             {
                 _stateMachine.EndAnalysis(delivered);
+                if (Volatile.Read(ref _forceAnalysisPending) == 1)
+                    WakeNow();
                 EmitStats();
             }
         }
@@ -384,7 +423,8 @@ public sealed class CoachOrchestrator : IAsyncDisposable
             _lastAiMs,
             _lastVoiceMs,
             _router.ActiveProviderLabel,
-            _activeProfile?.Manifest.DisplayName ?? "(esperando juego)"
+            _activeProfile?.Manifest.DisplayName ?? "(esperando juego)",
+            _userPaused
         ));
     }
 
@@ -415,6 +455,6 @@ public sealed class CoachOrchestrator : IAsyncDisposable
         await _router.DisposeAsync();
         _voice.Dispose();
         _capture.Dispose();
-        _wakeCts.Dispose();
+        _wakeSignal.Dispose();
     }
 }

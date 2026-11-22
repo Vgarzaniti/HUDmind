@@ -138,16 +138,21 @@ public sealed class InterventionStateMachine
 
     public bool CanAnalyze(double cooldownSeconds, double minIntervalSeconds, DateTimeOffset? nowUtc = null)
     {
+        return GetWaitUntilReady(cooldownSeconds, minIntervalSeconds, nowUtc) <= TimeSpan.Zero;
+    }
+
+    public TimeSpan GetWaitUntilReady(double cooldownSeconds, double minIntervalSeconds, DateTimeOffset? nowUtc = null)
+    {
         var now = nowUtc ?? DateTimeOffset.UtcNow;
         lock (_sync)
         {
             if (_busy)
-                return false;
-            if ((now - _lastDeliveryUtc).TotalSeconds < cooldownSeconds)
-                return false;
-            if ((now - _lastInferenceUtc).TotalSeconds < minIntervalSeconds)
-                return false;
-            return true;
+                return TimeSpan.FromMilliseconds(250);
+
+            var remCd = TimeSpan.FromSeconds(cooldownSeconds) - (now - _lastDeliveryUtc);
+            var remMin = TimeSpan.FromSeconds(minIntervalSeconds) - (now - _lastInferenceUtc);
+            var maxWait = remCd > remMin ? remCd : remMin;
+            return maxWait > TimeSpan.Zero ? maxWait : TimeSpan.Zero;
         }
     }
 

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace HUDMind.Core.Models;
@@ -47,15 +48,23 @@ public sealed class ProviderAccount
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;
 
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtraFields { get; set; }
+
     public bool IsKeylessAllowed =>
         Provider is "pollinations" or "airforce" or "ollama";
 
     public bool IsReady() =>
         Enabled && (IsKeylessAllowed || !string.IsNullOrWhiteSpace(ApiKey));
 
+    /// <summary>
+    /// True only for low-latency paid/free-LPU/Flash vision providers eligible for parallel hedging.
+    /// Excludes slow OpenRouter `:free` community queues to avoid wasting daily RPD quota.
+    /// </summary>
     public bool IsFastCloudVision =>
-        Provider is "gemini" or "groq" or "openai" or "openrouter" &&
-        !string.IsNullOrWhiteSpace(ApiKey);
+        Provider is "gemini" or "groq" or "openai" or "claude" or "openrouter" &&
+        !string.IsNullOrWhiteSpace(ApiKey) &&
+        !(Provider == "openrouter" && Model.EndsWith(":free", StringComparison.OrdinalIgnoreCase));
 
     public string MaskedKey()
     {
@@ -75,6 +84,7 @@ public sealed class ProviderAccount
         return Provider.ToLowerInvariant() switch
         {
             "openai" => "https://api.openai.com/v1",
+            "claude" => "https://api.anthropic.com/v1",
             "groq" => "https://api.groq.com/openai/v1",
             "openrouter" => "https://openrouter.ai/api/v1",
             "pollinations" => "https://text.pollinations.ai/openai",
@@ -140,6 +150,12 @@ public sealed class UserConfig
 
     [JsonPropertyName("token_efficiency_mode")]
     public string TokenEfficiencyMode { get; set; } = "eco";
+
+    /// <summary>
+    /// Preserves all Python-specific config fields (tts_voice, overlay_theme, etc.) on round-trip save.
+    /// </summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? ExtraFields { get; set; }
 }
 
 public sealed class GameManifest
@@ -177,6 +193,7 @@ public sealed class GameProfile
     public required GameManifest Manifest { get; init; }
     public required string DirectoryPath { get; init; }
     public string CustomRules { get; set; } = string.Empty;
+    public string TacticalSummary { get; init; } = string.Empty;
 
     public bool MatchesProcess(string? executableName)
     {
@@ -194,7 +211,9 @@ public sealed record CapturedFrameData(
     long FrameId,
     double CaptureMs,
     double EncodeMs,
-    DateTimeOffset CapturedAtUtc
+    DateTimeOffset CapturedAtUtc,
+    bool IsForced = false,
+    string SpatialTelemetry = ""
 );
 
 public sealed record CoachRuntimeStats(
@@ -206,5 +225,6 @@ public sealed record CoachRuntimeStats(
     double LastAiMs,
     double LastVoiceMs,
     string ActiveProvider,
-    string ActiveGame
+    string ActiveGame,
+    bool IsPaused = false
 );

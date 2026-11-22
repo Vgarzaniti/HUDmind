@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using HUDMind.Core.Engine;
@@ -6,16 +5,26 @@ using HUDMind.Core.Engine;
 namespace HUDMind.Windows;
 
 /// <summary>
-/// Persistent Windows SAPI5 COM STA worker (&lt;5ms start latency, 0% GPU, 0 network, 0 NuGet).
+/// Persistent Windows SAPI5 COM STA worker with 1-slot Drop-Oldest mailbox (&lt;5ms start, 0% GPU, 0 network).
+/// Eliminates disposable wait-handle races, unbounded queues, and COM RCW leaks.
 /// </summary>
 public sealed class InstantSapiVoiceService : IVoiceOutputService
 {
     private const int SvsFlagsAsync = 1;
     private const int SvsfPurgeBeforeSpeak = 2;
 
-    private readonly BlockingCollection<(string Cmd, string Text, ManualResetEventSlim? Done)> _queue = new();
+    private readonly object _sync = new();
+    private readonly AutoResetEvent _signal = new(false);
+    private TaskCompletionSource<bool>? _readyTcs;
     private Thread? _staThread;
+
+    private string? _pendingText;
+    private bool _pendingStop;
+    private bool _pendingConfigUpdate;
+    private bool _shutdownRequested;
     private volatile bool _ready;
+    private volatile bool _disposed;
+
     private string _language = "es";
     private double _volume = 0.75;
 
@@ -23,48 +32,91 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
 
     public void WarmUp(string language, double volume)
     {
-        _language = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
-        _volume = Math.Clamp(volume, 0.0, 1.0);
-
-        if (_staThread is { IsAlive: true })
+        if (_disposed)
             return;
 
-        using var readyEv = new ManualResetEventSlim(false);
-        _staThread = new Thread(() => StaWorkerLoop(readyEv))
+        Task<bool> readyTask;
+        lock (_sync)
         {
-            IsBackground = true,
-            Name = "HUDMind-SAPI5-STA"
-        };
-        _staThread.SetApartmentState(ApartmentState.STA);
-        _staThread.Start();
-        readyEv.Wait(TimeSpan.FromSeconds(3));
+            if (_disposed) return;
+            _language = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
+            _volume = Math.Clamp(volume, 0.0, 1.0);
+
+            if (_staThread is { IsAlive: true })
+            {
+                _pendingConfigUpdate = true;
+                _signal.Set();
+                return;
+            }
+
+            _readyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            readyTask = _readyTcs.Task;
+            _shutdownRequested = false;
+
+            _staThread = new Thread(StaWorkerLoop)
+            {
+                IsBackground = true,
+                Name = "HUDMind-SAPI5-STA"
+            };
+            _staThread.SetApartmentState(ApartmentState.STA);
+            _staThread.Start();
+        }
+
+        readyTask.Wait(TimeSpan.FromSeconds(3));
+    }
+
+    public void UpdateSettings(string language, double volume)
+    {
+        if (_disposed) return;
+        lock (_sync)
+        {
+            if (_disposed) return;
+            _language = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
+            _volume = Math.Clamp(volume, 0.0, 1.0);
+            if (_staThread is { IsAlive: true })
+            {
+                _pendingConfigUpdate = true;
+                _signal.Set();
+            }
+        }
     }
 
     public double SpeakInstant(string text)
     {
-        if (string.IsNullOrWhiteSpace(text))
+        if (_disposed || string.IsNullOrWhiteSpace(text))
             return 0;
 
         if (!_ready)
             WarmUp(_language, _volume);
-        if (!_ready)
+        if (!_ready || _disposed)
             return 0;
 
         var sw = Stopwatch.StartNew();
-        using var done = new ManualResetEventSlim(false);
-        _queue.Add(("speak", text.Trim(), done));
-        done.Wait(TimeSpan.FromSeconds(1));
+        lock (_sync)
+        {
+            if (_disposed) return 0;
+            // Drop-Oldest 1-slot mailbox: fresher callout replaces any unstarted stale line immediately
+            _pendingText = text.Trim();
+            _pendingStop = false;
+            _signal.Set();
+        }
         sw.Stop();
         return sw.Elapsed.TotalMilliseconds;
     }
 
     public void StopSpeaking()
     {
-        if (_ready)
-            _queue.Add(("stop", string.Empty, null));
+        if (_disposed || !_ready) return;
+        lock (_sync)
+        {
+            if (_disposed) return;
+            _pendingText = null;
+            _pendingStop = true;
+            _signal.Set();
+        }
     }
 
-    private void StaWorkerLoop(ManualResetEventSlim readyEv)
+    private void StaWorkerLoop()
     {
         dynamic? spVoice = null;
         try
@@ -72,47 +124,74 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
             var sapiType = Type.GetTypeFromProgID("SAPI.SpVoice");
             if (sapiType is null)
             {
-                readyEv.Set();
+                _readyTcs?.TrySetResult(false);
                 return;
             }
 
             spVoice = Activator.CreateInstance(sapiType);
             if (spVoice is null)
             {
-                readyEv.Set();
+                _readyTcs?.TrySetResult(false);
                 return;
             }
 
-            SelectPreferredVoice(spVoice, _language);
-            spVoice.Rate = 2; // Snappy Discord eSports coach cadence (-10..+10)
-            spVoice.Volume = (int)Math.Round(_volume * 100.0);
+            string initLang;
+            double initVol;
+            lock (_sync)
+            {
+                initLang = _language;
+                initVol = _volume;
+            }
+
+            ApplyVoiceSettings(spVoice, initLang, initVol);
             spVoice.Speak(string.Empty, SvsFlagsAsync | SvsfPurgeBeforeSpeak);
             _ready = true;
-            readyEv.Set();
+            _readyTcs?.TrySetResult(true);
 
-            foreach (var (cmd, text, done) in _queue.GetConsumingEnumerable())
+            while (true)
             {
+                _signal.WaitOne();
+
+                string? textToSpeak;
+                bool doStop;
+                bool doConfig;
+                string lang;
+                double vol;
+
+                lock (_sync)
+                {
+                    if (_shutdownRequested)
+                        break;
+                    textToSpeak = _pendingText;
+                    _pendingText = null;
+                    doStop = _pendingStop;
+                    _pendingStop = false;
+                    doConfig = _pendingConfigUpdate;
+                    _pendingConfigUpdate = false;
+                    lang = _language;
+                    vol = _volume;
+                }
+
                 try
                 {
-                    if (cmd == "speak" && !string.IsNullOrEmpty(text))
-                        spVoice.Speak(text, SvsFlagsAsync | SvsfPurgeBeforeSpeak);
-                    else if (cmd == "stop")
+                    if (doConfig)
+                        ApplyVoiceSettings(spVoice, lang, vol);
+
+                    if (doStop)
                         spVoice.Speak(string.Empty, SvsFlagsAsync | SvsfPurgeBeforeSpeak);
+                    else if (!string.IsNullOrEmpty(textToSpeak))
+                        spVoice.Speak(textToSpeak, SvsFlagsAsync | SvsfPurgeBeforeSpeak);
                 }
                 catch
                 {
-                    // Keep voice worker alive
-                }
-                finally
-                {
-                    done?.Set();
+                    // Keep persistent STA worker healthy
                 }
             }
         }
         catch
         {
             _ready = false;
-            readyEv.Set();
+            _readyTcs?.TrySetResult(false);
         }
         finally
         {
@@ -125,19 +204,36 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         }
     }
 
-    private static void SelectPreferredVoice(dynamic spVoice, string lang)
+    private static void ApplyVoiceSettings(dynamic spVoice, string lang, double volume)
     {
         try
         {
-            dynamic tokens = spVoice.GetVoices();
+            SelectPreferredVoice(spVoice, lang);
+            spVoice.Rate = 2; // Snappy Discord coach cadence
+            spVoice.Volume = (int)Math.Round(Math.Clamp(volume, 0.0, 1.0) * 100.0);
+        }
+        catch
+        {
+            // Keep existing SAPI5 properties
+        }
+    }
+
+    private static void SelectPreferredVoice(dynamic spVoice, string lang)
+    {
+        dynamic? tokens = null;
+        var allTokens = new List<object>();
+        object? chosen = null;
+        try
+        {
+            tokens = spVoice.GetVoices();
             int count = (int)tokens.Count;
             bool wantEs = lang.StartsWith("es", StringComparison.OrdinalIgnoreCase);
-            dynamic? best = null;
             int bestScore = 0;
 
             for (int i = 0; i < count; i++)
             {
                 dynamic tok = tokens.Item(i);
+                allTokens.Add(tok);
                 string desc = ((string)tok.GetDescription()).ToLowerInvariant();
                 int score = 0;
                 if (wantEs)
@@ -160,23 +256,47 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
                 if (score > bestScore)
                 {
                     bestScore = score;
-                    best = tok;
+                    chosen = tok;
                 }
             }
 
-            if (best is not null)
-                spVoice.Voice = best;
+            if (chosen is not null)
+                spVoice.Voice = chosen;
         }
         catch
         {
             // Keep default Windows SAPI5 voice
         }
+        finally
+        {
+            foreach (var tok in allTokens)
+            {
+                if (!ReferenceEquals(tok, chosen))
+                {
+                    try { Marshal.ReleaseComObject(tok); } catch { }
+                }
+            }
+            if (tokens is not null)
+            {
+                try { Marshal.ReleaseComObject(tokens); } catch { }
+            }
+        }
     }
 
     public void Dispose()
     {
-        _queue.CompleteAdding();
-        _staThread?.Join(TimeSpan.FromSeconds(1));
-        _queue.Dispose();
+        Thread? threadToJoin;
+        lock (_sync)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _shutdownRequested = true;
+            _pendingText = null;
+            _signal.Set();
+            threadToJoin = _staThread;
+        }
+
+        threadToJoin?.Join(TimeSpan.FromSeconds(1.5));
+        _signal.Dispose();
     }
 }

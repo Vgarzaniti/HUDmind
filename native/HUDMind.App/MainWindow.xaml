@@ -2,35 +2,13 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="HUDMind Native (.NET 9) — Real-Time eSports AI Coach"
-        Width="980"
-        Height="680"
+        Width="990"
+        Height="690"
         MinWidth="860"
-        MinHeight="580"
+        MinHeight="590"
         Background="#0B1120"
         Foreground="#F1F5F9"
         WindowStartupLocation="CenterScreen">
-    <Window.Resources>
-        <Style TargetType="Button">
-            <Setter Property="Background" Value="#1E293B" />
-            <Setter Property="Foreground" Value="#F1F5F9" />
-            <Setter Property="BorderBrush" Value="#334155" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Padding" Value="12,6" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="Cursor" Value="Hand" />
-        </Style>
-        <Style TargetType="TextBox">
-            <Setter Property="Background" Value="#0F172A" />
-            <Setter Property="Foreground" Value="#F8FAFC" />
-            <Setter Property="BorderBrush" Value="#334155" />
-            <Setter Property="Padding" Value="6,4" />
-            <Setter Property="CaretBrush" Value="#38BDF8" />
-        </Style>
-        <Style TargetType="ComboBox">
-            <Setter Property="Padding" Value="6,4" />
-        </Style>
-    </Window.Resources>
-
     <Grid Margin="14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -42,7 +20,10 @@
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
                 <TextBlock Text="HUDMind" FontSize="22" FontWeight="Bold" Foreground="#38BDF8" VerticalAlignment="Center" />
                 <Border Background="#10B981" CornerRadius="6" Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center">
-                    <TextBlock Text=".NET 9 NATIVO · $0 COSTO · HTTP/2" FontSize="10.5" FontWeight="Bold" Foreground="#052E16" />
+                    <TextBlock Text=".NET 9 · 0% GPU · $0 COSTO · HTTP/2" FontSize="10.5" FontWeight="Bold" Foreground="#052E16" />
+                </Border>
+                <Border x:Name="PauseBadge" Background="#F59E0B" CornerRadius="6" Padding="8,2" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed">
+                    <TextBlock Text="PAUSADO" FontSize="10.5" FontWeight="Bold" Foreground="#1E1B18" />
                 </Border>
             </StackPanel>
             <TextBlock x:Name="HeaderStatusText"
@@ -51,16 +32,18 @@
                        Foreground="#94A3B8"
                        FontSize="12.5"
                        FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis"
                        VerticalAlignment="Center" />
         </DockPanel>
 
         <!-- Main Tabs -->
-        <TabControl Grid.Row="1" Background="#111827" BorderBrush="#1E293B">
+        <TabControl Grid.Row="1">
 
             <!-- TAB 1: CONTROL & LIVE LATENCY -->
             <TabItem Header="⚡ Coach en Vivo">
                 <Grid Margin="12">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
@@ -70,17 +53,17 @@
                     <Border Grid.Row="0" Background="#0F172A" CornerRadius="10" Padding="12" Margin="0,0,0,10" BorderBrush="#1E293B" BorderThickness="1">
                         <WrapPanel VerticalAlignment="Center">
                             <Button x:Name="BtnStartStop" Content="▶ Iniciar Coach" Background="#0284C7" BorderBrush="#38BDF8" Click="BtnStartStop_Click" Margin="0,0,10,4" />
-                            <Button x:Name="BtnAnalyzeNow" Content="🎯 Analizar Ahora (F10)" Click="BtnAnalyzeNow_Click" IsEnabled="False" Margin="0,0,10,4" />
+                            <Button x:Name="BtnAnalyzeNow" Content="🎯 Analizar (F10)" Click="BtnAnalyzeNow_Click" IsEnabled="False" Margin="0,0,10,4" />
                             <Button x:Name="BtnPause" Content="⏸ Pausar (F9)" Click="BtnPause_Click" IsEnabled="False" Margin="0,0,16,4" />
 
                             <TextBlock Text="Modo:" VerticalAlignment="Center" Foreground="#94A3B8" Margin="0,0,6,4" />
-                            <ComboBox x:Name="CmbRunMode" Width="165" Margin="0,0,12,4" SelectedIndex="0">
+                            <ComboBox x:Name="CmbRunMode" Width="168" Margin="0,0,12,4" SelectedIndex="0">
                                 <ComboBoxItem Content="Auto-Detectar Juego" Tag="auto" />
                                 <ComboBoxItem Content="Modo Prueba (Escritorio)" Tag="test" />
                             </ComboBox>
 
                             <TextBlock Text="Perfil:" VerticalAlignment="Center" Foreground="#94A3B8" Margin="0,0,6,4" />
-                            <ComboBox x:Name="CmbGameProfile" Width="170" Margin="0,0,12,4" />
+                            <ComboBox x:Name="CmbGameProfile" Width="165" Margin="0,0,12,4" />
 
                             <TextBlock Text="Sesión:" VerticalAlignment="Center" Foreground="#94A3B8" Margin="0,0,6,4" />
                             <ComboBox x:Name="CmbCoachMode" Width="155" Margin="0,0,0,4">
@@ -95,42 +78,53 @@
                     <UniformGrid Grid.Row="1" Columns="4" Margin="0,0,0,10">
                         <Border Background="#0F172A" CornerRadius="8" Padding="10" Margin="0,0,8,0" BorderBrush="#1E293B" BorderThickness="1">
                             <StackPanel>
-                                <TextBlock Text="CAPTURA + COMPRESIÓN" FontSize="10" Foreground="#94A3B8" FontWeight="Bold" />
-                                <TextBlock x:Name="StatCaptureMs" Text="— ms" FontSize="20" FontWeight="Bold" Foreground="#38BDF8" Margin="0,2,0,0" />
+                                <TextBlock Text="CAPTURA + dHASH + JPEG" FontSize="10" Foreground="#94A3B8" FontWeight="Bold" />
+                                <TextBlock x:Name="StatCaptureMs" Text="— ms" FontSize="19" FontWeight="Bold" Foreground="#38BDF8" Margin="0,2,0,0" />
                             </StackPanel>
                         </Border>
                         <Border Background="#0F172A" CornerRadius="8" Padding="10" Margin="0,0,8,0" BorderBrush="#1E293B" BorderThickness="1">
                             <StackPanel>
                                 <TextBlock Text="VISIÓN IA (HTTP/2)" FontSize="10" Foreground="#94A3B8" FontWeight="Bold" />
-                                <TextBlock x:Name="StatAiMs" Text="— ms" FontSize="20" FontWeight="Bold" Foreground="#10B981" Margin="0,2,0,0" />
+                                <TextBlock x:Name="StatAiMs" Text="— ms" FontSize="19" FontWeight="Bold" Foreground="#10B981" Margin="0,2,0,0" />
                             </StackPanel>
                         </Border>
                         <Border Background="#0F172A" CornerRadius="8" Padding="10" Margin="0,0,8,0" BorderBrush="#1E293B" BorderThickness="1">
                             <StackPanel>
                                 <TextBlock Text="VOZ SAPI5 INSTANTÁNEA" FontSize="10" Foreground="#94A3B8" FontWeight="Bold" />
-                                <TextBlock x:Name="StatVoiceMs" Text="— ms" FontSize="20" FontWeight="Bold" Foreground="#F59E0B" Margin="0,2,0,0" />
+                                <TextBlock x:Name="StatVoiceMs" Text="— ms" FontSize="19" FontWeight="Bold" Foreground="#F59E0B" Margin="0,2,0,0" />
                             </StackPanel>
                         </Border>
                         <Border Background="#0F172A" CornerRadius="8" Padding="10" BorderBrush="#1E293B" BorderThickness="1">
                             <StackPanel>
                                 <TextBlock Text="INTERVENCIONES / ACTIVO" FontSize="10" Foreground="#94A3B8" FontWeight="Bold" />
-                                <TextBlock x:Name="StatInterventions" Text="0" FontSize="20" FontWeight="Bold" Foreground="#E2E8F0" Margin="0,2,0,0" />
+                                <TextBlock x:Name="StatInterventions" Text="0" FontSize="17" FontWeight="Bold" Foreground="#E2E8F0" TextTrimming="CharacterEllipsis" Margin="0,3,0,0" />
                             </StackPanel>
                         </Border>
                     </UniformGrid>
 
-                    <!-- Live Console -->
-                    <Border Grid.Row="2" Background="#020617" CornerRadius="8" Padding="8" BorderBrush="#1E293B" BorderThickness="1">
-                        <TextBox x:Name="TxtLiveLogs"
-                                 IsReadOnly="True"
-                                 AcceptsReturn="True"
-                                 TextWrapping="Wrap"
-                                 VerticalScrollBarVisibility="Auto"
+                    <!-- Console Toolbar -->
+                    <DockPanel Grid.Row="2" Margin="0,0,0,6">
+                        <TextBlock Text="Consola en vivo (redacción automática de API keys activa)" Foreground="#94A3B8" FontSize="11.5" VerticalAlignment="Center" />
+                        <Button DockPanel.Dock="Right" Content="🧹 Limpiar Logs" Padding="10,3" FontSize="11" Click="BtnClearLogs_Click" />
+                    </DockPanel>
+
+                    <!-- Virtualized O(1) Live Console -->
+                    <Border Grid.Row="3" Background="#020617" CornerRadius="8" Padding="6" BorderBrush="#1E293B" BorderThickness="1">
+                        <ListBox x:Name="LstLiveLogs"
                                  Background="Transparent"
                                  BorderThickness="0"
                                  Foreground="#CBD5E1"
                                  FontFamily="Consolas"
-                                 FontSize="12" />
+                                 FontSize="12"
+                                 VirtualizingPanel.IsVirtualizing="True"
+                                 VirtualizingPanel.VirtualizationMode="Recycling"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" TextWrapping="Wrap" Foreground="#CBD5E1" />
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
                     </Border>
                 </Grid>
             </TabItem>
@@ -145,14 +139,15 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
+                    <!-- Proper DockPanel order: Dock=Right FIRST so TextBlock fills remaining space -->
                     <Border Grid.Row="0" Background="#0F172A" CornerRadius="8" Padding="10" Margin="0,0,0,10" BorderBrush="#0284C7" BorderThickness="1">
                         <DockPanel>
-                            <TextBlock Text="⚡ Para bajar a ~0.40s reales GRATIS (0% GPU): agregá una API key gratuita de Groq (Llama-4-Scout) o Gemini."
-                                       Foreground="#38BDF8" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap" />
                             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" Margin="10,0,0,0">
                                 <Button Content="🌐 Key Gratis Groq (~0.4s)" Click="BtnOpenGroq_Click" Margin="0,0,6,0" />
                                 <Button Content="🌐 Key Gratis Gemini" Click="BtnOpenGemini_Click" />
                             </StackPanel>
+                            <TextBlock Text="⚡ Para bajar a ~0.40s reales GRATIS (0% GPU): agregá una API key gratuita de Groq (Llama-4-Scout) o Gemini."
+                                       Foreground="#38BDF8" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap" />
                         </DockPanel>
                     </Border>
 
@@ -162,33 +157,34 @@
                                 <GridViewColumn Header="#" Width="40" DisplayMemberBinding="{Binding Priority}" />
                                 <GridViewColumn Header="Alias" Width="220" DisplayMemberBinding="{Binding Label}" />
                                 <GridViewColumn Header="Proveedor" Width="105" DisplayMemberBinding="{Binding Provider}" />
-                                <GridViewColumn Header="Modelo" Width="220" DisplayMemberBinding="{Binding Model}" />
+                                <GridViewColumn Header="Modelo" Width="230" DisplayMemberBinding="{Binding Model}" />
                                 <GridViewColumn Header="API Key" Width="135" DisplayMemberBinding="{Binding MaskedKeyDisplay}" />
                                 <GridViewColumn Header="Activo" Width="65" DisplayMemberBinding="{Binding EnabledDisplay}" />
                             </GridView>
                         </ListView.View>
                     </ListView>
 
-                    <!-- Quick Add Form -->
+                    <!-- Stream-Safe Quick Add Form (PasswordBox hides API key on OBS/Discord!) -->
                     <Border Grid.Row="2" Background="#0F172A" CornerRadius="8" Padding="10" Margin="0,0,0,8" BorderBrush="#1E293B" BorderThickness="1">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="120" />
                                 <ColumnDefinition Width="170" />
-                                <ColumnDefinition Width="190" />
+                                <ColumnDefinition Width="210" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <ComboBox x:Name="CmbNewProvider" Grid.Column="0" Margin="0,0,6,0" SelectionChanged="CmbNewProvider_SelectionChanged">
                                 <ComboBoxItem Content="groq" IsSelected="True" />
                                 <ComboBoxItem Content="gemini" />
+                                <ComboBoxItem Content="claude" />
                                 <ComboBoxItem Content="openrouter" />
                                 <ComboBoxItem Content="openai" />
                                 <ComboBoxItem Content="pollinations" />
                             </ComboBox>
                             <TextBox x:Name="TxtNewLabel" Grid.Column="1" Margin="0,0,6,0" Text="Groq LPU Gratis (~0.4s)" />
                             <TextBox x:Name="TxtNewModel" Grid.Column="2" Margin="0,0,6,0" Text="meta-llama/llama-4-scout-17b-16e-instruct" />
-                            <TextBox x:Name="TxtNewApiKey" Grid.Column="3" Margin="0,0,6,0" ToolTip="Pegá tu API Key gratuita aquí" />
+                            <PasswordBox x:Name="PwdNewApiKey" Grid.Column="3" Margin="0,0,6,0" ToolTip="Pegá tu API Key (oculta para seguridad en OBS/Discord)" />
                             <Button Grid.Column="4" Content="+ Agregar #1" Background="#059669" BorderBrush="#10B981" Click="BtnAddAccount_Click" />
                         </Grid>
                     </Border>
@@ -214,7 +210,7 @@
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
                         <TextBlock Text="Juego:" VerticalAlignment="Center" Margin="0,0,8,0" />
                         <ComboBox x:Name="CmbRulesGame" Width="220" SelectionChanged="CmbRulesGame_SelectionChanged" />
-                        <TextBlock x:Name="LblRulesCount" Text="0 / 2000 caracteres" Foreground="#94A3B8" VerticalAlignment="Center" Margin="14,0,0,0" />
+                        <TextBlock x:Name="LblRulesCount" Text="0 / 600 caracteres (envío íntegro en tiempo real)" Foreground="#94A3B8" VerticalAlignment="Center" Margin="14,0,0,0" />
                     </StackPanel>
                     <TextBox x:Name="TxtCustomRules"
                              Grid.Row="1"
@@ -232,22 +228,25 @@
 
             <!-- TAB 4: VOICE, OVERLAY & HOTKEYS -->
             <TabItem Header="⚙ Voz, Overlay y Teclas">
-                <StackPanel Margin="16" MaxWidth="620" HorizontalAlignment="Left">
+                <StackPanel Margin="16" MaxWidth="680" HorizontalAlignment="Left">
                     <CheckBox x:Name="ChkEnableVoice" Content="Habilitar Voz Instantánea SAPI5 (~5ms offline, 0% GPU)" Foreground="#F1F5F9" Margin="0,0,0,8" />
-                    <CheckBox x:Name="ChkEnableOverlay" Content="Habilitar Overlay Transparente Click-Through (DirectX/WPF)" Foreground="#F1F5F9" Margin="0,0,0,8" />
+                    <CheckBox x:Name="ChkEnableOverlay" Content="Habilitar Overlay Transparente Click-Through (0% GPU)" Foreground="#F1F5F9" Margin="0,0,0,8" />
                     <CheckBox x:Name="ChkEnableHotkeys" Content="Habilitar Teclas Globales (Win32 RegisterHotKey)" Foreground="#F1F5F9" Margin="0,0,0,14" />
 
                     <Grid Margin="0,0,0,10">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="180" />
-                            <ColumnDefinition Width="200" />
+                            <ColumnDefinition Width="210" />
+                            <ColumnDefinition Width="100" />
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
-                            <RowDefinition Height="34" />
-                            <RowDefinition Height="34" />
-                            <RowDefinition Height="34" />
-                            <RowDefinition Height="34" />
-                            <RowDefinition Height="34" />
+                            <RowDefinition Height="36" />
+                            <RowDefinition Height="36" />
+                            <RowDefinition Height="36" />
+                            <RowDefinition Height="36" />
+                            <RowDefinition Height="36" />
+                            <RowDefinition Height="36" />
+                            <RowDefinition Height="36" />
                         </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="Idioma del Coach:" VerticalAlignment="Center" />
@@ -263,18 +262,31 @@
                             <ComboBoxItem Content="high" />
                         </ComboBox>
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Tecla Pausar:" VerticalAlignment="Center" />
-                        <TextBox x:Name="TxtPauseKey" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Posición del Overlay:" VerticalAlignment="Center" />
+                        <ComboBox x:Name="CmbOverlayPos" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center">
+                            <ComboBoxItem Content="top-right" />
+                            <ComboBoxItem Content="top-left" />
+                            <ComboBoxItem Content="top-center" />
+                            <ComboBoxItem Content="bottom-right" />
+                            <ComboBoxItem Content="bottom-left" />
+                        </ComboBox>
 
-                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Tecla Analizar Ahora:" VerticalAlignment="Center" />
-                        <TextBox x:Name="TxtAnalyzeKey" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Monitor (1..N):" VerticalAlignment="Center" />
+                        <ComboBox x:Name="CmbMonitor" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" />
 
-                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Volumen Voz:" VerticalAlignment="Center" />
-                        <Slider x:Name="SldVolume" Grid.Row="4" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" VerticalAlignment="Center" />
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Tecla Pausar:" VerticalAlignment="Center" />
+                        <TextBox x:Name="TxtPauseKey" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" />
+
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Tecla Analizar Ahora:" VerticalAlignment="Center" />
+                        <TextBox x:Name="TxtAnalyzeKey" Grid.Row="5" Grid.Column="1" VerticalAlignment="Center" />
+
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Volumen Voz:" VerticalAlignment="Center" />
+                        <Slider x:Name="SldVolume" Grid.Row="6" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldVolume_ValueChanged" />
+                        <TextBlock x:Name="LblVolumePct" Grid.Row="6" Grid.Column="2" Text="75%" Foreground="#38BDF8" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
                     </Grid>
 
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                        <Button Content="💾 Guardar Preferencias" Background="#0284C7" BorderBrush="#38BDF8" Click="BtnSaveConfig_Click" Margin="0,0,10,0" />
+                        <Button Content="💾 Guardar y Aplicar en Vivo" Background="#0284C7" BorderBrush="#38BDF8" Click="BtnSaveConfig_Click" Margin="0,0,10,0" />
                         <Button Content="👁 Probar Overlay + Voz" Click="BtnPreviewOverlay_Click" />
                     </StackPanel>
                 </StackPanel>

@@ -1,10 +1,13 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text;
 using HUDMind.Core.Engine;
 
 namespace HUDMind.Windows;
 
+/// <summary>
+/// Anti-cheat friendly foreground process detector: caches (hwnd, pid) -&gt; executableName so
+/// OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) is only called once per window focus switch.
+/// </summary>
 public sealed class Win32WindowDetector : IForegroundWindowDetector
 {
     [StructLayout(LayoutKind.Sequential)]
@@ -23,7 +26,7 @@ public sealed class Win32WindowDetector : IForegroundWindowDetector
         public int Y;
     }
 
-    private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    private const uint ProcessQueryLimitedInformation = 0x1000;
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
@@ -41,12 +44,16 @@ public sealed class Win32WindowDetector : IForegroundWindowDetector
     private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool QueryFullProcessImageName(IntPtr hProcess, uint dwFlags, StringBuilder lpExeName, ref uint lpdwSize);
+    private static extern unsafe bool QueryFullProcessImageName(IntPtr hProcess, uint dwFlags, char* lpExeName, ref uint lpdwSize);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
 
-    public string? GetForegroundExecutable()
+    private IntPtr _cachedHwnd;
+    private uint _cachedPid;
+    private string? _cachedExe;
+
+    public unsafe string? GetForegroundExecutable()
     {
         var hwnd = GetForegroundWindow();
         if (hwnd == IntPtr.Zero)
@@ -56,15 +63,19 @@ public sealed class Win32WindowDetector : IForegroundWindowDetector
         if (pid == 0)
             return null;
 
-        var hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (hwnd == _cachedHwnd && pid == _cachedPid && _cachedExe is not null)
+            return _cachedExe;
+
+        string? resolved = null;
+        var hProc = OpenProcess(ProcessQueryLimitedInformation, false, pid);
         if (hProc != IntPtr.Zero)
         {
             try
             {
-                var sb = new StringBuilder(512);
-                uint size = (uint)sb.Capacity;
-                if (QueryFullProcessImageName(hProc, 0, sb, ref size))
-                    return Path.GetFileName(sb.ToString());
+                char* buf = stackalloc char[512];
+                uint size = 512;
+                if (QueryFullProcessImageName(hProc, 0, buf, ref size) && size > 0)
+                    resolved = Path.GetFileName(new ReadOnlySpan<char>(buf, (int)size)).ToString();
             }
             finally
             {
@@ -72,15 +83,23 @@ public sealed class Win32WindowDetector : IForegroundWindowDetector
             }
         }
 
-        try
+        if (resolved is null)
         {
-            using var proc = Process.GetProcessById((int)pid);
-            return $"{proc.ProcessName}.exe";
+            try
+            {
+                using var proc = Process.GetProcessById((int)pid);
+                resolved = $"{proc.ProcessName}.exe";
+            }
+            catch
+            {
+                return null;
+            }
         }
-        catch
-        {
-            return null;
-        }
+
+        _cachedHwnd = hwnd;
+        _cachedPid = pid;
+        _cachedExe = resolved;
+        return resolved;
     }
 
     public (int Left, int Top, int Width, int Height)? GetForegroundClientRect()

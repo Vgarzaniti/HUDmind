@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -7,7 +9,9 @@ namespace HUDMind.Core.Config;
 
 public static partial class SecretRedactor
 {
-    [GeneratedRegex(@"(AIza[0-9A-Za-z_\-]{12,}|AQ\.[0-9A-Za-z_\-\.]{12,}|gsk_[0-9A-Za-z_\-]{12,}|sk-[0-9A-Za-z_\-]{12,})", RegexOptions.Compiled)]
+    [GeneratedRegex(
+        @"(AIza[0-9A-Za-z_\-]{12,}|AQ\.[0-9A-Za-z_\-\.]{12,}|gsk_[0-9A-Za-z_\-]{12,}|sk-[0-9A-Za-z_\-]{12,}|hf_[0-9A-Za-z]{12,}|xai-[0-9A-Za-z_\-]{12,}|r8_[0-9A-Za-z_\-]{12,}|Bearer\s+[0-9A-Za-z_\-\.]{10,}|(?i)(?:api_?key|access_token|token|key)=[^&\s""']+)",
+        RegexOptions.Compiled)]
     private static partial Regex SecretPattern();
 
     public static string Redact(string text, IEnumerable<string>? knownSecrets = null)
@@ -28,8 +32,78 @@ public static partial class SecretRedactor
     }
 }
 
-public sealed class ConfigRepository
+/// <summary>
+/// OWASP SSRF (CWE-918) and Cleartext Transmission (CWE-319) validator for provider endpoints.
+/// </summary>
+public static class BaseUrlSecurityValidator
 {
+    public static (bool IsValid, string Error) Validate(string url, bool allowLoopbackHttp = false)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return (false, "Base URL vacía.");
+
+        if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri))
+            return (false, "Base URL con formato inválido.");
+
+        if (!string.IsNullOrEmpty(uri.UserInfo))
+            return (false, "Base URL no puede incluir credenciales embebidas (user@host).");
+
+        var scheme = uri.Scheme.ToLowerInvariant();
+        if (scheme != "https" && scheme != "http")
+            return (false, $"Esquema no permitido: '{scheme}'. Solo HTTPS.");
+
+        var host = uri.Host;
+        bool isLoopbackHost = host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+                              (IPAddress.TryParse(host, out var parsedIp) && IPAddress.IsLoopback(parsedIp));
+
+        if (scheme == "http" && !(allowLoopbackHttp && isLoopbackHost))
+            return (false, "HTTP sin cifrar remoto bloqueado (CWE-319). Usá HTTPS.");
+
+        if (IPAddress.TryParse(host, out var ip) && IsBlockedAddress(ip, allowLoopbackHttp))
+            return (false, $"IP privada/link-local bloqueada por seguridad SSRF (CWE-918): {host}.");
+
+        return (true, string.Empty);
+    }
+
+    public static bool IsBlockedAddress(IPAddress ip, bool allowLoopback)
+    {
+        if (ip.IsIPv4MappedToIPv6)
+            ip = ip.MapToIPv4();
+
+        if (IPAddress.IsLoopback(ip))
+            return !allowLoopback;
+
+        if (ip.AddressFamily == AddressFamily.InterNetwork)
+        {
+            var b = ip.GetAddressBytes();
+            if (b[0] == 0) return true;                                  // 0.0.0.0/8
+            if (b[0] == 10) return true;                                 // 10.0.0.0/8
+            if (b[0] == 127) return !allowLoopback;                      // 127.0.0.0/8
+            if (b[0] == 169 && b[1] == 254) return true;                 // 169.254.0.0/16 (cloud metadata)
+            if (b[0] == 172 && b[1] is >= 16 and <= 31) return true;     // 172.16.0.0/12
+            if (b[0] == 192 && b[1] == 168) return true;                 // 192.168.0.0/16
+            if (b[0] == 100 && b[1] is >= 64 and <= 127) return true;    // 100.64.0.0/10 CGNAT
+            return false;
+        }
+
+        if (ip.AddressFamily == AddressFamily.InterNetworkV6)
+        {
+            if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast)
+                return true;
+            var b = ip.GetAddressBytes();
+            if ((b[0] & 0xFE) == 0xFC) return true; // fc00::/7 Unique Local
+            if (ip.Equals(IPAddress.IPv6Any)) return true;
+        }
+
+        return false;
+    }
+}
+
+public sealed partial class ConfigRepository
+{
+    public const int MaxCustomRulesChars = 600;
+    private const long MaxConfigFileBytes = 64 * 1024;
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
@@ -38,11 +112,15 @@ public sealed class ConfigRepository
         ReadCommentHandling = JsonCommentHandling.Skip
     };
 
+    [GeneratedRegex(@"^[a-z0-9_\-]{1,64}$", RegexOptions.Compiled)]
+    private static partial Regex SafeGameIdRegex();
+
     public string WorkspaceRoot { get; }
     public string ConfigDir => Path.Combine(WorkspaceRoot, "config");
     public string ProfilesDir => Path.Combine(WorkspaceRoot, "profiles");
     public string AccountsPath => Path.Combine(ConfigDir, "accounts.json");
     public string UserConfigPath => Path.Combine(ConfigDir, "user_config.json");
+    public string? LastLoadWarning { get; private set; }
 
     public ConfigRepository(string? workspaceRoot = null)
     {
@@ -52,8 +130,12 @@ public sealed class ConfigRepository
     public static string DiscoverWorkspaceRoot()
     {
         var envHome = Environment.GetEnvironmentVariable("HUDMIND_HOME");
-        if (!string.IsNullOrWhiteSpace(envHome) && Directory.Exists(Path.Combine(envHome, "profiles")))
-            return envHome;
+        if (!string.IsNullOrWhiteSpace(envHome))
+        {
+            var fullEnv = Path.GetFullPath(envHome);
+            if (!new Uri(fullEnv).IsUnc && Directory.Exists(Path.Combine(fullEnv, "profiles")))
+                return fullEnv;
+        }
 
         var candidates = new[]
         {
@@ -75,7 +157,6 @@ public sealed class ConfigRepository
             }
         }
 
-        // Fallback when launched from Downloads/Desktop shortcut
         var desktopRepo = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
             "CouchIA");
@@ -91,13 +172,18 @@ public sealed class ConfigRepository
         {
             if (File.Exists(UserConfigPath))
             {
-                var json = File.ReadAllText(UserConfigPath, Encoding.UTF8);
-                return JsonSerializer.Deserialize<UserConfig>(json, JsonOpts) ?? new UserConfig();
+                var info = new FileInfo(UserConfigPath);
+                if (info.Length <= MaxConfigFileBytes)
+                {
+                    var json = File.ReadAllText(UserConfigPath, Encoding.UTF8);
+                    return JsonSerializer.Deserialize<UserConfig>(json, JsonOpts) ?? new UserConfig();
+                }
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Fallback cleanly to defaults if corrupted
+            BackupCorruptFile(UserConfigPath);
+            LastLoadWarning = $"user_config.json corrupto (se creó backup): {ex.Message}";
         }
         return new UserConfig();
     }
@@ -115,15 +201,20 @@ public sealed class ConfigRepository
         {
             if (File.Exists(AccountsPath))
             {
-                var json = File.ReadAllText(AccountsPath, Encoding.UTF8);
-                var list = JsonSerializer.Deserialize<List<ProviderAccount>>(json, JsonOpts);
-                if (list is { Count: > 0 })
-                    return [.. list.OrderBy(a => a.Priority)];
+                var info = new FileInfo(AccountsPath);
+                if (info.Length <= MaxConfigFileBytes * 4)
+                {
+                    var json = File.ReadAllText(AccountsPath, Encoding.UTF8);
+                    var list = JsonSerializer.Deserialize<List<ProviderAccount>>(json, JsonOpts);
+                    if (list is { Count: > 0 })
+                        return [.. list.OrderBy(a => a.Priority)];
+                }
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Fallback cleanly to built-in free keyless pool
+            BackupCorruptFile(AccountsPath);
+            LastLoadWarning = $"accounts.json ilegible (se guardó backup): {ex.Message}";
         }
         return BuildDefaultFreeCloudPool();
     }
@@ -163,32 +254,46 @@ public sealed class ConfigRepository
     public List<GameProfile> LoadProfiles()
     {
         var result = new List<GameProfile>();
+        var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (!Directory.Exists(ProfilesDir))
             return result;
 
+        var fullProfilesRoot = Path.GetFullPath(ProfilesDir) + Path.DirectorySeparatorChar;
         foreach (var dir in Directory.GetDirectories(ProfilesDir).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
         {
-            var manifestPath = Path.Combine(dir, "manifest.json");
+            if ((File.GetAttributes(dir) & FileAttributes.ReparsePoint) != 0)
+                continue;
+
+            var fullDir = Path.GetFullPath(dir);
+            if (!fullDir.StartsWith(fullProfilesRoot, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var manifestPath = Path.Combine(fullDir, "manifest.json");
             if (!File.Exists(manifestPath))
                 continue;
 
             try
             {
-                var json = File.ReadAllText(manifestPath, Encoding.UTF8);
-                var manifest = JsonSerializer.Deserialize<GameManifest>(json, JsonOpts);
-                if (manifest is null || string.IsNullOrWhiteSpace(manifest.GameId))
+                var info = new FileInfo(manifestPath);
+                if (info.Length > MaxConfigFileBytes)
                     continue;
 
-                var customRulesPath = Path.Combine(dir, "custom_rules.md");
-                var customRules = File.Exists(customRulesPath)
-                    ? File.ReadAllText(customRulesPath, Encoding.UTF8).Trim()
-                    : string.Empty;
+                var json = File.ReadAllText(manifestPath, Encoding.UTF8);
+                var manifest = JsonSerializer.Deserialize<GameManifest>(json, JsonOpts);
+                if (manifest is null || !SafeGameIdRegex().IsMatch(manifest.GameId) || !seenIds.Add(manifest.GameId))
+                    continue;
+
+                var customRules = ReadBoundedText(Path.Combine(fullDir, "custom_rules.md"), MaxCustomRulesChars);
+                var tacticalSummary = ExtractCompactTacticalSummary(
+                    Path.Combine(fullDir, "system_prompt.md"),
+                    manifest.Notes);
 
                 result.Add(new GameProfile
                 {
                     Manifest = manifest,
-                    DirectoryPath = dir,
-                    CustomRules = customRules
+                    DirectoryPath = fullDir,
+                    CustomRules = customRules,
+                    TacticalSummary = tacticalSummary
                 });
             }
             catch
@@ -203,20 +308,68 @@ public sealed class ConfigRepository
     public void SaveCustomRules(GameProfile profile, string rulesText)
     {
         var trimmed = (rulesText ?? string.Empty).Trim();
-        if (trimmed.Length > 2000)
-            throw new ArgumentException("Las reglas personalizadas no pueden superar 2,000 caracteres.");
+        if (trimmed.Length > MaxCustomRulesChars)
+            throw new ArgumentException($"Las reglas personalizadas no pueden superar {MaxCustomRulesChars} caracteres.");
 
-        var path = Path.Combine(profile.DirectoryPath, "custom_rules.md");
+        var fullProfilesRoot = Path.GetFullPath(ProfilesDir) + Path.DirectorySeparatorChar;
+        var fullTarget = Path.GetFullPath(Path.Combine(profile.DirectoryPath, "custom_rules.md"));
+        if (!fullTarget.StartsWith(fullProfilesRoot, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("Ruta de perfil fuera del directorio permitido (CWE-22).");
+
+        if (Directory.Exists(profile.DirectoryPath) &&
+            (File.GetAttributes(profile.DirectoryPath) & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en perfiles.");
+        }
+
         if (string.IsNullOrEmpty(trimmed))
         {
-            if (File.Exists(path))
-                File.Delete(path);
+            if (File.Exists(fullTarget))
+                File.Delete(fullTarget);
             profile.CustomRules = string.Empty;
             return;
         }
 
-        AtomicWrite(path, trimmed);
+        AtomicWrite(fullTarget, trimmed);
         profile.CustomRules = trimmed;
+    }
+
+    private static string ReadBoundedText(string path, int maxChars)
+    {
+        if (!File.Exists(path))
+            return string.Empty;
+        var info = new FileInfo(path);
+        if (info.Length > MaxConfigFileBytes || (info.Attributes & FileAttributes.ReparsePoint) != 0)
+            return string.Empty;
+        var text = File.ReadAllText(path, Encoding.UTF8).Trim();
+        return text.Length <= maxChars ? text : text[..maxChars];
+    }
+
+    private static string ExtractCompactTacticalSummary(string systemPromptPath, string fallbackNotes)
+    {
+        var raw = ReadBoundedText(systemPromptPath, 240);
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            var singleLine = string.Join(' ', raw.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()));
+            return singleLine.Length <= 220 ? singleLine : singleLine[..220];
+        }
+        return (fallbackNotes ?? string.Empty).Trim();
+    }
+
+    private static void BackupCorruptFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                var bak = $"{path}.corrupt.{DateTime.UtcNow:yyyyMMddHHmmss}.bak";
+                File.Copy(path, bak, overwrite: true);
+            }
+        }
+        catch
+        {
+            // Best effort backup
+        }
     }
 
     private static void AtomicWrite(string path, string content)

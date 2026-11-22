@@ -1247,6 +1247,8 @@ class ProviderFailoverRouter:
         except asyncio.CancelledError:
             for p in pending:
                 p.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
             raise
 
     async def analyze_frame(
@@ -1314,7 +1316,7 @@ class ProviderFailoverRouter:
             if handled:
                 return hedged_resp
             skip_ids.add(candidates[0][1].account.id)
-            if candidates[1][1].account.id in self._cooldown_until:
+            if time.monotonic() < self._cooldown_until.get(candidates[1][1].account.id, 0.0):
                 skip_ids.add(candidates[1][1].account.id)
 
         # Attach 2-frame motion sequence only in high-detail mode (saves ~700ms in eco/balanced)

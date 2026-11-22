@@ -702,14 +702,17 @@ class GeminiCoachClient:
             force_advice=force_advice,
         )
         m_low = self._model.lower()
+        is_gen3 = "3." in m_low or "3-" in m_low
+        # Gemini 3.x MINIMAL thinking shares maxOutputTokens; 64 + stopSequences=["\n"] prevents 422s
         gen_cfg: dict[str, Any] = {
             "temperature": 0.55,
-            "maxOutputTokens": 24,
+            "maxOutputTokens": 64 if is_gen3 else 38,
             "mediaResolution": "MEDIA_RESOLUTION_LOW",
+            "stopSequences": ["\n"],
         }
         if "2.5" in m_low:
             gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
-        elif "3." in m_low or "3-" in m_low:
+        elif is_gen3:
             gen_cfg["thinkingConfig"] = {"thinkingLevel": "MINIMAL"}
 
         payload: dict[str, Any] = {

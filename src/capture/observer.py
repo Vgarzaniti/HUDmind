@@ -199,6 +199,9 @@ class ScreenObserver:
             interval = 1.0 / self._target_fps
             elapsed = time.monotonic() - loop_start
             sleep_time = max(0.01, interval - elapsed)
-            self._wake_event.clear()
+            if self._wake_event.is_set():
+                self._wake_event.clear()
+                continue
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake_event.wait(), timeout=sleep_time)
+            self._wake_event.clear()
