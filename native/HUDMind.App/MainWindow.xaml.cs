@@ -81,6 +81,10 @@ public partial class MainWindow : Window
         try
         {
             SelectByTag(CmbCoachMode, _config.CoachMode);
+            SelectByTag(CmbSkillTier, _config.PlayerSkillTier);
+            TxtRankLabel.Text = _config.PlayerRankLabel;
+            SelectByTag(CmbCoachStyle, _config.CoachStyle);
+            SelectByTag(CmbLiveAutoRate, ((int)Math.Round(_config.LiveAutoCoachSeconds)).ToString());
             SelectByTag(CmbVoiceGender, _config.VoiceGender);
             SelectByTag(CmbQuickGender, _config.VoiceGender);
             SelectByTag(CmbVoiceStyle, _config.VoiceStyle);
@@ -555,6 +559,10 @@ public partial class MainWindow : Window
     private void ApplyConfigFromUi()
     {
         _config.CoachMode = GetSelectedTag(CmbCoachMode);
+        _config.PlayerSkillTier = GetSelectedTag(CmbSkillTier);
+        _config.PlayerRankLabel = (TxtRankLabel.Text ?? string.Empty).Trim();
+        _config.CoachStyle = GetSelectedTag(CmbCoachStyle);
+        _config.LiveAutoCoachSeconds = double.TryParse(GetSelectedTag(CmbLiveAutoRate), out double autoSec) ? autoSec : 12.0;
         _config.VoiceGender = GetSelectedTag(CmbVoiceGender);
         _config.VoiceStyle = GetSelectedTag(CmbVoiceStyle);
         _config.UseLiveConversational = GetSelectedTag(CmbEngineType) == "live";
@@ -578,10 +586,12 @@ public partial class MainWindow : Window
         _repo.SaveUserConfig(_config);
         _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
         _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
+        _liveOrchestrator?.SetVolume(_config.TtsVolume);
+        _liveOrchestrator?.RefreshLivePersona($"{_config.PlayerSkillTier} · {_config.CoachStyle}");
         _previewVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
         RefreshHotkeyButtonLabels();
         RegisterActiveHotkeys();
-        AppendLog($"Preferencias guardadas y aplicadas en vivo ({(_config.VoiceGender == "female" ? "Mujer" : "Hombre")} · {_config.VoiceStyle}).");
+        AppendLog($"Preferencias guardadas y aplicadas en vivo (Nivel: {_config.PlayerSkillTier}, Estilo: {_config.CoachStyle}).");
     }
 
     private void BtnPreviewOverlay_Click(object sender, RoutedEventArgs e)

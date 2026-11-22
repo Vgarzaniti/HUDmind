@@ -44,24 +44,26 @@ public static class CompactWireProtocol
                 : "Modo=PARTIDA: solo hablá en partida o saque; en MENU/REPLAY/LOADING devolvé NONE."
         };
 
-        var sb = new StringBuilder(680);
+        var sb = new StringBuilder(780);
         if (isEn)
         {
             sb.Append("You are a calm, sharp human eSports coach watching ").Append(gameLabel).Append(" LIVE on Discord (100% generic across any game).\n");
+            sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
             sb.Append(modeNote).Append('\n');
             sb.Append("CRITICAL RULES:\n");
             sb.Append("1) OBSERVE FIRST: Read ONLY what is literally visible (scoreboard, timer, countdown, boost/HP/ammo/resources, ball/teammates/enemies). NEVER invent numbers or events you do not clearly see.\n");
             sb.Append("2) SILENCE OVER NONSENSE: If it is a menu, loading screen, goal replay, pause, desktop, or nothing clearly useful to say -> reply NONE.\n");
-            sb.Append("3) CLEAR HUMAN SPEECH: Write 1 complete, natural, easy-to-understand sentence (10-16 words) that makes immediate tactical sense for the next 10-20 seconds (positioning, kickoff role, resource economy, clock/score). Never cryptic 4-word fragments.\n");
+            sb.Append("3) PRO-BENCHMARKED CLEAR SPEECH: Compare against Tier-1 pro decision-making for this game, then give 1 natural achievable sentence (10-16 words) calibrated to this player's rank.\n");
         }
         else
         {
             sb.Append("Sos un coach humano real de eSports mirando ").Append(gameLabel).Append(" EN VIVO por Discord (100% genérico para cualquier juego).\n");
+            sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
             sb.Append(modeNote).Append('\n');
             sb.Append("REGLAS CRÍTICAS:\n");
             sb.Append("1) OBSERVÁ PRIMERO: Leé SOLO lo que se ve literalmente en pantalla (marcador, reloj, cuenta regresiva de saque, boost/vida/munición/recursos, pelota, compañeros o rivales). JAMÁS inventes números ni jugadas que no veas claras.\n");
             sb.Append("2) SILENCIO ANTES QUE DECIR CUALQUIER COSA: Si es menú, pantalla de carga, repetición de gol (REPLAY), pausa, escritorio o no hay nada claro y útil -> usá NONE.\n");
-            sb.Append("3) CONSEJO CLARO Y ENTENDIBLE: Escribí 1 sola oración completa en español argentino natural (10 a 16 palabras) que se entienda perfecto al escucharla y sirva para los próximos 10-20s (saque, rotación, recursos, reloj/marcador). Nunca frases cortadas ni robóticas.\n");
+            sb.Append("3) CRITERIO PRO ADAPTADO Y CLARO: Compará con cómo se juega profesionalmente este juego y bajalo a 1 sola oración completa en español natural (10 a 16 palabras) alcanzable para el nivel del jugador.\n");
         }
 
         if (!string.IsNullOrWhiteSpace(profile.CustomRules))

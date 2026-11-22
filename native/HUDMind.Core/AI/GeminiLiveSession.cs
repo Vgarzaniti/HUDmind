@@ -113,25 +113,7 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
     public static string BuildSetupPayloadJson(string modelName, UserConfig config, GameProfile? profile)
     {
         var voiceName = ResolveLiveVoiceName(config.VoiceGender);
-        bool isEn = (config.VoiceLanguage ?? "es").StartsWith("en", StringComparison.OrdinalIgnoreCase);
-        var gameName = profile is null || profile.Manifest.GameId.Equals("universal", StringComparison.OrdinalIgnoreCase)
-            ? (isEn ? "the video game on screen" : "el videojuego en pantalla")
-            : profile.Manifest.DisplayName;
-
-        var sysText = isEn
-            ? $"You are a sharp, friendly human eSports coach on Discord watching {gameName} LIVE. " +
-              "Speak clearly, naturally, and briefly in 1 complete sentence (8-15 words). " +
-              "Read ONLY what is actually visible on screen (score, timer, kickoff countdown 3-2-1, boost/HP/ammo, teammates, enemies, replays, menus). " +
-              "NEVER invent numbers or plays you cannot clearly see. Stay silent on menus, loading screens, or goal replays unless the player talks to you. " +
-              "When the player speaks by microphone, respond immediately and naturally like a real coach."
-            : $"Sos un coach humano real de eSports hablando por Discord en español argentino natural mientras mirás {gameName} EN VIVO. " +
-              "Hablá fluido, claro, entendible y corto (1 sola oración completa de 8 a 15 palabras). " +
-              "Leé SOLO lo que realmente ves en pantalla (marcador, reloj, cuenta regresiva 3-2-1 de saque, boost/vida/balas, compañeros, rivales, repeticiones o menús). " +
-              "JAMÁS inventes números ni situaciones que no veas claras. En menús, cargas o repeticiones de gol no digas nada salvo que el jugador te hable. " +
-              "Cuando el jugador te habla por micrófono, respondele al toque como en una charla real de Discord.";
-
-        if (!string.IsNullOrWhiteSpace(profile?.CustomRules))
-            sysText += $" Reglas del jugador: {profile.CustomRules.Trim()}";
+        var sysText = CoachingPersonaBuilder.BuildLiveSystemInstruction(config, profile);
 
         var genCfg = new Dictionary<string, object>
         {
@@ -157,6 +139,16 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
             {
                 model = modelName,
                 generationConfig = genCfg,
+                // Fast conversational VAD: cuts ~350-450ms off voice response turnaround!
+                realtimeInputConfig = new
+                {
+                    automaticActivityDetection = new
+                    {
+                        startOfSpeechSensitivity = "START_SENSITIVITY_HIGH",
+                        endOfSpeechSensitivity = "END_SENSITIVITY_HIGH",
+                        silenceDurationMs = 250
+                    }
+                },
                 outputAudioTranscription = new { },
                 systemInstruction = new
                 {
@@ -186,6 +178,15 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
     }
 
     public void SetVolume(double volume) => _pcmPlayer.SetVolume(volume);
+
+    public void RefreshLivePersona(string? reason = null)
+    {
+        if (_connected)
+        {
+            _onLog?.Invoke($"Actualizando calibración Live ({reason ?? _config.PlayerSkillTier})...");
+            try { _reconnectCts?.Cancel(); } catch { /* reconnect loop handles cleanly */ }
+        }
+    }
 
     public void SetVoiceGenderLive(string gender)
     {
@@ -396,9 +397,9 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
                     _lastTurnRequestTick = Stopwatch.GetTimestamp();
                     _waitingFirstAudio = true;
                 }
-                else if ((now - _lastMicVoiceUtc).TotalMilliseconds > 550.0)
+                else if ((now - _lastMicVoiceUtc).TotalMilliseconds > 320.0)
                 {
-                    // After 550ms trailing silence hangover, stop streaming idle room noise
+                    // Tight 320ms trailing silence hangover matching server silenceDurationMs=250 for snappy turn-taking!
                     return;
                 }
 

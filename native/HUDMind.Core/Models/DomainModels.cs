@@ -167,6 +167,15 @@ public sealed class UserConfig
     [JsonPropertyName("live_auto_coach_seconds")]
     public double LiveAutoCoachSeconds { get; set; } = 12.0;
 
+    [JsonPropertyName("player_skill_tier")]
+    public string PlayerSkillTier { get; set; } = "intermediate";
+
+    [JsonPropertyName("player_rank_label")]
+    public string PlayerRankLabel { get; set; } = string.Empty;
+
+    [JsonPropertyName("coach_style")]
+    public string CoachStyle { get; set; } = "friendly";
+
     [JsonPropertyName("tts_volume")]
     public double TtsVolume { get; set; } = 0.75;
 

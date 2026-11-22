@@ -366,11 +366,32 @@ await RunTest("14. GeminiLiveCoachOrchestrator selects Fenrir/Aoede and formats 
     var cfg = new UserConfig { VoiceGender = "female", VoiceLanguage = "es" };
     var prof = ConfigRepository.CreateUniversalProfile(".");
     var json31 = GeminiLiveCoachOrchestrator.BuildSetupPayloadJson("models/gemini-3.1-flash-live-preview", cfg, prof);
-    Assert(json31.Contains("\"Aoede\"") && json31.Contains("\"AUDIO\"") && json31.Contains("\"MINIMAL\"") && json31.Contains("\"MEDIA_RESOLUTION_MEDIUM\"") && json31.Contains("outputAudioTranscription"),
+    Assert(json31.Contains("\"Aoede\"") && json31.Contains("\"AUDIO\"") && json31.Contains("\"MINIMAL\"") && json31.Contains("\"MEDIA_RESOLUTION_MEDIUM\"") && json31.Contains("\"silenceDurationMs\":250") && json31.Contains("outputAudioTranscription"),
         $"Invalid 3.1 live setup JSON: {json31}");
 
     var json25 = GeminiLiveCoachOrchestrator.BuildSetupPayloadJson("models/gemini-2.5-flash-native-audio-latest", cfg, prof);
     Assert(json25.Contains("\"thinkingBudget\":0"), "2.5 native audio must disable thinking budget");
+    return Task.CompletedTask;
+});
+
+// 15. CoachingPersonaBuilder adapts pro-meta depth & tone across skill tiers and custom ranks
+await RunTest("15. CoachingPersonaBuilder calibrates beginner vs pro coaching depth and rank labels", () =>
+{
+    var beg = CoachingPersonaBuilder.BuildCompactRankDirective(new UserConfig
+    {
+        PlayerSkillTier = "beginner",
+        PlayerRankLabel = "Bronce 2",
+        CoachStyle = "friendly"
+    });
+    Assert(beg.Contains("PRINCIPIANTE") && beg.Contains("Bronce 2") && beg.Contains("amigable"), $"Unexpected beginner directive: {beg}");
+
+    var pro = CoachingPersonaBuilder.BuildCompactRankDirective(new UserConfig
+    {
+        PlayerSkillTier = "pro",
+        PlayerRankLabel = "GC2",
+        CoachStyle = "strict"
+    });
+    Assert(pro.Contains("COMPETITIVO / PRO") && pro.Contains("GC2") && pro.Contains("Tier-1"), $"Unexpected pro directive: {pro}");
     return Task.CompletedTask;
 });
 
