@@ -164,6 +164,9 @@ public sealed class UserConfig
     [JsonPropertyName("enable_mic")]
     public bool EnableMic { get; set; } = true;
 
+    [JsonPropertyName("live_auto_coach_seconds")]
+    public double LiveAutoCoachSeconds { get; set; } = 12.0;
+
     [JsonPropertyName("tts_volume")]
     public double TtsVolume { get; set; } = 0.75;
 

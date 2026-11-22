@@ -240,7 +240,8 @@ public partial class MainWindow : Window
                         forcedGameId: forcedId,
                         onLog: AppendLog,
                         onStats: UpdateStatsUi,
-                        onPauseChanged: OnPauseChanged
+                        onPauseChanged: OnPauseChanged,
+                        localPhaseGate: new TextOnlySensorService()
                     );
                     await _liveOrchestrator.StartAsync();
                     HeaderStatusText.Text = $"🎙 LIVE Conversacional · Voz {GeminiLiveCoachOrchestrator.ResolveLiveVoiceName(_config.VoiceGender)}";
@@ -520,8 +521,9 @@ public partial class MainWindow : Window
         _config.VoiceGender = g;
         _repo.SaveUserConfig(_config);
         _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
+        _liveOrchestrator?.SetVoiceGenderLive(_config.VoiceGender);
         _previewVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
-        AppendLog($"Voz cambiada en vivo a: {(g == "female" ? "👩 Mujer" : "👨 Hombre")} ({_config.VoiceStyle}).");
+        AppendLog($"Voz cambiada en vivo a: {(g == "female" ? "👩 Mujer" : "👨 Hombre")} ({(_liveOrchestrator is { IsRunning: true } ? GeminiLiveCoachOrchestrator.ResolveLiveVoiceName(g) : _config.VoiceStyle)}).");
     }
 
     private void CmbVoiceSettings_SelectionChanged(object sender, SelectionChangedEventArgs e)

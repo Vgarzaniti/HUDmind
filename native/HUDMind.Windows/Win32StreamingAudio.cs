@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using HUDMind.Core.Engine;
 
@@ -6,13 +5,15 @@ namespace HUDMind.Windows;
 
 /// <summary>
 /// Zero-NuGet Win32 `winmm.dll` streaming 24kHz 16-bit mono PCM player for Gemini Live Native-Audio.
-/// Plays audio chunks immediately as they arrive over WebSocket (&lt;10ms latency, 0% GPU) and supports
-/// instant barge-in interruption via waveOutReset().
+/// Features a 40ms anti-stutter coalescing buffer, exact audible playback duration tracking for
+/// Acoustic Echo Suppression (prevents self-interruption loops), and instant barge-in via waveOutReset().
 /// </summary>
 public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
 {
     private const int WaveMapper = -1;
     private const uint WhdrDone = 0x00000001;
+    private const int BytesPerSecond24k16 = 48000;
+    private const int MinCoalesceBytes = 1920; // 40ms smooth audio write granularity
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WAVEFORMATEX
@@ -65,9 +66,23 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
 
     private readonly object _sync = new();
     private readonly Queue<ActiveBuffer> _inFlight = new();
+    private readonly MemoryStream _coalesce = new(4096);
     private IntPtr _hWaveOut;
     private double _volume = 0.85;
+    private DateTimeOffset _playbackEndsAtUtc = DateTimeOffset.MinValue;
     private bool _disposed;
+
+    /// <summary>
+    /// True while audio is audibly playing out of the speakers (plus 350ms acoustic echo hangover).
+    /// </summary>
+    public bool IsPlayingAudio
+    {
+        get
+        {
+            lock (_sync)
+                return DateTimeOffset.UtcNow < _playbackEndsAtUtc.AddMilliseconds(350);
+        }
+    }
 
     public void SetVolume(double volume)
     {
@@ -87,7 +102,7 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
             nSamplesPerSec = 24000,
             wBitsPerSample = 16,
             nBlockAlign = 2,
-            nAvgBytesPerSec = 48000,
+            nAvgBytesPerSec = BytesPerSecond24k16,
             cbSize = 0
         };
         int res = waveOutOpen(out _hWaveOut, WaveMapper, ref fmt, IntPtr.Zero, IntPtr.Zero, 0);
@@ -102,37 +117,70 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
             if (_disposed || !EnsureOpenLocked())
                 return;
 
-            ReclaimCompletedLocked();
-
-            byte[] scaled = ApplyVolume(pcmBytes, _volume);
-            IntPtr dataPtr = Marshal.AllocHGlobal(scaled.Length);
-            Marshal.Copy(scaled, 0, dataPtr, scaled.Length);
-
-            var hdr = new WAVEHDR
-            {
-                lpData = dataPtr,
-                dwBufferLength = (uint)scaled.Length
-            };
-            IntPtr hdrPtr = Marshal.AllocHGlobal(Marshal.SizeOf<WAVEHDR>());
-            Marshal.StructureToPtr(hdr, hdrPtr, false);
-
-            uint hdrSize = (uint)Marshal.SizeOf<WAVEHDR>();
-            if (waveOutPrepareHeader(_hWaveOut, hdrPtr, hdrSize) != 0 ||
-                waveOutWrite(_hWaveOut, hdrPtr, hdrSize) != 0)
-            {
-                Marshal.FreeHGlobal(hdrPtr);
-                Marshal.FreeHGlobal(dataPtr);
-                return;
-            }
-
-            _inFlight.Enqueue(new ActiveBuffer { HeaderPtr = hdrPtr, DataPtr = dataPtr });
+            _coalesce.Write(pcmBytes, 0, pcmBytes.Length);
+            if (_coalesce.Length >= MinCoalesceBytes)
+                WriteCoalescedLocked();
         }
+    }
+
+    public void FlushBuffered()
+    {
+        lock (_sync)
+        {
+            if (_disposed || _coalesce.Length < 2) return;
+            if (EnsureOpenLocked())
+                WriteCoalescedLocked();
+        }
+    }
+
+    private void WriteCoalescedLocked()
+    {
+        int len = (int)_coalesce.Length;
+        len &= ~1; // Enforce 16-bit sample alignment
+        if (len < 2) return;
+
+        byte[] raw = _coalesce.ToArray();
+        _coalesce.SetLength(0);
+        if (len != raw.Length)
+            Array.Resize(ref raw, len);
+
+        ReclaimCompletedLocked();
+
+        byte[] scaled = ApplyVolume(raw, _volume);
+        IntPtr dataPtr = Marshal.AllocHGlobal(scaled.Length);
+        Marshal.Copy(scaled, 0, dataPtr, scaled.Length);
+
+        var hdr = new WAVEHDR
+        {
+            lpData = dataPtr,
+            dwBufferLength = (uint)scaled.Length
+        };
+        IntPtr hdrPtr = Marshal.AllocHGlobal(Marshal.SizeOf<WAVEHDR>());
+        Marshal.StructureToPtr(hdr, hdrPtr, false);
+
+        uint hdrSize = (uint)Marshal.SizeOf<WAVEHDR>();
+        if (waveOutPrepareHeader(_hWaveOut, hdrPtr, hdrSize) != 0 ||
+            waveOutWrite(_hWaveOut, hdrPtr, hdrSize) != 0)
+        {
+            Marshal.FreeHGlobal(hdrPtr);
+            Marshal.FreeHGlobal(dataPtr);
+            return;
+        }
+
+        _inFlight.Enqueue(new ActiveBuffer { HeaderPtr = hdrPtr, DataPtr = dataPtr });
+
+        // Track exact audible end time so echo suppression covers the full waveOut queue!
+        var now = DateTimeOffset.UtcNow;
+        var baseTime = _playbackEndsAtUtc > now ? _playbackEndsAtUtc : now;
+        _playbackEndsAtUtc = baseTime.AddSeconds(scaled.Length / (double)BytesPerSecond24k16);
     }
 
     public void InterruptAndClear()
     {
         lock (_sync)
         {
+            _coalesce.SetLength(0);
+            _playbackEndsAtUtc = DateTimeOffset.MinValue;
             if (_hWaveOut == IntPtr.Zero) return;
             _ = waveOutReset(_hWaveOut);
             ReclaimAllLocked();
@@ -190,6 +238,8 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
         {
             if (_disposed) return;
             _disposed = true;
+            _coalesce.Dispose();
+            _playbackEndsAtUtc = DateTimeOffset.MinValue;
             if (_hWaveOut != IntPtr.Zero)
             {
                 _ = waveOutReset(_hWaveOut);
@@ -357,7 +407,7 @@ public sealed class Win32StreamingMicCapture : IStreamingMicCapture
                 }
             }
             if (!any)
-                Thread.Sleep(25);
+                Thread.Sleep(20);
         }
     }
 

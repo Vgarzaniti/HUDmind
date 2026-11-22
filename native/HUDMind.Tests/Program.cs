@@ -366,7 +366,7 @@ await RunTest("14. GeminiLiveCoachOrchestrator selects Fenrir/Aoede and formats 
     var cfg = new UserConfig { VoiceGender = "female", VoiceLanguage = "es" };
     var prof = ConfigRepository.CreateUniversalProfile(".");
     var json31 = GeminiLiveCoachOrchestrator.BuildSetupPayloadJson("models/gemini-3.1-flash-live-preview", cfg, prof);
-    Assert(json31.Contains("\"Aoede\"") && json31.Contains("\"AUDIO\"") && json31.Contains("\"MINIMAL\"") && json31.Contains("outputAudioTranscription"),
+    Assert(json31.Contains("\"Aoede\"") && json31.Contains("\"AUDIO\"") && json31.Contains("\"MINIMAL\"") && json31.Contains("\"MEDIA_RESOLUTION_MEDIUM\"") && json31.Contains("outputAudioTranscription"),
         $"Invalid 3.1 live setup JSON: {json31}");
 
     var json25 = GeminiLiveCoachOrchestrator.BuildSetupPayloadJson("models/gemini-2.5-flash-native-audio-latest", cfg, prof);

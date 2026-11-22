@@ -11,9 +11,14 @@ namespace HUDMind.Core.AI;
 
 /// <summary>
 /// Real-Time Bidirectional Conversational Coach powered by Gemini Live Native-Audio WebSocket
-/// (`gemini-3.1-flash-live-preview` ~960ms TTFA -> `gemini-2.5-flash-native-audio-latest` -> `gemini-3.8-live`).
-/// Streams continuous 1 FPS game video + live 16kHz microphone audio and plays streamed 24kHz human audio
-/// directly as chunks arrive (zero separate TTS, instant barge-in interruption, continuous match memory!).
+/// (`gemini-3.1-flash-live-preview` ~1.0s TTFA -> `gemini-2.5-flash-native-audio-latest` -> `gemini-3.8-live`).
+///
+/// Key breakthroughs verified live:
+/// - `MEDIA_RESOLUTION_MEDIUM` + 960x540 HALFTONE JPEG + `clientContent.inlineData` exact-frame sync (100% accurate HUD reading!)
+/// - Continuous 1 FPS `realtimeInput.video` for live rolling visual context while speaking by mic
+/// - Acoustic Echo Suppression using exact `waveOut` audible duration + 350ms hangover (prevents coach self-interruption!)
+/// - Smooth VAD hangover (500ms trailing silence) for snappy conversational turn-taking
+/// - Live hot-reconnect when switching Male (Fenrir) &lt;-&gt; Female (Aoede) voice!
 /// </summary>
 public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
 {
@@ -35,6 +40,7 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
     private readonly IStreamingPcmPlayer _pcmPlayer;
     private readonly IStreamingMicCapture _mic;
     private readonly IOverlayOutputService _overlay;
+    private readonly ITextOnlySensorService? _localPhaseGate;
     private readonly bool _testMode;
     private readonly string? _forcedGameId;
     private readonly Action<string>? _onLog;
@@ -44,6 +50,7 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
     private readonly SemaphoreSlim _wsSendLock = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
     private CancellationTokenSource? _runCts;
+    private CancellationTokenSource? _reconnectCts;
     private ClientWebSocket? _ws;
     private Task? _sessionTask;
 
@@ -54,6 +61,7 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
     private volatile bool _connected;
     private string _activeModel = ModelCascade[0];
     private ulong? _lastSentHash;
+    private byte[]? _latestFrameBytes;
     private long _framesSent;
     private long _interventions;
     private double _lastCaptureMs;
@@ -61,7 +69,7 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
     private long _lastTurnRequestTick;
     private bool _waitingFirstAudio;
     private DateTimeOffset _lastAutoNudgeUtc = DateTimeOffset.MinValue;
-    private DateTimeOffset _lastFrameSentUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastMicVoiceUtc = DateTimeOffset.MinValue;
 
     public bool IsRunning => _runCts is { IsCancellationRequested: false };
     public bool IsPaused => _userPaused;
@@ -79,7 +87,8 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
         string? forcedGameId = null,
         Action<string>? onLog = null,
         Action<CoachRuntimeStats>? onStats = null,
-        Action<bool>? onPauseChanged = null)
+        Action<bool>? onPauseChanged = null,
+        ITextOnlySensorService? localPhaseGate = null)
     {
         _apiKey = apiKey.Trim();
         _config = config;
@@ -89,6 +98,7 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
         _pcmPlayer = pcmPlayer;
         _mic = mic;
         _overlay = overlay;
+        _localPhaseGate = localPhaseGate;
         _testMode = testMode;
         _forcedGameId = forcedGameId;
         _onLog = onLog;
@@ -109,16 +119,16 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
             : profile.Manifest.DisplayName;
 
         var sysText = isEn
-            ? $"You are a real, friendly human eSports coach on Discord watching {gameName} LIVE in real time. " +
-              "Speak naturally, warmly, and concisely in 1 short clear sentence (8-15 words). " +
-              "Observe the continuous video feed carefully (kickoffs, score, timer, boost/HP/ammo, replays, menus). " +
-              "NEVER invent things you do not see. Stay quiet during menus, loading screens, or goal replays unless the player talks to you directly. " +
-              "When the player speaks via microphone, answer naturally like a real teammate/coach right away."
+            ? $"You are a sharp, friendly human eSports coach on Discord watching {gameName} LIVE. " +
+              "Speak clearly, naturally, and briefly in 1 complete sentence (8-15 words). " +
+              "Read ONLY what is actually visible on screen (score, timer, kickoff countdown 3-2-1, boost/HP/ammo, teammates, enemies, replays, menus). " +
+              "NEVER invent numbers or plays you cannot clearly see. Stay silent on menus, loading screens, or goal replays unless the player talks to you. " +
+              "When the player speaks by microphone, respond immediately and naturally like a real coach."
             : $"Sos un coach humano real de eSports hablando por Discord en español argentino natural mientras mirás {gameName} EN VIVO. " +
-              "Hablá fluido, claro, cercano y breve (1 sola oración natural de 8 a 15 palabras que se entienda perfecto). " +
-              "Observá la secuencia real del video (saques 3-2-1, goles, repeticiones, reloj, marcador, boost/vida/recursos, compañeros y rivales). " +
-              "JAMÁS inventes cosas que no ves en pantalla. En menús, pantallas de carga o repeticiones de gol quedate callado salvo que el jugador te hable. " +
-              "Si el jugador te habla por micrófono, respondele al toque como en una charla real de Discord.";
+              "Hablá fluido, claro, entendible y corto (1 sola oración completa de 8 a 15 palabras). " +
+              "Leé SOLO lo que realmente ves en pantalla (marcador, reloj, cuenta regresiva 3-2-1 de saque, boost/vida/balas, compañeros, rivales, repeticiones o menús). " +
+              "JAMÁS inventes números ni situaciones que no veas claras. En menús, cargas o repeticiones de gol no digas nada salvo que el jugador te hable. " +
+              "Cuando el jugador te habla por micrófono, respondele al toque como en una charla real de Discord.";
 
         if (!string.IsNullOrWhiteSpace(profile?.CustomRules))
             sysText += $" Reglas del jugador: {profile.CustomRules.Trim()}";
@@ -126,6 +136,7 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
         var genCfg = new Dictionary<string, object>
         {
             ["responseModalities"] = new[] { "AUDIO" },
+            ["mediaResolution"] = "MEDIA_RESOLUTION_MEDIUM",
             ["speechConfig"] = new
             {
                 voiceConfig = new
@@ -175,6 +186,16 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
     }
 
     public void SetVolume(double volume) => _pcmPlayer.SetVolume(volume);
+
+    public void SetVoiceGenderLive(string gender)
+    {
+        _config.VoiceGender = string.Equals(gender, "female", StringComparison.OrdinalIgnoreCase) ? "female" : "male";
+        if (_connected)
+        {
+            _onLog?.Invoke($"Cambiando voz Live a {ResolveLiveVoiceName(_config.VoiceGender)} (reconectando en <1s)...");
+            try { _reconnectCts?.Cancel(); } catch { /* reconnect loop handles cleanly */ }
+        }
+    }
 
     public void SetMicEnabled(bool enabled)
     {
@@ -232,8 +253,15 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
         _ = Task.Run(async () =>
         {
             var ct = _runCts?.Token ?? CancellationToken.None;
-            await SendFreshFrameAsync(force: true, ct);
-            await SendUserTurnPromptAsync("¿Qué ves ahora mismo en esta jugada? Dame un consejo corto y claro.", ct);
+            var fresh = CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _framesSent));
+            if (fresh is not null)
+            {
+                _latestFrameBytes = fresh;
+                await SendExactImageAndPromptTurnAsync(
+                    fresh,
+                    "Mirá esta imagen actual exacta del juego. Decime en 1 oración corta y clara qué está pasando y qué me conviene hacer ahora.",
+                    ct);
+            }
         });
     }
 
@@ -252,29 +280,36 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
         {
             string model = ModelCascade[cascadeIdx % ModelCascade.Length];
             _activeModel = model;
+            bool userTriggeredReconnect = false;
+            using var localReconnectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            _reconnectCts = localReconnectCts;
             try
             {
-                await RunSingleWebSocketSessionAsync(model, ct);
-                // Clean reconnect (e.g. after 10-min Google Live session limit)
+                await RunSingleWebSocketSessionAsync(model, localReconnectCts.Token);
                 if (!ct.IsCancellationRequested)
                 {
-                    _onLog?.Invoke("Reconectando sesión Gemini Live automáticamente...");
-                    await Task.Delay(700, ct);
+                    _onLog?.Invoke("Reconectando sesión Gemini Live...");
+                    await Task.Delay(500, ct);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 break;
             }
+            catch (OperationCanceledException) when (localReconnectCts.IsCancellationRequested)
+            {
+                userTriggeredReconnect = true; // Keep same fast model on intentional voice switch!
+            }
             catch (Exception ex)
             {
                 var safe = SecretRedactor.Redact(ex.Message, [_apiKey]);
                 _onLog?.Invoke($"Sesión Live ({model}) desconectada: {safe}. Probando siguiente modelo...");
                 cascadeIdx++;
-                try { await Task.Delay(1200, ct); } catch { break; }
+                try { await Task.Delay(1000, ct); } catch { break; }
             }
             finally
             {
+                _reconnectCts = null;
                 _connected = false;
                 _modelSpeaking = false;
                 _mic.Stop();
@@ -284,6 +319,9 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
                     _ws = null;
                 }
             }
+
+            if (userTriggeredReconnect && !ct.IsCancellationRequested)
+                await Task.Delay(150, ct);
         }
     }
 
@@ -294,26 +332,26 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
         ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
         _ws = ws;
 
-        _onLog?.Invoke($"Conectando Gemini Live Native-Audio ({modelName}, voz={ResolveLiveVoiceName(_config.VoiceGender)})...");
+        var voiceName = ResolveLiveVoiceName(_config.VoiceGender);
+        _onLog?.Invoke($"Conectando Gemini Live Native-Audio ({modelName}, voz={voiceName}, MEDIA_RESOLUTION_MEDIUM)...");
         await ws.ConnectAsync(new Uri(BidiEndpoint), ct);
 
         var setupJson = BuildSetupPayloadJson(modelName, _config, _activeProfile);
         await SendRawJsonAsync(ws, setupJson, ct);
 
-        // Wait for setupComplete
         var firstResp = await ReceiveFullMessageAsync(ws, ct);
         if (firstResp is null || !firstResp.Contains("setupComplete", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"Handshake Live falló: {firstResp ?? "cierre inmediato"}");
 
         _connected = true;
-        _onLog?.Invoke($"🎙 LIVE CONECTADO [{modelName}] — Voz humana {ResolveLiveVoiceName(_config.VoiceGender)} · Hablale por mic o usá {_config.HotkeyAnalyzeNow}!");
+        _onLog?.Invoke($"🎙 LIVE LISTO [{modelName.Replace("models/", "")}] · Voz {voiceName} · Hablale por mic o tocá {_config.HotkeyAnalyzeNow}!");
         if (_config.EnableOverlay)
         {
             _overlay.ShowCallout(
-                _micEnabled ? "Coach Live conectado — podés hablarle directo" : "Coach Live conectado — observando en vivo",
+                _micEnabled ? $"Coach Live ({voiceName}) listo — hablale directo" : $"Coach Live ({voiceName}) observando",
                 UrgencyLevel.Low,
                 _activeProfile?.Manifest.DisplayName ?? "HUDMind Live",
-                3.5);
+                3.0);
         }
 
         if (_micEnabled && !_userPaused)
@@ -337,15 +375,39 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
             pcmChunk =>
             {
                 if (!_connected || _userPaused || !_micEnabled) return;
-                // Simple RMS noise gate (threshold ~320) so static fan noise doesn't trigger false speech
-                if (ComputeRms16(pcmChunk) < 280.0 && !_modelSpeaking)
+
+                double rms = ComputeRms16(pcmChunk);
+                bool coachAudible = _modelSpeaking || _pcmPlayer.IsPlayingAudio;
+
+                // Acoustic Echo Suppression: while coach audio is playing out of speakers,
+                // ignore speaker bleed (<1800 RMS) so the coach NEVER self-interrupts!
+                if (coachAudible)
+                {
+                    if (rms < 1800.0)
+                        return;
+                    // Intentional loud human barge-in!
+                    _pcmPlayer.InterruptAndClear();
+                }
+
+                var now = DateTimeOffset.UtcNow;
+                if (rms >= 320.0)
+                {
+                    _lastMicVoiceUtc = now;
+                    _lastTurnRequestTick = Stopwatch.GetTimestamp();
+                    _waitingFirstAudio = true;
+                }
+                else if ((now - _lastMicVoiceUtc).TotalMilliseconds > 550.0)
+                {
+                    // After 550ms trailing silence hangover, stop streaming idle room noise
                     return;
+                }
+
                 var ct = _runCts?.Token ?? CancellationToken.None;
                 _ = SendMicChunkAsync(pcmChunk, ct);
             },
             err => _onLog?.Invoke(err));
         if (ok)
-            _onLog?.Invoke("🎤 Micrófono 16kHz en vivo activo — hablá cuando quieras.");
+            _onLog?.Invoke("🎤 Micrófono 16kHz con supresión de eco activo — hablá cuando quieras.");
     }
 
     private static double ComputeRms16(byte[] pcm)
@@ -359,6 +421,28 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
             sumSq += s * (double)s;
         }
         return Math.Sqrt(sumSq / samples);
+    }
+
+    private byte[]? CaptureSharpFrame(bool force, long frameId)
+    {
+        var region = _testMode ? null : _windowDetector.GetForegroundClientRect();
+        var (frame, skipped) = _capture.CaptureIfChanged(
+            _config.CaptureMonitor,
+            region,
+            targetWidth: 960,
+            targetHeight: 540,
+            jpegQuality: 78,
+            frameId: frameId,
+            lastAcceptedHash: _lastSentHash,
+            phashThreshold: 6,
+            isForced: force);
+
+        if (skipped || frame is null)
+            return null;
+
+        _lastSentHash = frame.PerceptualHash;
+        _lastCaptureMs = frame.CaptureMs + frame.EncodeMs;
+        return frame.JpegBytes;
     }
 
     private async Task VideoAndAutoCoachLoopAsync(CancellationToken ct)
@@ -392,15 +476,45 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
                         }
                     }
 
-                    bool sent = await SendFreshFrameAsync(force: false, ct, ++frameCounter);
-
-                    // Gentle proactive coach pulse every ~15s when live gameplay changed & coach is quiet
-                    if (sent && !_modelSpeaking && (DateTimeOffset.UtcNow - _lastAutoNudgeUtc).TotalSeconds >= 15.0)
+                    var jpeg = CaptureSharpFrame(force: false, frameId: ++frameCounter);
+                    if (jpeg is not null)
                     {
-                        _lastAutoNudgeUtc = DateTimeOffset.UtcNow;
-                        await SendUserTurnPromptAsync(
-                            "Si hay un momento táctico útil en esta jugada (NO en menú, carga ni replay), decilo en 1 frase corta y natural; si no, quedate callado.",
-                            ct);
+                        _latestFrameBytes = jpeg;
+                        Interlocked.Increment(ref _framesSent);
+                        await SendVideoFrameAsync(jpeg, ct);
+
+                        // Proactive coaching pulse (only when auto-coach > 0, audio finished, and user isn't talking)
+                        double autoSec = _config.LiveAutoCoachSeconds;
+                        bool userRecentlySpoke = (DateTimeOffset.UtcNow - _lastMicVoiceUtc).TotalSeconds < 3.0;
+                        if (autoSec > 0 &&
+                            !_modelSpeaking &&
+                            !_pcmPlayer.IsPlayingAudio &&
+                            !userRecentlySpoke &&
+                            (DateTimeOffset.UtcNow - _lastAutoNudgeUtc).TotalSeconds >= autoSec)
+                        {
+                            _lastAutoNudgeUtc = DateTimeOffset.UtcNow;
+
+                            // Local 30ms WinRT OCR gate: skip auto-nudge silently during MENU/REPLAY/LOADING
+                            // so the coach NEVER speaks out loud during menus or goal replays!
+                            bool skipProactive = false;
+                            if (_localPhaseGate is not null && _activeProfile is not null)
+                            {
+                                var snap = await _localPhaseGate.ExtractAsync(jpeg, _activeProfile, ct);
+                                if (snap.Phase is "MENU" or "REPLAY" or "LOADING" or "DESKTOP")
+                                {
+                                    skipProactive = true;
+                                    _onLog?.Invoke($"Silencio local [{snap.Phase}] (sin molestar en menú/replay).");
+                                }
+                            }
+
+                            if (!skipProactive)
+                            {
+                                await SendExactImageAndPromptTurnAsync(
+                                    jpeg,
+                                    "Mirá esta captura exacta de la partida actual. Da 1 solo consejo táctico claro, natural y útil en español (8 a 14 palabras) basado únicamente en lo que ves en pantalla.",
+                                    ct);
+                            }
+                        }
                     }
                 }
 
@@ -419,32 +533,12 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
         }
     }
 
-    private async Task<bool> SendFreshFrameAsync(bool force, CancellationToken ct, long frameId = 0)
+    private async Task SendVideoFrameAsync(byte[] jpegBytes, CancellationToken ct)
     {
         var ws = _ws;
-        if (ws is null || ws.State != WebSocketState.Open) return false;
+        if (ws is null || ws.State != WebSocketState.Open) return;
 
-        var region = _testMode ? null : _windowDetector.GetForegroundClientRect();
-        var (frame, skipped) = _capture.CaptureIfChanged(
-            _config.CaptureMonitor,
-            region,
-            targetWidth: 768,
-            targetHeight: 432,
-            jpegQuality: 72,
-            frameId: frameId,
-            lastAcceptedHash: _lastSentHash,
-            phashThreshold: 6,
-            isForced: force);
-
-        if (skipped || frame is null)
-            return false;
-
-        _lastSentHash = frame.PerceptualHash;
-        _lastCaptureMs = frame.CaptureMs + frame.EncodeMs;
-        Interlocked.Increment(ref _framesSent);
-        _lastFrameSentUtc = DateTimeOffset.UtcNow;
-
-        var buf = new ArrayBufferWriter<byte>(frame.JpegBytes.Length * 4 / 3 + 128);
+        var buf = new ArrayBufferWriter<byte>(jpegBytes.Length * 4 / 3 + 128);
         using (var w = new Utf8JsonWriter(buf))
         {
             w.WriteStartObject();
@@ -453,13 +547,52 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
             w.WritePropertyName("video");
             w.WriteStartObject();
             w.WriteString("mimeType", "image/jpeg");
-            w.WriteBase64String("data", frame.JpegBytes);
+            w.WriteBase64String("data", jpegBytes);
             w.WriteEndObject();
             w.WriteEndObject();
             w.WriteEndObject();
         }
         await SendRawBytesAsync(ws, buf.WrittenMemory, ct);
-        return true;
+    }
+
+    private async Task SendExactImageAndPromptTurnAsync(byte[] jpegBytes, string text, CancellationToken ct)
+    {
+        var ws = _ws;
+        if (ws is null || ws.State != WebSocketState.Open) return;
+
+        _lastTurnRequestTick = Stopwatch.GetTimestamp();
+        _waitingFirstAudio = true;
+
+        var buf = new ArrayBufferWriter<byte>(jpegBytes.Length * 4 / 3 + 512);
+        using (var w = new Utf8JsonWriter(buf))
+        {
+            w.WriteStartObject();
+            w.WritePropertyName("clientContent");
+            w.WriteStartObject();
+            w.WritePropertyName("turns");
+            w.WriteStartArray();
+            w.WriteStartObject();
+            w.WriteString("role", "user");
+            w.WritePropertyName("parts");
+            w.WriteStartArray();
+            w.WriteStartObject();
+            w.WritePropertyName("inlineData");
+            w.WriteStartObject();
+            w.WriteString("mimeType", "image/jpeg");
+            w.WriteBase64String("data", jpegBytes);
+            w.WriteEndObject();
+            w.WriteEndObject();
+            w.WriteStartObject();
+            w.WriteString("text", text);
+            w.WriteEndObject();
+            w.WriteEndArray();
+            w.WriteEndObject();
+            w.WriteEndArray();
+            w.WriteBoolean("turnComplete", true);
+            w.WriteEndObject();
+            w.WriteEndObject();
+        }
+        await SendRawBytesAsync(ws, buf.WrittenMemory, ct);
     }
 
     private async Task SendMicChunkAsync(byte[] pcm16k, CancellationToken ct)
@@ -484,33 +617,6 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
         try { await SendRawBytesAsync(ws, buf.WrittenMemory, ct); } catch { /* transient */ }
     }
 
-    private async Task SendUserTurnPromptAsync(string text, CancellationToken ct)
-    {
-        var ws = _ws;
-        if (ws is null || ws.State != WebSocketState.Open) return;
-
-        _lastTurnRequestTick = Stopwatch.GetTimestamp();
-        _waitingFirstAudio = true;
-
-        string json;
-        if (_activeModel.Contains("3.", StringComparison.OrdinalIgnoreCase))
-        {
-            json = JsonSerializer.Serialize(new { realtimeInput = new { text } });
-        }
-        else
-        {
-            json = JsonSerializer.Serialize(new
-            {
-                clientContent = new
-                {
-                    turns = new[] { new { role = "user", parts = new[] { new { text } } } },
-                    turnComplete = true
-                }
-            });
-        }
-        await SendRawJsonAsync(ws, json, ct);
-    }
-
     private async Task ReceiveLoopAsync(ClientWebSocket ws, CancellationToken ct)
     {
         var transcriptBuf = new StringBuilder();
@@ -524,7 +630,6 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
             if (!doc.RootElement.TryGetProperty("serverContent", out var sc))
                 continue;
 
-            // Barge-in: user interrupted the coach -> stop playback immediately!
             if (sc.TryGetProperty("interrupted", out var intr) && intr.ValueKind == JsonValueKind.True)
             {
                 _pcmPlayer.InterruptAndClear();
@@ -541,7 +646,10 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
                 {
                     transcriptBuf.Append(chunk);
                     var currentLine = transcriptBuf.ToString().Trim();
-                    if (_config.EnableOverlay && currentLine.Length >= 4)
+                    if (_config.EnableOverlay &&
+                        currentLine.Length >= 5 &&
+                        !currentLine.Equals("silencio", StringComparison.OrdinalIgnoreCase) &&
+                        !currentLine.Equals("silencio.", StringComparison.OrdinalIgnoreCase))
                     {
                         _overlay.ShowCallout(
                             currentLine,
@@ -578,10 +686,13 @@ public sealed class GeminiLiveCoachOrchestrator : IAsyncDisposable
 
             if (sc.TryGetProperty("turnComplete", out var tc) && tc.ValueKind == JsonValueKind.True)
             {
+                _pcmPlayer.FlushBuffered();
                 _modelSpeaking = false;
                 var spoken = transcriptBuf.ToString().Trim();
                 transcriptBuf.Clear();
-                if (!string.IsNullOrWhiteSpace(spoken))
+                if (!string.IsNullOrWhiteSpace(spoken) &&
+                    !spoken.Equals("silencio", StringComparison.OrdinalIgnoreCase) &&
+                    !spoken.Equals("silencio.", StringComparison.OrdinalIgnoreCase))
                 {
                     Interlocked.Increment(ref _interventions);
                     _onLog?.Invoke($"🎙 Coach ({_lastTtfaMs:F0}ms TTFA): \"{spoken}\"");

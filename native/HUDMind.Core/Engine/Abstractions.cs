@@ -55,8 +55,10 @@ public interface ITextOnlySensorService
 /// </summary>
 public interface IStreamingPcmPlayer : IDisposable
 {
+    bool IsPlayingAudio { get; }
     void SetVolume(double volume);
     void EnqueuePcm24k(byte[] pcmBytes);
+    void FlushBuffered();
     void InterruptAndClear();
 }
 
