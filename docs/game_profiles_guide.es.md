@@ -1,8 +1,10 @@
+> 🌐 **Idioma / Language:** **[🇪🇸 Español](game_profiles_guide.es.md)** | [🇺🇸 English](game_profiles_guide.en.md)
+
 # Guía de Perfiles de Juego (`profiles/`)
 
 **HUDMind Native** utiliza una arquitectura modular de "cartuchos" por juego en `profiles/`. Para agregar soporte para un nuevo título **no es necesario modificar código C#**: podés crear el perfil directamente desde la interfaz o creando una carpeta estándar.
 
-Perfiles incluidos de serie:
+Perfiles incluidos de serie (embebidos dentro del `.exe`):
 - `aoe2_de` (Age of Empires II: Definitive Edition)
 - `cs2` (Counter-Strike 2 — con soporte oficial Valve GSI `127.0.0.1:47315`)
 - `dota2` (Dota 2 — con soporte oficial Valve GSI `127.0.0.1:47315`)
@@ -31,7 +33,7 @@ profiles/
 
 ## 2. Esquema de `manifest.json`
 
-Ejemplo real basado en [`profiles/cs2/manifest.json`](file:///c:/Users/Hogar/Desktop/CouchIA/profiles/cs2/manifest.json):
+Ejemplo real basado en [`profiles/cs2/manifest.json`](../profiles/cs2/manifest.json):
 
 ```json
 {

@@ -1,12 +1,14 @@
 ---
-name: Sugerir mejora o nuevo juego
-about: Proponé una función, mejora de UX o perfil de juego
+name: Feature Request / Sugerir Mejora
+about: Suggest a new feature or game profile | Proponé una función o nuevo perfil de juego
 title: "[FEATURE] "
 labels: enhancement
 ---
 
-## Qué te gustaría sumar
-Describí la mejora o el juego para agregar como perfil oficial.
+> 🌐 **Idioma / Language:** Podés completarlo en **Español** o **English**.
 
-## Por qué ayudaría en partida
-Explicá cómo mejora la experiencia o el coaching en tiempo real.
+## Qué te gustaría sumar / What would you like to add
+<!-- Describí la mejora o el juego para agregar como perfil oficial. / Describe the feature or new game profile. -->
+
+## Por qué ayudaría en partida / Why it helps in-game
+<!-- Explicá cómo mejora el coaching o la experiencia. / Explain how it improves coaching or UX. -->

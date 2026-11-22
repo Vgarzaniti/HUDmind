@@ -1,3 +1,5 @@
+> 🌐 **Idioma / Language:** **[🇪🇸 Español](srs.es.md)** | [🇺🇸 English](srs.en.md)
+
 # Especificación de Requisitos de Software (SRS) — ISO/IEC/IEEE 29148
 
 **Proyecto:** HUDMind Native (.NET 9) — Coach Táctico de Videojuegos en Tiempo Real  
@@ -8,7 +10,7 @@
 
 ## 1. Propósito y Alcance
 
-**HUDMind Native** es una aplicación nativa para Windows (.NET 9 + WPF + Win32, sin dependencias NuGet externas y con costo `$0` de infraestructura) que analiza el estado de la partida en tiempo real y orienta al jugador según su nivel (`beginner`, `intermediate`, `advanced`, `pro`) y rango, mediante:
+**HUDMind Native** es una aplicación nativa para Windows (.NET 9 + WPF + Win32, sin dependencias NuGet externas y con costo `$0` de infraestructura) que analiza el estado de la partida en tiempo real y orienta al jugador según su nivel (`beginner`, `casual`, `intermediate`, `advanced`, `pro`) y rango, mediante:
 - **Motor Live Bidireccional (WebSocket):** Gemini Live, OpenAI Realtime y xAI Grok Realtime con audio nativo 16kHz→24kHz, detección de actividad de voz (VAD), *Push-to-Talk* o micrófono abierto, interrupción inmediata (*barge-in*) y envío de video JPEG a baja frecuencia.
 - **Motor Clásico Multi-IA por Turnos (HTTP/2):** Enrutamiento y carrera especulativa (*Hedged Vision*) sobre Groq, Gemini, OpenAI, xAI, Anthropic Claude, OpenRouter, Mistral, Pollinations, Airforce y Ollama local (`http://localhost:11434/v1`), con adaptador de **Sensores Ciego-Texto** (`TextOnlySensorService`) cuando la cuenta activa no soporta imágenes.
 
@@ -30,11 +32,12 @@
 | **REQ-FUNC-05** | Protocolo de cable compacto y supresión local de ruido. | `CompactWireProtocol` parsea `FASE\|QUE_VEO\|URG\|CONSEJO` y JSON; `HudPhaseClassifier` + `TextOnlySensorService` bloquean localmente análisis en pantallas `MENU` / `LOADING` / `REPLAY`. | `native/HUDMind.Core/AI/CompactWireProtocol.cs`, `native/HUDMind.Core/Pipeline/HudPhaseClassifier.cs` |
 | **REQ-FUNC-06** | Pool Multi-IA extensible, *Hedged Vision* y Failover. | `ProviderRegistry` centraliza presets y factorías HTTP/Live; `ProviderFailoverRouter` rota ante `HTTP 429/402/5xx`, ejecuta *Hedged Vision* ante demoras primarias, descarta consejos vencidos (`Freshness Deadline`) y activa WinRT OCR + sensores cuando hay cuentas sin visión. | `native/HUDMind.Core/AI/ProviderRegistry.cs`, `native/HUDMind.Core/AI/ProviderFailoverRouter.cs` |
 | **REQ-FUNC-07** | Sensores de telemetría pasiva específicos por juego. | Soporta receptor TCP loopback Valve GSI (`127.0.0.1:47315`) para CS2 y Dota 2, cliente TLS loopback Riot Live Client (`127.0.0.1:2999`) para LoL, tailers de logs UTF-8/UTF-16 LE para Rocket League y Valorant, y WinRT OCR en RAM. | `native/HUDMind.Windows/LoopbackGsiService.cs`, `native/HUDMind.Windows/Sensors/*.cs`, `native/HUDMind.Windows/TextOnlySensorService.cs` |
-| **REQ-FUNC-08** | Personalización por nivel, estilo y reglas del jugador. | `CoachingPersonaBuilder` calibra profundidad táctica por tier (`beginner`, `intermediate`, `advanced`, `pro`) y rango, modo (`normal`, `training`), estilo (`friendly`, `direct`, `analytical`, `calm`) y hasta `600` caracteres de `custom_rules.md`. | `native/HUDMind.Core/AI/CoachingPersonaBuilder.cs` |
+| **REQ-FUNC-08** | Personalización por nivel, estilo y reglas del jugador. | `CoachingPersonaBuilder` calibra profundidad táctica por tier (`beginner`, `casual`, `intermediate`, `advanced`, `pro`) y rango, modo (`auto`, `match`, `training`), estilo (`friendly`, `tactical`, `strict`) y hasta `600` caracteres de `custom_rules.md`. | `native/HUDMind.Core/AI/CoachingPersonaBuilder.cs` |
 | **REQ-FUNC-09** | Salida visual *click-through* y síntesis de voz 100% nativa C#. | `OverlayWindow` soporta modo completo y pill compacto, escala, opacidad, 4 esquinas y bandeja (`Win32TrayIcon`); `HybridVoiceService` combina `WinRtNaturalVoiceService` (`SpeechSynthesizer` → parlante seleccionado) e `InstantSapiVoiceService` (`<8ms`), sin dependencias Python. | `native/HUDMind.App/OverlayWindow.xaml.cs`, `native/HUDMind.Windows/HybridVoiceService.cs` |
 | **REQ-FUNC-10** | Controles durante partida, Push-to-Talk y tonos sutiles opcionales. | Atajos Win32 `RegisterHotKey` configurables (`F9` Pausa, `F10` Analizar Ahora, `F8` Mic), sonda PTT sin hooks (`GetAsyncKeyState` via `Win32KeyStateProbe`) y confirmación opcional vía `Win32AudioCue` (silenciada en `text_only`). | `native/HUDMind.Windows/Win32GlobalHotkeyManager.cs`, `native/HUDMind.Windows/Audio/Win32AudioCue.cs` |
 | **REQ-FUNC-11** | Memoria anti-repetición y continuidad entre partidas. | `InterventionMemory` evita consejos repetidos dentro de ventana/TTL manteniendo aislamiento del chat; `SavePostMatchReview` guarda `.md` redactados en `logs/reviews/` y `LoadLatestPostMatchFocus` inyecta el último drill en la siguiente partida. | `native/HUDMind.Core/Pipeline/InterventionMemory.cs`, `native/HUDMind.Core/Config/ConfigRepository.cs` |
 | **REQ-FUNC-12** | Centro de control gráfico nativo (WPF). | UI de 4 pestañas con creación/edición in-situ de cuentas (`BaseUrl`, `Modo Visión`), creación/edición/eliminación de perfiles y `manifest.json`, resúmenes Markdown y prueba `--smoke-startup`. | `native/HUDMind.App/MainWindow.xaml`, `native/HUDMind.App/MainWindow.xaml.cs` |
+| **REQ-FUNC-13** | Verificador in-app de actualizaciones y descarga asistida. | Consulta GitHub Releases al iniciar y cada 60 min en reposo (`!IsRunning`), ignora drafts/pre-releases, muestra cartel superior con botón **⬇ Descargar actualización**, elige `Standalone` vs compacto, guarda en Descargas (`KnownFolders`) y lanza limpiamente el nuevo `.exe`. | `native/HUDMind.Core/Updates/GitHubReleaseUpdateService.cs`, `native/HUDMind.Windows/KnownFolders.cs`, `native/HUDMind.App/MainWindow.xaml.cs` |
 
 ---
 
@@ -45,7 +48,7 @@
 | **REQ-NFR-01** | Eficiencia de Desempeño | 0% carga en GPU dedicada para la app HUDMind; captura en `StretchBlt` con buffer reutilizable y detección de frame estático vía dHash antes de codificar o invocar red. | `RenderMode.SoftwareOnly`, `FastScreenCapture` y pruebas `W6` |
 | **REQ-NFR-02** | Baja Latencia / Frescura | Descarte de frames obsoletos mediante `Channel` acotado (`DropOldest`), *Freshness Deadline* en modo automático y priorización de `F10` sin esperar ciclo. | Pruebas Core `07`, `09`, `12` |
 | **REQ-NFR-03** | Fiabilidad y Tolerancia a Fallos | Recuperación atómica de `accounts.json` corrupto (con backup redactado), *Circuit Breaker* por cuenta y rotación transparente multi-proveedor o Live→Clásico. | Pruebas Core `06`, `08`, `20`, `21`, `24` |
-| **REQ-NFR-04** | Portabilidad / Zero-Bloat | Cero paquetes NuGet externos; binario distribuible *single-file* `win-x64` sobre .NET 9 Desktop Runtime. | `HUDMind.App.csproj`, `dotnet publish` |
+| **REQ-NFR-04** | Portabilidad / Zero-Bloat | Cero paquetes NuGet externos; binario distribuible *single-file* `win-x64` (`Standalone` y framework-dependent) publicado automáticamente en Releases. | `HUDMind.App.csproj`, `.github/workflows/release.yml` |
 | **REQ-NFR-05** | Mantenibilidad y Modularidad | Separación estricta en `HUDMind.Core` (multiplataforma `net9.0`), `HUDMind.Windows` (Win32/Sensores/Audio) y `HUDMind.App` (WPF). Validación continua por CI en Linux + Windows. | `.github/workflows/ci.yml`, `HUDMind.Tests`, `HUDMind.Windows.Tests` |
 
 ---
@@ -59,3 +62,4 @@
 | **REQ-SEC-03** | Prevención de Path Traversal y symlinks (CWE-22 / CWE-59). | `ConfigRepository` valida `SafeGameIdRegex`, bloquea `..` y `ReparsePoint` en `profiles/`, `logs/` y `logs/reviews/`; `LoopbackGsiService` valida rutas locales antes de leer `libraryfolders.vdf`. |
 | **REQ-SEC-04** | Validación estricta de TLS loopback Riot e HTTP GSI. | `LeagueLiveClientSensor` verifica host `127.0.0.1:2999`, vigencia, RSA>=2048/ECDSA>=256, SAN loopback, identidad `Riot Games` y proceso activo. `LoopbackGsiService` limita headers (`8KB`), body (`64KB`, `413`), rechaza `chunked` (`400`) y limita conexiones concurrentes. |
 | **REQ-SEC-05** | Neutralización de inyección de prompts en OCR/telemetría. | `CoachingPersonaBuilder.SanitizeField` limpia separadores de protocolo (`\|`), tags XML/prompt (`<...>`) y trunca longitud antes de inyectar contexto en prompts del modelo. |
+| **REQ-SEC-06** | Integridad y origen confiable en descargas de actualización. | `GitHubReleaseUpdateService` permite solo HTTPS hacia `github.com` / `.githubusercontent.com` en petición inicial y en hasta 5 redirecciones, limita lecturas (`512KB` API / `250MB` binario) y verifica `SHA-256` contra `SHA256SUMS.txt` descartando archivos alterados. |
