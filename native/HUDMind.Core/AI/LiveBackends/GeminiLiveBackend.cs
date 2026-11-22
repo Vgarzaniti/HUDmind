@@ -15,8 +15,9 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
 {
     private const string BidiEndpoint =
         "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+    private const int MaxWsMessageBytes = 4 * 1024 * 1024; // CWE-400 bounded receive cap
 
-    private static readonly string[] ModelCascade =
+    private static readonly string[] DefaultModelCascade =
     [
         "models/gemini-3.1-flash-live-preview",
         "models/gemini-2.5-flash-native-audio-latest",
@@ -24,19 +25,35 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
     ];
 
     private readonly string _apiKey;
+    private readonly string[] _modelCascade;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
-    private ClientWebSocket? _ws;
+    private volatile ClientWebSocket? _ws;
     private int _cascadeIdx;
-    private string _activeModel = ModelCascade[0];
+    private string _activeModel;
+    private string? _resumptionHandle;
     private volatile bool _connected;
+    private volatile bool _disposed;
 
     public string ProviderName => "Gemini Live";
     public string ActiveModelLabel => _activeModel.Replace("models/", "", StringComparison.OrdinalIgnoreCase);
     public bool IsConnected => _connected && _ws is { State: WebSocketState.Open };
 
-    public GeminiLiveBackend(string apiKey)
+    public GeminiLiveBackend(string apiKey, string? preferredModel = null)
     {
         _apiKey = apiKey.Trim();
+        var cleanPref = (preferredModel ?? string.Empty).Trim();
+        if (!string.IsNullOrEmpty(cleanPref) && cleanPref.Contains("live", StringComparison.OrdinalIgnoreCase))
+        {
+            var normalized = cleanPref.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
+                ? cleanPref
+                : $"models/{cleanPref}";
+            _modelCascade = [normalized, .. DefaultModelCascade.Where(m => !m.Equals(normalized, StringComparison.OrdinalIgnoreCase))];
+        }
+        else
+        {
+            _modelCascade = DefaultModelCascade;
+        }
+        _activeModel = _modelCascade[0];
     }
 
     public string ResolveVoiceName(string? gender) => ResolveVoiceNameStatic(gender);
@@ -44,7 +61,7 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
     public static string ResolveVoiceNameStatic(string? gender) =>
         string.Equals(gender?.Trim(), "female", StringComparison.OrdinalIgnoreCase) ? "Aoede" : "Fenrir";
 
-    public static string BuildSetupPayloadJson(string modelName, UserConfig config, GameProfile? profile)
+    public static string BuildSetupPayloadJson(string modelName, UserConfig config, GameProfile? profile, string? resumptionHandle = null)
     {
         var voiceName = ResolveVoiceNameStatic(config.VoiceGender);
         var sysText = CoachingPersonaBuilder.BuildLiveSystemInstruction(config, profile);
@@ -67,29 +84,32 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
         else if (modelName.Contains("3.1", StringComparison.OrdinalIgnoreCase))
             genCfg["thinkingConfig"] = new { thinkingLevel = "MINIMAL" };
 
-        var setupObj = new
+        var setupInner = new Dictionary<string, object>
         {
-            setup = new
+            ["model"] = modelName,
+            ["generationConfig"] = genCfg,
+            ["realtimeInputConfig"] = new
             {
-                model = modelName,
-                generationConfig = genCfg,
-                realtimeInputConfig = new
+                automaticActivityDetection = new
                 {
-                    automaticActivityDetection = new
-                    {
-                        startOfSpeechSensitivity = "START_SENSITIVITY_HIGH",
-                        endOfSpeechSensitivity = "END_SENSITIVITY_HIGH",
-                        silenceDurationMs = 250
-                    }
-                },
-                outputAudioTranscription = new { },
-                systemInstruction = new
-                {
-                    parts = new[] { new { text = sysText } }
+                    startOfSpeechSensitivity = "START_SENSITIVITY_HIGH",
+                    endOfSpeechSensitivity = "END_SENSITIVITY_HIGH",
+                    silenceDurationMs = 250
                 }
+            },
+            ["outputAudioTranscription"] = new { },
+            ["systemInstruction"] = new
+            {
+                parts = new[] { new { text = sysText } }
             }
         };
-        return JsonSerializer.Serialize(setupObj);
+
+        if (!string.IsNullOrWhiteSpace(resumptionHandle))
+            setupInner["sessionResumption"] = new { handle = resumptionHandle };
+        else
+            setupInner["sessionResumption"] = new { };
+
+        return JsonSerializer.Serialize(new { setup = setupInner });
     }
 
     public async Task RunSessionLoopAsync(
@@ -103,29 +123,36 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
         Action onConnected,
         CancellationToken sessionCt)
     {
-        string model = ModelCascade[_cascadeIdx % ModelCascade.Length];
+        var (okUrl, errUrl) = BaseUrlSecurityValidator.Validate(BidiEndpoint, allowLoopbackHttp: false, allowWebSocket: true);
+        if (!okUrl)
+            throw new InvalidOperationException(errUrl);
+
+        string model = _modelCascade[_cascadeIdx % _modelCascade.Length];
         _activeModel = model;
 
         var ws = new ClientWebSocket();
         ws.Options.SetRequestHeader("x-goog-api-key", _apiKey);
         ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
         _ws = ws;
+        bool handshakeDone = false;
 
         try
         {
             onLog($"Conectando backend Live ({ActiveModelLabel}, voz={ResolveVoiceName(config.VoiceGender)})...");
             await ws.ConnectAsync(new Uri(BidiEndpoint), sessionCt);
 
-            var setupJson = BuildSetupPayloadJson(model, config, profile);
+            var setupJson = BuildSetupPayloadJson(model, config, profile, _resumptionHandle);
             await SendRawBytesAsync(ws, Encoding.UTF8.GetBytes(setupJson), sessionCt);
 
             var firstResp = await ReceiveFullMessageAsync(ws, sessionCt);
-            if (firstResp is null || !firstResp.Contains("setupComplete", StringComparison.OrdinalIgnoreCase))
+            if (!IsSetupCompleteJson(firstResp))
             {
-                _cascadeIdx++;
-                throw new InvalidOperationException($"Handshake Live falló: {firstResp ?? "cierre inmediato"}");
+                _resumptionHandle = null;
+                var snippet = SecretRedactor.Redact(firstResp is { Length: > 200 } ? firstResp[..200] : (firstResp ?? "cierre inmediato"), [_apiKey]);
+                throw new InvalidOperationException($"Handshake Live falló: {snippet}");
             }
 
+            handshakeDone = true;
             _connected = true;
             onConnected();
 
@@ -137,7 +164,30 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
                     break;
 
                 using var doc = JsonDocument.Parse(raw);
-                if (!doc.RootElement.TryGetProperty("serverContent", out var sc))
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("sessionResumptionUpdate", out var resUpd) &&
+                    resUpd.TryGetProperty("newHandle", out var newH))
+                {
+                    var h = newH.GetString();
+                    if (!string.IsNullOrWhiteSpace(h))
+                        _resumptionHandle = h;
+                }
+
+                if (root.TryGetProperty("goAway", out _))
+                {
+                    onLog("Sesión Live renovando conexión limpia antes de expiración...");
+                    break;
+                }
+
+                if (root.TryGetProperty("error", out var errEl))
+                {
+                    var errText = SecretRedactor.Redact(errEl.ToString(), [_apiKey]);
+                    if (errText.Length > 180) errText = errText[..180];
+                    throw new InvalidOperationException($"Error servidor Live: {errText}");
+                }
+
+                if (!root.TryGetProperty("serverContent", out var sc))
                     continue;
 
                 if (sc.TryGetProperty("interrupted", out var intr) && intr.ValueKind == JsonValueKind.True)
@@ -163,12 +213,25 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
                 {
                     foreach (var p in parts.EnumerateArray())
                     {
-                        if (p.TryGetProperty("inlineData", out var inl) &&
+                        if (p.TryGetProperty("thought", out var th) && th.ValueKind == JsonValueKind.True)
+                            continue;
+
+                        if (config.IsCoachVoiceActive &&
+                            p.TryGetProperty("inlineData", out var inl) &&
                             inl.TryGetProperty("data", out var b64El))
                         {
                             var b64 = b64El.GetString();
                             if (!string.IsNullOrEmpty(b64))
                                 onPcm24kAudio(Convert.FromBase64String(b64));
+                        }
+                        else if (p.TryGetProperty("text", out var txtEl))
+                        {
+                            var txt = txtEl.GetString();
+                            if (!string.IsNullOrEmpty(txt) && transcriptBuf.Length == 0)
+                            {
+                                transcriptBuf.Append(txt);
+                                onPartialTranscript(transcriptBuf.ToString().Trim());
+                            }
                         }
                     }
                 }
@@ -187,7 +250,9 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
         }
         catch
         {
-            _cascadeIdx++;
+            // Rotate fallback model ONLY when initial handshake failed (keep primary healthy on brief network drops!)
+            if (!handshakeDone)
+                _cascadeIdx++;
             throw;
         }
         finally
@@ -196,6 +261,21 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
             try { ws.Dispose(); } catch { }
             if (ReferenceEquals(_ws, ws))
                 _ws = null;
+        }
+    }
+
+    private static bool IsSetupCompleteJson(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            return doc.RootElement.TryGetProperty("setupComplete", out _);
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -312,15 +392,25 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
 
     private async Task SendRawBytesAsync(ClientWebSocket ws, ReadOnlyMemory<byte> payload, CancellationToken ct)
     {
-        await _sendLock.WaitAsync(ct);
+        if (_disposed) return;
         try
         {
-            if (ws.State == WebSocketState.Open)
+            await _sendLock.WaitAsync(ct);
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+        try
+        {
+            if (!_disposed && ws.State == WebSocketState.Open)
                 await ws.SendAsync(payload, WebSocketMessageType.Text, endOfMessage: true, ct);
         }
+        catch (ObjectDisposedException) { /* closing cleanly */ }
+        catch (WebSocketException) { /* reconnect loop handles cleanly */ }
         finally
         {
-            _sendLock.Release();
+            try { _sendLock.Release(); } catch (ObjectDisposedException) { }
         }
     }
 
@@ -336,7 +426,11 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
                 if (res.MessageType == WebSocketMessageType.Close)
                     return null;
                 if (res.Count > 0)
+                {
+                    if (ms.Length + res.Count > MaxWsMessageBytes)
+                        throw new InvalidOperationException($"Mensaje WebSocket excedió el límite de {MaxWsMessageBytes / (1024 * 1024)} MB (CWE-400).");
                     ms.Write(buffer, 0, res.Count);
+                }
                 if (res.EndOfMessage)
                     return Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
             }
@@ -347,12 +441,20 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
         }
     }
 
+    public ValueTask ResetSessionStateAsync()
+    {
+        _resumptionHandle = null;
+        return ValueTask.CompletedTask;
+    }
+
     public ValueTask DisposeAsync()
     {
+        _disposed = true;
         _connected = false;
-        try { _ws?.Dispose(); } catch { }
+        var ws = _ws;
         _ws = null;
-        _sendLock.Dispose();
+        try { ws?.Dispose(); } catch { }
+        try { _sendLock.Dispose(); } catch { }
         return ValueTask.CompletedTask;
     }
 }

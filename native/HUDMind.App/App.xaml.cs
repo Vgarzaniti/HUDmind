@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -26,16 +25,7 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        try
-        {
-            using var proc = Process.GetCurrentProcess();
-            proc.PriorityClass = ProcessPriorityClass.BelowNormal;
-        }
-        catch
-        {
-            // Optional OS priority hint
-        }
-
+        // NOTE: Keep process PriorityClass Normal so Win32 audio/mic/hotkey threads never stutter in CPU-bound games!
         base.OnStartup(e);
     }
 

@@ -10,7 +10,7 @@ namespace HUDMind.Core.Config;
 public static partial class SecretRedactor
 {
     [GeneratedRegex(
-        @"(AIza[0-9A-Za-z_\-]{12,}|AQ\.[0-9A-Za-z_\-\.]{12,}|gsk_[0-9A-Za-z_\-]{12,}|sk-[0-9A-Za-z_\-]{12,}|hf_[0-9A-Za-z]{12,}|xai-[0-9A-Za-z_\-]{12,}|r8_[0-9A-Za-z_\-]{12,}|Bearer\s+[0-9A-Za-z_\-\.]{10,}|(?i)(?:api_?key|access_token|token|key)=[^&\s""']+)",
+        @"(AIza[0-9A-Za-z_\-]{12,}|AQ\.[0-9A-Za-z_\-\.]{12,}|gsk_[0-9A-Za-z_\-]{12,}|sk-[0-9A-Za-z_\-]{12,}|hf_[0-9A-Za-z]{12,}|xai-[0-9A-Za-z_\-]{12,}|r8_[0-9A-Za-z_\-]{12,}|(?:Bearer|Basic)\s+\S{6,}|(?i)[""']?(?:x-(?:goog-)?api-key|api_?key|access_token|authorization)[""']?\s*[:=]\s*(?:[""'][^""'\r\n]{4,}[""']|[^\s,;}{&""']{6,})|(?i)(?:api_?key|access_token|token|key)=[^&\s""']+)",
         RegexOptions.Compiled)]
     private static partial Regex SecretPattern();
 
@@ -37,7 +37,7 @@ public static partial class SecretRedactor
 /// </summary>
 public static class BaseUrlSecurityValidator
 {
-    public static (bool IsValid, string Error) Validate(string url, bool allowLoopbackHttp = false)
+    public static (bool IsValid, string Error) Validate(string url, bool allowLoopbackHttp = false, bool allowWebSocket = false)
     {
         if (string.IsNullOrWhiteSpace(url))
             return (false, "Base URL vacía.");
@@ -48,19 +48,23 @@ public static class BaseUrlSecurityValidator
         if (!string.IsNullOrEmpty(uri.UserInfo))
             return (false, "Base URL no puede incluir credenciales embebidas (user@host).");
 
+        if (!string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+            return (false, "Base URL no puede incluir query string ni fragment.");
+
         var scheme = uri.Scheme.ToLowerInvariant();
-        if (scheme != "https" && scheme != "http")
+        bool allowedScheme = scheme is "https" or "http" || (allowWebSocket && scheme is "wss" or "ws");
+        if (!allowedScheme)
             return (false, $"Esquema no permitido: '{scheme}'. Solo HTTPS.");
 
         var host = uri.Host;
         bool isLoopbackHost = host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
                               (IPAddress.TryParse(host, out var parsedIp) && IPAddress.IsLoopback(parsedIp));
 
-        if (scheme == "http" && !(allowLoopbackHttp && isLoopbackHost))
-            return (false, "HTTP sin cifrar remoto bloqueado (CWE-319). Usá HTTPS.");
+        if (scheme is "http" or "ws" && !(allowLoopbackHttp && isLoopbackHost))
+            return (false, "Conexión sin cifrar remota bloqueada (CWE-319). Usá HTTPS/WSS.");
 
         if (IPAddress.TryParse(host, out var ip) && IsBlockedAddress(ip, allowLoopbackHttp))
-            return (false, $"IP privada/link-local bloqueada por seguridad SSRF (CWE-918): {host}.");
+            return (false, $"IP privada/reservada bloqueada por seguridad SSRF (CWE-918): {host}.");
 
         return (true, string.Empty);
     }
@@ -76,26 +80,143 @@ public static class BaseUrlSecurityValidator
         if (ip.AddressFamily == AddressFamily.InterNetwork)
         {
             var b = ip.GetAddressBytes();
-            if (b[0] == 0) return true;                                  // 0.0.0.0/8
-            if (b[0] == 10) return true;                                 // 10.0.0.0/8
-            if (b[0] == 127) return !allowLoopback;                      // 127.0.0.0/8
-            if (b[0] == 169 && b[1] == 254) return true;                 // 169.254.0.0/16 (cloud metadata)
-            if (b[0] == 172 && b[1] is >= 16 and <= 31) return true;     // 172.16.0.0/12
-            if (b[0] == 192 && b[1] == 168) return true;                 // 192.168.0.0/16
+            if (b[0] == 0) return true;                                  // 0.0.0.0/8 ("This" network)
+            if (b[0] == 10) return true;                                 // 10.0.0.0/8 RFC1918
+            if (b[0] == 127) return !allowLoopback;                      // 127.0.0.0/8 Loopback
+            if (b[0] == 169 && b[1] == 254) return true;                 // 169.254.0.0/16 Link-Local / Cloud Metadata
+            if (b[0] == 172 && b[1] is >= 16 and <= 31) return true;     // 172.16.0.0/12 RFC1918
+            if (b[0] == 192 && b[1] == 168) return true;                 // 192.168.0.0/16 RFC1918
+            if (b[0] == 192 && b[1] == 0 && b[2] == 0) return true;      // 192.0.0.0/24 IETF protocol assignments
+            if (b[0] == 192 && b[1] == 0 && b[2] == 2) return true;      // 192.0.2.0/24 TEST-NET-1
+            if (b[0] == 198 && (b[1] == 18 || b[1] == 19)) return true;  // 198.18.0.0/15 Benchmarking
+            if (b[0] == 198 && b[1] == 51 && b[2] == 100) return true;   // 198.51.100.0/24 TEST-NET-2
+            if (b[0] == 203 && b[1] == 0 && b[2] == 113) return true;    // 203.0.113.0/24 TEST-NET-3
             if (b[0] == 100 && b[1] is >= 64 and <= 127) return true;    // 100.64.0.0/10 CGNAT
+            if (b[0] >= 224) return true;                                // 224.0.0.0/4 Multicast & 240.0.0.0/4 Reserved/Broadcast
             return false;
         }
 
         if (ip.AddressFamily == AddressFamily.InterNetworkV6)
         {
-            if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast)
+            if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast || ip.IsIPv6Teredo)
                 return true;
+
             var b = ip.GetAddressBytes();
-            if ((b[0] & 0xFE) == 0xFC) return true; // fc00::/7 Unique Local
             if (ip.Equals(IPAddress.IPv6Any)) return true;
+            if ((b[0] & 0xFE) == 0xFC) return true;                      // fc00::/7 Unique Local (ULA)
+            if (b[0] == 0x20 && b[1] == 0x02) return true;               // 2002::/16 6to4 (embedded IPv4)
+            if (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0x00 && b[3] == 0x00) return true; // 2001::/32 Teredo
+            if (b[0] == 0x01 && b[1] == 0x00 && b[2] == 0x00 && b[3] == 0x00) return true; // 100::/64 Discard
+
+            // RFC 8215 NAT64 Local-Use 64:ff9b:1::/48 is strictly non-routable globally regardless of IPv4 offset!
+            if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xFF && b[3] == 0x9B && b[4] == 0x00 && b[5] == 0x01)
+                return true;
+
+            // IPv4-compatible ::/96 and NAT64 well-known 64:ff9b::/96 -> recursively check embedded IPv4 in last 4 bytes!
+            bool isZeroPrefix96 = b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
+                                  b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
+                                  b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0;
+            bool isNat64WellKnown = b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xFF && b[3] == 0x9B &&
+                                    b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
+                                    b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0;
+            bool isIpv4Translated = b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
+                                    b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
+                                    b[8] == 0xFF && b[9] == 0xFF && b[10] == 0 && b[11] == 0;
+
+            if (isZeroPrefix96 || isNat64WellKnown || isIpv4Translated)
+            {
+                var embeddedV4 = new IPAddress([b[12], b[13], b[14], b[15]]);
+                return IsBlockedAddress(embeddedV4, allowLoopback: isZeroPrefix96 && allowLoopback && embeddedV4.Equals(IPAddress.Loopback));
+            }
         }
 
         return false;
+    }
+}
+
+/// <summary>
+/// Strict ASCII global hotkey parser &amp; formatter shared across Windows hotkey registration and validation.
+/// </summary>
+public static class HotkeyParser
+{
+    public const uint ModAlt = 0x0001;
+    public const uint ModControl = 0x0002;
+    public const uint ModShift = 0x0004;
+
+    public static bool TryParse(string? raw, out uint modifiers, out uint virtualKey, out string normalized)
+    {
+        modifiers = 0;
+        virtualKey = 0;
+        normalized = string.Empty;
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        var parts = raw.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0)
+            return false;
+
+        var modNames = new List<string>(3);
+        string? keyName = null;
+
+        foreach (var token in parts)
+        {
+            var t = token.ToUpperInvariant();
+            if (t is "CTRL" or "CONTROL")
+            {
+                if ((modifiers & ModControl) == 0) modNames.Add("Ctrl");
+                modifiers |= ModControl;
+                continue;
+            }
+            if (t == "ALT")
+            {
+                if ((modifiers & ModAlt) == 0) modNames.Add("Alt");
+                modifiers |= ModAlt;
+                continue;
+            }
+            if (t == "SHIFT")
+            {
+                if ((modifiers & ModShift) == 0) modNames.Add("Shift");
+                modifiers |= ModShift;
+                continue;
+            }
+
+            if (virtualKey != 0)
+                return false; // Duplicate non-modifier primary key
+
+            if (t.StartsWith('F') && int.TryParse(t[1..], out int fNum) && fNum is >= 1 and <= 24)
+            {
+                virtualKey = (uint)(0x70 + (fNum - 1));
+                keyName = $"F{fNum}";
+            }
+            else if (t.StartsWith("NUM") && int.TryParse(t[3..], out int nNum) && nNum is >= 0 and <= 9)
+            {
+                virtualKey = (uint)(0x60 + nNum);
+                keyName = $"NUM{nNum}";
+            }
+            else if (t is "INSERT" or "INS") { virtualKey = 0x2D; keyName = "Insert"; }
+            else if (t is "DELETE" or "DEL") { virtualKey = 0x2E; keyName = "Delete"; }
+            else if (t == "HOME") { virtualKey = 0x24; keyName = "Home"; }
+            else if (t == "END") { virtualKey = 0x23; keyName = "End"; }
+            else if (t is "PAGEUP" or "PGUP") { virtualKey = 0x21; keyName = "PageUp"; }
+            else if (t is "PAGEDOWN" or "PGDN") { virtualKey = 0x22; keyName = "PageDown"; }
+            else if (t == "PAUSE") { virtualKey = 0x13; keyName = "Pause"; }
+            else if (t == "SPACE") { virtualKey = 0x20; keyName = "Space"; }
+            else if (t.Length == 1 && ((t[0] >= 'A' && t[0] <= 'Z') || (t[0] >= '0' && t[0] <= '9')))
+            {
+                virtualKey = t[0];
+                keyName = t;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        if (virtualKey == 0 || keyName is null)
+            return false;
+
+        normalized = modNames.Count > 0 ? $"{string.Join('+', modNames)}+{keyName}" : keyName;
+        return true;
     }
 }
 
@@ -173,7 +294,7 @@ public sealed partial class ConfigRepository
             if (File.Exists(UserConfigPath))
             {
                 var info = new FileInfo(UserConfigPath);
-                if (info.Length <= MaxConfigFileBytes)
+                if (info.Length <= MaxConfigFileBytes && (info.Attributes & FileAttributes.ReparsePoint) == 0)
                 {
                     var json = File.ReadAllText(UserConfigPath, Encoding.UTF8);
                     var cfg = JsonSerializer.Deserialize<UserConfig>(json, JsonOpts) ?? new UserConfig();
@@ -216,10 +337,11 @@ public sealed partial class ConfigRepository
             if (File.Exists(AccountsPath))
             {
                 var info = new FileInfo(AccountsPath);
-                if (info.Length <= MaxConfigFileBytes * 4)
+                if (info.Length <= MaxConfigFileBytes * 4 && (info.Attributes & FileAttributes.ReparsePoint) == 0)
                 {
                     var json = File.ReadAllText(AccountsPath, Encoding.UTF8);
-                    var list = JsonSerializer.Deserialize<List<ProviderAccount>>(json, JsonOpts);
+                    var rawList = JsonSerializer.Deserialize<List<ProviderAccount?>>(json, JsonOpts);
+                    var list = rawList?.Where(a => a is not null).Cast<ProviderAccount>().ToList();
                     if (list is { Count: > 0 })
                         return [.. list.OrderBy(a => a.Priority)];
                 }
@@ -289,13 +411,16 @@ public sealed partial class ConfigRepository
             try
             {
                 var info = new FileInfo(manifestPath);
-                if (info.Length > MaxConfigFileBytes)
+                if (info.Length > MaxConfigFileBytes || (info.Attributes & FileAttributes.ReparsePoint) != 0)
                     continue;
 
                 var json = File.ReadAllText(manifestPath, Encoding.UTF8);
                 var manifest = JsonSerializer.Deserialize<GameManifest>(json, JsonOpts);
                 if (manifest is null || !SafeGameIdRegex().IsMatch(manifest.GameId) || !seenIds.Add(manifest.GameId))
                     continue;
+
+                if (!string.IsNullOrWhiteSpace(manifest.DisplayName) && manifest.DisplayName.Length > 64)
+                    manifest.DisplayName = manifest.DisplayName[..64];
 
                 var customRules = ReadBoundedText(Path.Combine(fullDir, "custom_rules.md"), MaxCustomRulesChars);
                 var tacticalSummary = ExtractCompactTacticalSummary(
@@ -319,23 +444,34 @@ public sealed partial class ConfigRepository
         return result;
     }
 
-    public static GameProfile CreateUniversalProfile(string profilesRoot) =>
-        new()
+    public static GameProfile CreateUniversalProfile(string profilesRoot, bool isEn = false)
+    {
+        var universalDir = Path.Combine(profilesRoot, "universal");
+        // Check universal/custom_rules.md first, and legacy profiles/custom_rules.md fallback
+        var rules = ReadBoundedText(Path.Combine(universalDir, "custom_rules.md"), MaxCustomRulesChars);
+        if (string.IsNullOrEmpty(rules))
+            rules = ReadBoundedText(Path.Combine(profilesRoot, "custom_rules.md"), MaxCustomRulesChars);
+
+        return new GameProfile
         {
-            DirectoryPath = profilesRoot,
+            DirectoryPath = universalDir,
+            CustomRules = rules,
             Manifest = new GameManifest
             {
                 GameId = "universal",
-                DisplayName = "Cualquier Juego (Universal)",
+                DisplayName = isEn ? "Any Game (Universal)" : "Cualquier Juego (Universal)",
                 ProcessNames = [],
                 CaptureFps = 1.5,
                 PhashThreshold = 7,
                 CooldownSeconds = 8.0,
                 MaxResolution = [1280, 720],
-                Language = "es",
-                Notes = "Coach universal genérico que detecta fase (menú, replay, saque, entrenamiento o partida) en cualquier videojuego."
+                Language = isEn ? "en" : "es",
+                Notes = isEn
+                    ? "Generic universal coach detecting match phases cleanly across any game."
+                    : "Coach universal genérico que detecta fase (menú, replay, saque, entrenamiento o partida) en cualquier videojuego."
             }
         };
+    }
 
     public void SaveCustomRules(GameProfile profile, string rulesText)
     {
@@ -344,12 +480,17 @@ public sealed partial class ConfigRepository
             throw new ArgumentException($"Las reglas personalizadas no pueden superar {MaxCustomRulesChars} caracteres.");
 
         var fullProfilesRoot = Path.GetFullPath(ProfilesDir) + Path.DirectorySeparatorChar;
-        var fullTarget = Path.GetFullPath(Path.Combine(profile.DirectoryPath, "custom_rules.md"));
+        var fullProfileDir = Path.GetFullPath(profile.DirectoryPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var fullRootNoSlash = fullProfilesRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.Equals(fullProfileDir, fullRootNoSlash, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("Las reglas deben guardarse dentro de una subcarpeta de perfil (CWE-22).");
+
+        var fullTarget = Path.GetFullPath(Path.Combine(fullProfileDir, "custom_rules.md"));
         if (!fullTarget.StartsWith(fullProfilesRoot, StringComparison.OrdinalIgnoreCase))
             throw new UnauthorizedAccessException("Ruta de perfil fuera del directorio permitido (CWE-22).");
 
-        if (Directory.Exists(profile.DirectoryPath) &&
-            (File.GetAttributes(profile.DirectoryPath) & FileAttributes.ReparsePoint) != 0)
+        if (Directory.Exists(fullProfileDir) &&
+            (File.GetAttributes(fullProfileDir) & FileAttributes.ReparsePoint) != 0)
         {
             throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en perfiles.");
         }
@@ -362,6 +503,7 @@ public sealed partial class ConfigRepository
             return;
         }
 
+        Directory.CreateDirectory(fullProfileDir);
         AtomicWrite(fullTarget, trimmed);
         profile.CustomRules = trimmed;
     }
@@ -395,7 +537,15 @@ public sealed partial class ConfigRepository
             if (File.Exists(path))
             {
                 var bak = $"{path}.corrupt.{DateTime.UtcNow:yyyyMMddHHmmss}.bak";
-                File.Copy(path, bak, overwrite: true);
+                if (path.EndsWith("accounts.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    var raw = File.ReadAllText(path, Encoding.UTF8);
+                    AtomicWrite(bak, SecretRedactor.Redact(raw));
+                }
+                else
+                {
+                    File.Copy(path, bak, overwrite: true);
+                }
             }
         }
         catch

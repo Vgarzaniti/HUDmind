@@ -1,12 +1,15 @@
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using HUDMind.Core.AI;
+using HUDMind.Core.Config;
 using HUDMind.Core.Models;
 using HUDMind.Core.Pipeline;
 
 namespace HUDMind.Core.Engine;
 
 /// <summary>
-/// Event-driven bounded-channel (DropOldest) real-time coach engine with latched zero-wait F10 wakeup.
+/// Event-driven bounded-channel (DropOldest) real-time coach engine with latched zero-wait F10 wakeup,
+/// isolated chat continuity memory, epoch-guarded game switching, and lock-synchronized voice channels.
 /// </summary>
 public sealed class CoachOrchestrator : IAsyncDisposable
 {
@@ -21,21 +24,28 @@ public sealed class CoachOrchestrator : IAsyncDisposable
     private readonly Action<CoachRuntimeStats>? _onStats;
     private readonly Action<bool>? _onPauseChanged;
     private readonly bool _testMode;
+    private readonly bool _disposeVoice;
     private readonly string? _forcedGameId;
 
     private readonly InterventionStateMachine _stateMachine = new();
-    private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 420.0);
-    private readonly Channel<CapturedFrameData> _frameChannel;
+    private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
+    private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
     private readonly object _hashLock = new();
+    private readonly object _voiceGate = new();
+    private readonly ConcurrentDictionary<int, Task> _inFlightChat = new();
+    private int _chatSeq;
 
+    private Channel<CapturedFrameData>? _frameChannel;
     private CancellationTokenSource? _runCts;
     private Task? _producerTask;
     private Task? _consumerTask;
 
     private volatile GameProfile? _activeProfile;
+    private long _profileEpoch;
     private ulong? _lastAcceptedHash;
     private volatile bool _userPaused;
+    private bool _disposed;
     private int _forceAnalysisPending;
 
     private long _framesCaptured;
@@ -45,8 +55,9 @@ public sealed class CoachOrchestrator : IAsyncDisposable
     private double _lastCaptureMs;
     private double _lastAiMs;
     private double _lastVoiceMs;
+    private long _lastChatSpeechUtcTicks;
 
-    public bool IsRunning => _runCts is { IsCancellationRequested: false };
+    public bool IsRunning => Volatile.Read(ref _runCts) is { IsCancellationRequested: false };
     public bool IsPaused => _userPaused;
 
     public CoachOrchestrator(
@@ -61,7 +72,8 @@ public sealed class CoachOrchestrator : IAsyncDisposable
         string? forcedGameId = null,
         Action<string>? onLog = null,
         Action<CoachRuntimeStats>? onStats = null,
-        Action<bool>? onPauseChanged = null)
+        Action<bool>? onPauseChanged = null,
+        bool disposeVoice = true)
     {
         _config = config;
         _profiles = profiles;
@@ -75,152 +87,219 @@ public sealed class CoachOrchestrator : IAsyncDisposable
         _onLog = onLog;
         _onStats = onStats;
         _onPauseChanged = onPauseChanged;
-
-        _frameChannel = Channel.CreateBounded<CapturedFrameData>(new BoundedChannelOptions(1)
-        {
-            FullMode = BoundedChannelFullMode.DropOldest,
-            SingleReader = true,
-            SingleWriter = true
-        });
+        _disposeVoice = disposeVoice;
     }
 
     public async Task StartAsync()
     {
-        if (IsRunning)
-            return;
-
-        _runCts = new CancellationTokenSource();
-        var ct = _runCts.Token;
-
-        if (_config.IsCoachVoiceActive)
-            _voice.WarmUp(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
-
-        await _router.PrewarmAsync(ct);
-
-        string commLabel = _config.IsTextOnlyMode
-            ? "Solo texto (silencioso)"
-            : _config.IsCoachVoiceOnlyMode
-                ? $"Solo voz coach ({_voice.EngineName})"
-                : $"Charla/Voz ({_voice.EngineName})";
-
-        if (_testMode)
+        await _lifecycleLock.WaitAsync();
+        try
         {
-            _activeProfile = _profiles.FirstOrDefault(p =>
-                string.Equals(p.Manifest.GameId, _forcedGameId, StringComparison.OrdinalIgnoreCase))
-                ?? _profiles.FirstOrDefault();
+            if (_disposed || IsRunning)
+                return;
 
-            if (_activeProfile is not null)
+            var cts = new CancellationTokenSource();
+            var ct = cts.Token;
+            Volatile.Write(ref _runCts, cts);
+            _userPaused = false;
+            Interlocked.Exchange(ref _forceAnalysisPending, 0);
+            _stateMachine.Reset();
+            _memory.Clear();
+            SetLastHash(null);
+
+            try
             {
-                _onLog?.Invoke($"[TEST-MODE] Perfil activo: {_activeProfile.Manifest.DisplayName} | Comunicación: {commLabel}");
-                if (_config.EnableOverlay)
-                    _overlay.ShowCallout("Coach Nativo .NET 9 ACTIVO — observando", UrgencyLevel.Low, _activeProfile.Manifest.DisplayName, 3.5);
-            }
-        }
-        else
-        {
-            _onLog?.Invoke($"[AUTO-DETECT] Esperando juego registrado ({_profiles.Count} perfiles) | Comunicación: {commLabel}");
-        }
+                if (_config.IsCoachVoiceActive)
+                {
+                    await Task.Run(() =>
+                        _voice.WarmUp(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle), ct);
+                }
 
-        _producerTask = Task.Run(() => ProducerLoopAsync(ct), ct);
-        _consumerTask = Task.Run(() => ConsumerLoopAsync(ct), ct);
-        EmitStats();
+                await _router.PrewarmAsync(ct);
+            }
+            catch
+            {
+                Volatile.Write(ref _runCts, null);
+                cts.Dispose();
+                throw;
+            }
+
+            string commLabel = _config.IsTextOnlyMode
+                ? "Solo texto (silencioso)"
+                : _config.IsCoachVoiceOnlyMode
+                    ? $"Solo voz coach ({_voice.EngineName})"
+                    : $"Chat escrito + Voz ({_voice.EngineName})";
+
+            if (_testMode)
+            {
+                _activeProfile = ResolveForcedOrDefaultProfile();
+                if (_activeProfile is not null)
+                {
+                    _onLog?.Invoke($"[TEST-MODE] Perfil activo: {_activeProfile.Manifest.DisplayName} | Comunicación: {commLabel}");
+                    if (_config.EnableOverlay)
+                        _overlay.ShowCallout("Coach Nativo .NET 9 ACTIVO — observando", UrgencyLevel.Low, _activeProfile.Manifest.DisplayName, 3.5);
+                }
+            }
+            else
+            {
+                _activeProfile = null;
+                _onLog?.Invoke($"[AUTO-DETECT] Esperando juego registrado ({_profiles.Count} perfiles) | Comunicación: {commLabel}");
+            }
+
+            var channel = Channel.CreateBounded<CapturedFrameData>(new BoundedChannelOptions(1)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = true
+            });
+            _frameChannel = channel;
+
+            _producerTask = Task.Run(() => ProducerLoopAsync(channel, ct), ct);
+            _consumerTask = Task.Run(() => ConsumerLoopAsync(channel, ct), ct);
+            EmitStats();
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
     }
 
-    public void UpdateVoiceLive(string language, double volume, string gender, string style) =>
-        _voice.UpdateSettings(language, volume, gender, style);
+    private GameProfile? ResolveForcedOrDefaultProfile() =>
+        _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, _forcedGameId, StringComparison.OrdinalIgnoreCase))
+        ?? _profiles.FirstOrDefault();
+
+    public void UpdateVoiceLive(string language, double volume, string gender, string style)
+    {
+        lock (_voiceGate)
+            _voice.UpdateSettings(language, volume, gender, style);
+    }
 
     public void SetCommunicationMode(string mode)
     {
         _config.SetCommunicationMode(mode);
-        if (_config.IsTextOnlyMode)
+        lock (_voiceGate)
         {
-            _voice.StopSpeaking();
-            _onLog?.Invoke("💬 Modo SOLO TEXTO activo (silencioso: solo chat y overlay).");
-        }
-        else
-        {
-            _voice.WarmUp(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
-            if (_config.IsCoachVoiceOnlyMode)
-                _onLog?.Invoke("🔊 Modo SOLO VOZ DEL COACH activo (micrófono apagado).");
+            if (_config.IsTextOnlyMode)
+            {
+                _voice.StopSpeaking();
+                _onLog?.Invoke("💬 Modo SOLO TEXTO activo (silencioso: solo chat y overlay).");
+            }
             else
-                _onLog?.Invoke("🎙 Modo CHARLA seleccionado (en motor Multi-IA clásico: usá chat escrito + voz del coach, o elegí motor Live para mic 16kHz).");
+            {
+                _ = Task.Run(() => _voice.WarmUp(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle));
+                if (_config.IsCoachVoiceOnlyMode)
+                    _onLog?.Invoke("🔊 Modo SOLO VOZ DEL COACH activo (micrófono apagado).");
+                else
+                    _onLog?.Invoke("🎙 Modo CHARLA seleccionado (en motor Multi-IA clásico: usá chat escrito + voz del coach, o elegí motor Live para mic 16kHz).");
+            }
         }
         EmitStats();
     }
 
-    public async Task SendUserTextAsync(string userText, CancellationToken ct = default)
+    public async Task<bool> SendUserTextAsync(string userText, CancellationToken ct = default)
     {
         var msg = (userText ?? string.Empty).Trim();
         if (string.IsNullOrEmpty(msg))
-            return;
+            return false;
 
-        if (!IsRunning)
+        var runCts = Volatile.Read(ref _runCts);
+        if (runCts is null || runCts.IsCancellationRequested)
         {
             _onLog?.Invoke("Iniciá el Coach primero para enviar mensajes.");
-            return;
+            return false;
         }
 
-        var profile = _activeProfile ?? _profiles.FirstOrDefault(p =>
-            string.Equals(p.Manifest.GameId, _forcedGameId, StringComparison.OrdinalIgnoreCase))
-            ?? _profiles.FirstOrDefault();
+        var profile = _activeProfile ?? ResolveForcedOrDefaultProfile();
         if (profile is null)
-            return;
+            return false;
 
         _onLog?.Invoke($"💬 Vos: \"{msg}\"");
-        var linkedCt = _runCts is not null
-            ? CancellationTokenSource.CreateLinkedTokenSource(ct, _runCts.Token)
-            : CancellationTokenSource.CreateLinkedTokenSource(ct);
-
-        using (linkedCt)
+        int taskId = Interlocked.Increment(ref _chatSeq);
+        CancellationTokenSource? linkedCts = null;
+        try
         {
-            try
-            {
-                var (w, h, q) = ResolveTargetResolution();
-                var region = _testMode ? null : _windowDetector.GetForegroundClientRect();
-                var (frame, _) = _capture.CaptureIfChanged(
-                    _config.CaptureMonitor, region, w, h, q,
-                    frameId: 0, lastAcceptedHash: null, phashThreshold: 0, isForced: true);
-
-                var (reply, aiMs, model) = await _router.AskQuestionAsync(
-                    frame?.JpegBytes,
-                    msg,
-                    profile,
-                    _config,
-                    _memory.FormatCompactHistory(),
-                    _memory.FormatVisualTimeline(),
-                    linkedCt.Token);
-
-                if (string.IsNullOrWhiteSpace(reply))
-                {
-                    _onLog?.Invoke($"Sin respuesta del coach [{model}].");
-                    return;
-                }
-
-                _lastAiMs = aiMs;
-                Interlocked.Increment(ref _interventions);
-                _memory.Record(new CoachResponse(true, UrgencyLevel.Medium, reply, reply, "[CHAT]"));
-
-                if (_config.EnableOverlay)
-                    _overlay.ShowCallout(reply, UrgencyLevel.Medium, profile.Manifest.DisplayName, _config.OverlayDurationSeconds);
-
-                double voiceMs = 0;
-                if (_config.IsCoachVoiceActive)
-                    voiceMs = _voice.SpeakInstant(reply);
-                _lastVoiceMs = voiceMs;
-
-                string icon = _config.IsCoachVoiceActive ? "🔊" : "💬";
-                _onLog?.Invoke($"{icon} Coach ({aiMs:F0}ms) [{model}]: \"{reply}\"");
-                EmitStats();
-            }
-            catch (OperationCanceledException)
-            {
-                // Shutdown
-            }
-            catch (Exception ex)
-            {
-                _onLog?.Invoke($"Error en chat con coach: {ex.Message}");
-            }
+            linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, runCts.Token);
         }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+
+        var doneTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Pre-register tracking BEFORE scheduling so StopAsync never returns before chat finishes!
+        _inFlightChat[taskId] = doneTcs.Task;
+
+        var execTask = Task.Run(async () =>
+        {
+            using (linkedCts)
+            {
+                try
+                {
+                    var (w, h, q) = ResolveTargetResolution();
+                    var region = _testMode ? null : _windowDetector.GetForegroundClientRect();
+                    var (frame, _) = _capture.CaptureIfChanged(
+                        _config.CaptureMonitor, region, w, h, q,
+                        frameId: 0, lastAcceptedHash: null, phashThreshold: 0, isForced: true);
+
+                    bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+                    var (reply, aiMs, model) = await _router.AskQuestionAsync(
+                        frame?.JpegBytes,
+                        msg,
+                        profile,
+                        _config,
+                        _memory.FormatCompactHistory(),
+                        _memory.FormatVisualTimeline(isEn: isEn),
+                        _memory.FormatChatHistory(isEn: isEn),
+                        linkedCts.Token);
+
+                    if (string.IsNullOrWhiteSpace(reply))
+                    {
+                        _onLog?.Invoke($"Sin respuesta del coach [{model}].");
+                        return false;
+                    }
+
+                    Volatile.Write(ref _lastAiMs, aiMs);
+                    Interlocked.Increment(ref _interventions);
+                    _memory.RecordChatTurn(msg, reply);
+                    _memory.RecordObservation("CHAT", msg);
+
+                    if (_config.EnableOverlay)
+                        _overlay.ShowCallout(reply, UrgencyLevel.Medium, profile.Manifest.DisplayName, _config.OverlayDurationSeconds);
+
+                    double voiceMs = 0;
+                    lock (_voiceGate)
+                    {
+                        if (_config.IsCoachVoiceActive && !_userPaused && !linkedCts.Token.IsCancellationRequested)
+                        {
+                            voiceMs = _voice.SpeakInstant(reply);
+                            Interlocked.Exchange(ref _lastChatSpeechUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
+                        }
+                    }
+                    Volatile.Write(ref _lastVoiceMs, voiceMs);
+
+                    string icon = (_config.IsCoachVoiceActive && !_userPaused) ? "🔊" : "💬";
+                    _onLog?.Invoke($"{icon} Coach ({aiMs:F0}ms) [{model}]: \"{reply}\"");
+                    EmitStats();
+                    return true;
+                }
+                catch (OperationCanceledException)
+                {
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    _onLog?.Invoke($"Error en chat con coach: {SecretRedactor.Redact(ex.Message)}");
+                    return false;
+                }
+                finally
+                {
+                    _inFlightChat.TryRemove(taskId, out _);
+                    doneTcs.TrySetResult();
+                }
+            }
+        });
+
+        return await execTask;
     }
 
     public void TogglePause()
@@ -230,7 +309,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
         _onPauseChanged?.Invoke(_userPaused);
         if (_userPaused)
         {
-            _voice.StopSpeaking();
+            lock (_voiceGate) _voice.StopSpeaking();
             _onLog?.Invoke($"Coach PAUSADO ({_config.HotkeyTogglePause} para reanudar).");
             if (_config.EnableOverlay)
                 _overlay.ShowCallout($"Coach PAUSADO — {_config.HotkeyTogglePause} para reanudar", UrgencyLevel.Low, title, 2.5);
@@ -248,7 +327,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
     public void TriggerOnDemandAnalysis()
     {
         if (_activeProfile is null && _profiles.Count > 0 && _testMode)
-            _activeProfile = _profiles[0];
+            _activeProfile = ResolveForcedOrDefaultProfile();
 
         var active = _activeProfile;
         if (active is null)
@@ -272,12 +351,13 @@ public sealed class CoachOrchestrator : IAsyncDisposable
 
     public void WakeNow()
     {
-        if (_wakeSignal.CurrentCount == 0)
+        try
         {
-            try { _wakeSignal.Release(); }
-            catch (SemaphoreFullException) { /* already latched */ }
-            catch (ObjectDisposedException) { /* shutting down */ }
+            if (!_disposed && _wakeSignal.CurrentCount == 0)
+                _wakeSignal.Release();
         }
+        catch (SemaphoreFullException) { /* already latched */ }
+        catch (ObjectDisposedException) { /* shutting down */ }
     }
 
     private async Task WaitInterruptibleAsync(TimeSpan delay, CancellationToken ct)
@@ -307,7 +387,6 @@ public sealed class CoachOrchestrator : IAsyncDisposable
     private (int W, int H, int Quality) ResolveTargetResolution() =>
         _config.TokenEfficiencyMode.ToLowerInvariant() switch
         {
-            // Sharp readable HUD resolution so scoreboard, timer, kickoff countdown & boost are always legible
             "eco" => (800, 450, Math.Max(_config.ImageCompressionQuality, 74)),
             "balanced" => (960, 540, Math.Max(_config.ImageCompressionQuality, 78)),
             _ => (1280, 720, Math.Max(_config.ImageCompressionQuality, 82))
@@ -321,7 +400,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
             : baseCd;
     }
 
-    private async Task ProducerLoopAsync(CancellationToken ct)
+    private async Task ProducerLoopAsync(Channel<CapturedFrameData> channel, CancellationToken ct)
     {
         long frameCounter = 0;
         while (!ct.IsCancellationRequested)
@@ -338,19 +417,16 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                 {
                     var fg = _windowDetector.GetForegroundExecutable();
                     var matched = _profiles.FirstOrDefault(p => p.MatchesProcess(fg));
-                    // If user chose Universal profile, watch ANY active foreground game/window except HUDMind/Explorer!
                     if (matched is null &&
                         string.Equals(_forcedGameId, "universal", StringComparison.OrdinalIgnoreCase) &&
-                        !string.IsNullOrWhiteSpace(fg) &&
-                        !fg.Equals("HUDMind.exe", StringComparison.OrdinalIgnoreCase) &&
-                        !fg.Equals("HUDMind.Native.exe", StringComparison.OrdinalIgnoreCase) &&
-                        !fg.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase))
+                        !GameProfile.IsDesktopNonGameProcess(fg))
                     {
                         matched = _profiles.FirstOrDefault(p => p.Manifest.GameId == "universal");
                     }
                     if (matched is not null && !ReferenceEquals(matched, _activeProfile))
                     {
                         _activeProfile = matched;
+                        Interlocked.Increment(ref _profileEpoch);
                         SetLastHash(null);
                         _stateMachine.Reset();
                         _memory.Clear();
@@ -392,7 +468,6 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                         _config.MinInferenceIntervalSeconds);
                     if (waitRem > TimeSpan.Zero)
                     {
-                        // Sleep cleanly until cooldown expires (interruptible in <1ms by F10!)
                         var boundedWait = waitRem > TimeSpan.FromMilliseconds(900)
                             ? TimeSpan.FromMilliseconds(900)
                             : waitRem;
@@ -421,8 +496,8 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                 else if (frame is not null)
                 {
                     Interlocked.Increment(ref _framesCaptured);
-                    _lastCaptureMs = frame.CaptureMs + frame.EncodeMs;
-                    _frameChannel.Writer.TryWrite(frame);
+                    Volatile.Write(ref _lastCaptureMs, frame.CaptureMs + frame.EncodeMs);
+                    channel.Writer.TryWrite(frame);
                 }
 
                 var fps = Math.Clamp(profile.Manifest.CaptureFps, 0.5, 4.0);
@@ -434,17 +509,18 @@ public sealed class CoachOrchestrator : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _onLog?.Invoke($"Error en captura: {ex.Message}");
+                _onLog?.Invoke($"Error en captura: {SecretRedactor.Redact(ex.Message)}");
                 await WaitInterruptibleAsync(TimeSpan.FromMilliseconds(500), ct);
             }
         }
     }
 
-    private async Task ConsumerLoopAsync(CancellationToken ct)
+    private async Task ConsumerLoopAsync(Channel<CapturedFrameData> channel, CancellationToken ct)
     {
-        await foreach (var frame in _frameChannel.Reader.ReadAllAsync(ct))
+        await foreach (var frame in channel.Reader.ReadAllAsync(ct))
         {
             var profile = _activeProfile;
+            long startEpoch = Volatile.Read(ref _profileEpoch);
             if (profile is null || _userPaused)
                 continue;
 
@@ -460,11 +536,13 @@ public sealed class CoachOrchestrator : IAsyncDisposable
 
             SetLastHash(frame.PerceptualHash);
             bool delivered = false;
+            bool epochValid = true;
             try
             {
                 Interlocked.Increment(ref _aiCalls);
+                bool isEn = CoachingPersonaBuilder.IsEnglish(_config);
                 var history = _memory.FormatCompactHistory();
-                var timeline = _memory.FormatVisualTimeline();
+                var timeline = _memory.FormatVisualTimeline(isEn: isEn);
                 var (resp, aiMs, model) = await _router.AnalyzeFrameAsync(
                     frame.JpegBytes,
                     profile,
@@ -473,9 +551,14 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                     forceNow,
                     timeline,
                     ct);
-                _lastAiMs = aiMs;
+                Volatile.Write(ref _lastAiMs, aiMs);
 
-                // Always record visual observation (even during REPLAY/KICKOFF/MENU) so the AI knows the match story!
+                if (Volatile.Read(ref _profileEpoch) != startEpoch || _userPaused)
+                {
+                    epochValid = false;
+                    continue;
+                }
+
                 if (resp is not null && !string.IsNullOrWhiteSpace(resp.MatchContext))
                 {
                     var ctx = resp.MatchContext.Trim();
@@ -505,10 +588,20 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                             _overlay.ShowCallout(resp.OverlayText, resp.Urgency, profile.Manifest.DisplayName, _config.OverlayDurationSeconds);
 
                         double voiceMs = 0;
-                        if (_config.IsCoachVoiceActive && !string.IsNullOrWhiteSpace(resp.VoiceLine))
-                            voiceMs = _voice.SpeakInstant(resp.VoiceLine);
+                        long lastChatTicks = Interlocked.Read(ref _lastChatSpeechUtcTicks);
+                        bool chatRecentlySpoke = !forceNow && lastChatTicks > 0 &&
+                            (DateTimeOffset.UtcNow.UtcTicks - lastChatTicks) < TimeSpan.FromSeconds(3.5).Ticks;
 
-                        _lastVoiceMs = voiceMs;
+                        if (!chatRecentlySpoke)
+                        {
+                            lock (_voiceGate)
+                            {
+                                if (_config.IsCoachVoiceActive && !_userPaused && !ct.IsCancellationRequested && !string.IsNullOrWhiteSpace(resp.VoiceLine))
+                                    voiceMs = _voice.SpeakInstant(resp.VoiceLine);
+                            }
+                        }
+
+                        Volatile.Write(ref _lastVoiceMs, voiceMs);
                         double totalMs = frame.CaptureMs + frame.EncodeMs + aiMs + voiceMs;
                         string seenNote = !string.IsNullOrWhiteSpace(resp.MatchContext) ? $" | vio: {resp.MatchContext}" : string.Empty;
                         _onLog?.Invoke(
@@ -530,11 +623,15 @@ public sealed class CoachOrchestrator : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _onLog?.Invoke($"Error IA: {ex.Message}");
+                _onLog?.Invoke($"Error IA: {SecretRedactor.Redact(ex.Message)}");
             }
             finally
             {
-                _stateMachine.EndAnalysis(delivered);
+                if (epochValid)
+                    _stateMachine.EndAnalysis(delivered);
+                else
+                    _stateMachine.Reset();
+
                 if (Volatile.Read(ref _forceAnalysisPending) == 1)
                     WakeNow();
                 EmitStats();
@@ -549,9 +646,9 @@ public sealed class CoachOrchestrator : IAsyncDisposable
             Interlocked.Read(ref _framesFiltered),
             Interlocked.Read(ref _aiCalls),
             Interlocked.Read(ref _interventions),
-            _lastCaptureMs,
-            _lastAiMs,
-            _lastVoiceMs,
+            Volatile.Read(ref _lastCaptureMs),
+            Volatile.Read(ref _lastAiMs),
+            Volatile.Read(ref _lastVoiceMs),
             _router.ActiveProviderLabel,
             _activeProfile?.Manifest.DisplayName ?? "(esperando juego)",
             _userPaused
@@ -560,31 +657,49 @@ public sealed class CoachOrchestrator : IAsyncDisposable
 
     public async Task StopAsync()
     {
-        if (_runCts is null)
-            return;
-
-        await _runCts.CancelAsync();
-        WakeNow();
-        _frameChannel.Writer.TryComplete();
-
-        var tasks = new[] { _producerTask, _consumerTask }.Where(t => t is not null).Cast<Task>().ToArray();
-        if (tasks.Length > 0)
+        await _lifecycleLock.WaitAsync();
+        try
         {
-            try { await Task.WhenAll(tasks); } catch { /* clean shutdown */ }
-        }
+            var cts = Interlocked.Exchange(ref _runCts, null);
+            if (cts is null)
+                return;
 
-        _voice.StopSpeaking();
-        _runCts.Dispose();
-        _runCts = null;
-        _onLog?.Invoke("Motor nativo HUDMind detenido.");
+            await cts.CancelAsync();
+            WakeNow();
+            _frameChannel?.Writer.TryComplete();
+
+            var tasks = new List<Task>();
+            if (_producerTask is not null) tasks.Add(_producerTask);
+            if (_consumerTask is not null) tasks.Add(_consumerTask);
+            tasks.AddRange(_inFlightChat.Values);
+            if (tasks.Count > 0)
+            {
+                try { await Task.WhenAll(tasks); } catch { /* clean shutdown */ }
+            }
+
+            _producerTask = null;
+            _consumerTask = null;
+            _frameChannel = null;
+            lock (_voiceGate) _voice.StopSpeaking();
+            cts.Dispose();
+            _onLog?.Invoke("Motor nativo HUDMind detenido.");
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
+        _disposed = true;
         await StopAsync();
         await _router.DisposeAsync();
-        _voice.Dispose();
+        if (_disposeVoice)
+            lock (_voiceGate) _voice.Dispose();
         _capture.Dispose();
         _wakeSignal.Dispose();
+        _lifecycleLock.Dispose();
     }
 }

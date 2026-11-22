@@ -32,6 +32,8 @@ ENV/
 logs/
 *.log
 *.tmp
+*.bak
+config/accounts.json.*
 *.mp3
 *.wav
 

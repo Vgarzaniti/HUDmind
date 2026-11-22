@@ -48,11 +48,14 @@ public sealed class ProviderAccount
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;
 
+    [JsonPropertyName("supports_vision")]
+    public bool? SupportsVisionOverride { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? ExtraFields { get; set; }
 
     public bool IsKeylessAllowed =>
-        Provider is "pollinations" or "airforce" or "ollama";
+        (Provider ?? string.Empty).Trim().ToLowerInvariant() is "pollinations" or "airforce" or "ollama";
 
     public bool IsReady() =>
         Enabled && (IsKeylessAllowed || !string.IsNullOrWhiteSpace(ApiKey));
@@ -65,34 +68,57 @@ public sealed class ProviderAccount
     {
         get
         {
-            var prov = Provider.ToLowerInvariant();
+            if (SupportsVisionOverride.HasValue)
+                return SupportsVisionOverride.Value;
+
+            var prov = (Provider ?? string.Empty).Trim().ToLowerInvariant();
+            var m = (Model ?? string.Empty).Trim().ToLowerInvariant();
+
             if (prov is "pollinations" or "airforce" && string.IsNullOrWhiteSpace(ApiKey))
                 return false;
-            if (prov is "gemini" or "claude" or "openai")
+
+            // Explicit text-only exclusions (even on OpenAI/xAI/Gemini/OpenRouter vendors)
+            if (m.Contains("o1-mini") || m.Contains("o3-mini") || m.Contains("gpt-3.5") ||
+                m.Contains("gemma-2") || m.Contains("deepseek-r1") || m.Contains("deepseek-chat") ||
+                m.Contains("mistral-7b") || m.Contains("open-mistral-nemo") ||
+                m.Contains("grok-2-1212") || m.Contains("grok-3-mini") ||
+                ((m.Contains("grok-2") || m.Contains("grok-3")) && !m.Contains("vision") && m.Contains("-text")) ||
+                (m.Contains("llama-3.1") && !m.Contains("vision")) ||
+                (m.Contains("llama-3.3") && !m.Contains("vision")))
+            {
+                return false;
+            }
+
+            if (m.Contains("vision") || m.Contains("-vl") || m.Contains("vl-") || m.Contains("pixtral") ||
+                m.Contains("gemma-3") || m.Contains("gemma3") || m.Contains("gemini") ||
+                m.Contains("claude-3") || m.Contains("claude-4") || m.Contains("claude-sonnet-4") ||
+                m.Contains("claude-opus-4") || m.Contains("claude-haiku-4") ||
+                m.Contains("gpt-4o") || m.Contains("gpt-4.1") || m.Contains("gpt-5") ||
+                m.StartsWith("o1", StringComparison.Ordinal) || m.StartsWith("o3", StringComparison.Ordinal) || m.StartsWith("o4", StringComparison.Ordinal) ||
+                m.Contains("/o1", StringComparison.Ordinal) || m.Contains("/o3", StringComparison.Ordinal) || m.Contains("/o4", StringComparison.Ordinal) ||
+                m.Contains("llama-4") || m.Contains("scout") || m.Contains("maverick") ||
+                m.Contains("llama-3.2-11b") || m.Contains("llama-3.2-90b") ||
+                m.Contains("grok-4") || m.Contains("grok-2-vision") ||
+                m.Contains("qvq") || m.Contains("molmo") || m.Contains("internvl") ||
+                m.Contains("mistral-small-3") || m.Contains("nova-lite") || m.Contains("nova-pro") || m.Contains("paligemma"))
+            {
                 return true;
-            if (prov == "groq")
-            {
-                var m = Model.ToLowerInvariant();
-                return m.Contains("llama-4") || m.Contains("vision") || m.Contains("scout") || m.Contains("maverick");
             }
-            if (prov == "openrouter")
-            {
-                var m = Model.ToLowerInvariant();
-                return m.Contains("vision") || m.Contains("gemma-3") || m.Contains("gemini") || m.Contains("gpt-4") || m.Contains("claude") || m.Contains("vl") || m.Contains("llama-4");
-            }
-            return false;
+
+            return prov is "gemini" or "claude";
         }
     }
 
     /// <summary>
     /// True only for low-latency paid/free-LPU/Flash vision providers eligible for parallel hedging.
-    /// Excludes slow OpenRouter `:free` community queues to avoid wasting daily RPD quota.
+    /// Excludes slow OpenRouter `:free` community queues and local Ollama to avoid stalling primary racing.
     /// </summary>
     public bool IsFastCloudVision =>
         SupportsVision &&
-        Provider is "gemini" or "groq" or "openai" or "claude" or "openrouter" &&
+        (Provider ?? string.Empty).Trim().ToLowerInvariant() is "gemini" or "groq" or "openai" or "claude" or "openrouter" or "xai" &&
         !string.IsNullOrWhiteSpace(ApiKey) &&
-        !(Provider == "openrouter" && Model.EndsWith(":free", StringComparison.OrdinalIgnoreCase));
+        !((Provider ?? string.Empty).Equals("openrouter", StringComparison.OrdinalIgnoreCase) &&
+          Model.EndsWith(":free", StringComparison.OrdinalIgnoreCase));
 
     public string MaskedKey()
     {
@@ -114,6 +140,8 @@ public sealed class ProviderAccount
             "openai" => "https://api.openai.com/v1",
             "claude" => "https://api.anthropic.com/v1",
             "groq" => "https://api.groq.com/openai/v1",
+            "xai" => "https://api.x.ai/v1",
+            "mistral" => "https://api.mistral.ai/v1",
             "openrouter" => "https://openrouter.ai/api/v1",
             "pollinations" => "https://text.pollinations.ai/openai",
             "airforce" => "https://api.airforce/v1",
@@ -149,8 +177,14 @@ public sealed class UserConfig
     [JsonPropertyName("hotkey_analyze_now")]
     public string HotkeyAnalyzeNow { get; set; } = "F10";
 
+    [JsonPropertyName("hotkey_toggle_mic")]
+    public string HotkeyToggleMic { get; set; } = "F8";
+
     [JsonPropertyName("tts_engine")]
     public string TtsEngine { get; set; } = "pyttsx3";
+
+    [JsonPropertyName("tts_rate")]
+    public string TtsRate { get; set; } = "+15%";
 
     [JsonPropertyName("voice_gender")]
     public string VoiceGender { get; set; } = "male";
@@ -290,6 +324,20 @@ public sealed class GameManifest
 
 public sealed class GameProfile
 {
+    private static readonly HashSet<string> NonGameDesktopProcesses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "HUDMind.exe", "HUDMind.Native.exe", "explorer.exe", "discord.exe",
+        "chrome.exe", "msedge.exe", "firefox.exe", "opera.exe", "brave.exe",
+        "Code.exe", "devenv.exe", "rider64.exe", "Taskmgr.exe",
+        "ApplicationFrameHost.exe", "SearchHost.exe", "ShellExperienceHost.exe",
+        "StartMenuExperienceHost.exe", "SystemSettings.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "WindowsTerminal.exe"
+    };
+
+    public static bool IsDesktopNonGameProcess(string? executableName) =>
+        string.IsNullOrWhiteSpace(executableName) ||
+        NonGameDesktopProcesses.Contains(executableName.Trim()) ||
+        executableName.Trim().StartsWith("HUDMind", StringComparison.OrdinalIgnoreCase);
+
     public required GameManifest Manifest { get; init; }
     public required string DirectoryPath { get; init; }
     public string CustomRules { get; set; } = string.Empty;
@@ -327,18 +375,22 @@ public sealed record HudSensorSnapshot(
 {
     public static HudSensorSnapshot Empty { get; } = new("UNKNOWN", string.Empty, string.Empty, string.Empty, 0, false);
 
-    public string FormatForPrompt()
+    public string FormatForPrompt(bool isEn = false)
     {
+        static string SafeField(string s) => string.IsNullOrWhiteSpace(s)
+            ? string.Empty
+            : new string(s.Replace('|', '/').Replace('<', '(').Replace('>', ')').Where(c => !char.IsControl(c)).ToArray()).Trim();
+
         var parts = new List<string>(4);
         if (!string.IsNullOrWhiteSpace(Phase) && Phase != "UNKNOWN")
-            parts.Add($"FASE_DETECTADA={Phase}");
+            parts.Add(isEn ? $"PHASE={SafeField(Phase)}" : $"FASE_DETECTADA={SafeField(Phase)}");
         if (!string.IsNullOrWhiteSpace(OcrZonesSummary))
-            parts.Add($"HUD_OCR: {OcrZonesSummary}");
+            parts.Add($"HUD_OCR: {SafeField(OcrZonesSummary)}");
         if (!string.IsNullOrWhiteSpace(LogSummary))
-            parts.Add($"GAME_LOG: {LogSummary}");
+            parts.Add($"GAME_LOG: {SafeField(LogSummary)}");
         if (!string.IsNullOrWhiteSpace(DeltaNote))
-            parts.Add($"CAMBIO_RECIENTE: {DeltaNote}");
-        return string.Join(" | ", parts);
+            parts.Add(isEn ? $"RECENT_CHANGE: {SafeField(DeltaNote)}" : $"CAMBIO_RECIENTE: {SafeField(DeltaNote)}");
+        return string.Join(" ; ", parts);
     }
 }
 

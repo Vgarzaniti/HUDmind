@@ -6,8 +6,8 @@ namespace HUDMind.Windows;
 
 /// <summary>
 /// Persistent Windows OneCore/SAPI5 COM STA worker with 1-slot Drop-Oldest mailbox (&lt;8ms start, 0% GPU, 0 network).
-/// Loads modern Windows Speech_OneCore voices first (unlocking Male Raul/Pablo &amp; Female Sabina/Laura)
-/// and falls back cleanly to standard SAPI5 Desktop voices.
+/// Reads COM Gender &amp; Language LCID attributes to strictly avoid cross-gender fallback mistakes (e.g. Zira on Male),
+/// releases COM tokens cleanly, and separates cheap Volume updates from voice token re-enumeration.
 /// </summary>
 public sealed class InstantSapiVoiceService : IVoiceOutputService
 {
@@ -19,12 +19,15 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
     private readonly AutoResetEvent _signal = new(false);
     private TaskCompletionSource<bool>? _readyTcs;
     private Thread? _staThread;
+    private object? _activeVoiceToken;
 
     private string? _pendingText;
     private bool _pendingStop;
     private bool _pendingConfigUpdate;
+    private bool _pendingVoiceReselect;
     private bool _shutdownRequested;
     private volatile bool _ready;
+    private volatile bool _initFailed;
     private volatile bool _disposed;
 
     private string _language = "es";
@@ -36,20 +39,26 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
 
     public void WarmUp(string language, double volume, string gender = "male", string style = "instant")
     {
-        if (_disposed)
+        if (_disposed || _initFailed)
             return;
 
         Task<bool> readyTask;
         lock (_sync)
         {
-            if (_disposed) return;
-            _language = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
-            _gender = NormalizeGender(gender);
+            if (_disposed || _initFailed) return;
+            var newLang = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
+            var newGender = NormalizeGender(gender);
+            bool voiceChanged = !string.Equals(_language, newLang, StringComparison.OrdinalIgnoreCase) ||
+                                !string.Equals(_gender, newGender, StringComparison.OrdinalIgnoreCase);
+
+            _language = newLang;
+            _gender = newGender;
             _volume = Math.Clamp(volume, 0.0, 1.0);
 
             if (_staThread is { IsAlive: true })
             {
                 _pendingConfigUpdate = true;
+                if (voiceChanged) _pendingVoiceReselect = true;
                 _signal.Set();
                 return;
             }
@@ -67,7 +76,8 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
             _staThread.Start();
         }
 
-        readyTask.Wait(TimeSpan.FromSeconds(3));
+        if (!readyTask.Wait(TimeSpan.FromSeconds(3)) || !readyTask.Result)
+            _initFailed = true;
     }
 
     public void UpdateSettings(string language, double volume, string gender = "male", string style = "instant")
@@ -76,12 +86,19 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         lock (_sync)
         {
             if (_disposed) return;
-            _language = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
-            _gender = NormalizeGender(gender);
+            var newLang = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
+            var newGender = NormalizeGender(gender);
+            bool voiceChanged = !string.Equals(_language, newLang, StringComparison.OrdinalIgnoreCase) ||
+                                !string.Equals(_gender, newGender, StringComparison.OrdinalIgnoreCase);
+
+            _language = newLang;
+            _gender = newGender;
             _volume = Math.Clamp(volume, 0.0, 1.0);
+
             if (_staThread is { IsAlive: true })
             {
                 _pendingConfigUpdate = true;
+                if (voiceChanged) _pendingVoiceReselect = true;
                 _signal.Set();
             }
         }
@@ -92,12 +109,12 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         if (_disposed || string.IsNullOrWhiteSpace(text))
             return 0;
 
-        if (!_ready)
+        if (!_ready && !_initFailed)
             WarmUp(_language, _volume, _gender);
         if (!_ready || _disposed)
             return 0;
 
-        var sw = Stopwatch.StartNew();
+        long t0 = Stopwatch.GetTimestamp();
         lock (_sync)
         {
             if (_disposed) return 0;
@@ -105,8 +122,7 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
             _pendingStop = false;
             _signal.Set();
         }
-        sw.Stop();
-        return sw.Elapsed.TotalMilliseconds;
+        return Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
     }
 
     public void StopSpeaking()
@@ -152,7 +168,7 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
                 initVol = _volume;
             }
 
-            ApplyVoiceSettings(spVoice, initLang, initGender, initVol);
+            ApplyVoiceSettings(spVoice, initLang, initGender, initVol, reselectVoice: true);
             spVoice.Speak(string.Empty, SvsFlagsAsync | SvsfPurgeBeforeSpeak);
             _ready = true;
             _readyTcs?.TrySetResult(true);
@@ -164,6 +180,7 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
                 string? textToSpeak;
                 bool doStop;
                 bool doConfig;
+                bool doReselect;
                 string lang, gender;
                 double vol;
 
@@ -177,6 +194,8 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
                     _pendingStop = false;
                     doConfig = _pendingConfigUpdate;
                     _pendingConfigUpdate = false;
+                    doReselect = _pendingVoiceReselect;
+                    _pendingVoiceReselect = false;
                     lang = _language;
                     gender = _gender;
                     vol = _volume;
@@ -185,7 +204,7 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
                 try
                 {
                     if (doConfig)
-                        ApplyVoiceSettings(spVoice, lang, gender, vol);
+                        ApplyVoiceSettings(spVoice, lang, gender, vol, doReselect);
 
                     if (doStop)
                         spVoice.Speak(string.Empty, SvsFlagsAsync | SvsfPurgeBeforeSpeak);
@@ -210,22 +229,25 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
                 try { spVoice.Speak(string.Empty, SvsFlagsAsync | SvsfPurgeBeforeSpeak); } catch { }
                 try { Marshal.FinalReleaseComObject(spVoice); } catch { }
             }
+            if (_activeVoiceToken is not null)
+            {
+                try { Marshal.ReleaseComObject(_activeVoiceToken); } catch { }
+                _activeVoiceToken = null;
+            }
             _ready = false;
         }
     }
 
-    private void ApplyVoiceSettings(dynamic spVoice, string lang, string gender, double volume)
+    private void ApplyVoiceSettings(dynamic spVoice, string lang, string gender, double volume, bool reselectVoice)
     {
         try
         {
-            SelectBestVoice(spVoice, lang, gender);
-            spVoice.Rate = 1; // Natural conversational coaching speed (-10..+10)
+            if (reselectVoice)
+                SelectBestVoice(spVoice, lang, gender);
+            spVoice.Rate = 1;
             spVoice.Volume = (int)Math.Round(Math.Clamp(volume, 0.0, 1.0) * 100.0);
         }
-        catch
-        {
-            // Keep existing SAPI5 properties
-        }
+        catch { }
     }
 
     private void SelectBestVoice(dynamic spVoice, string lang, string gender)
@@ -233,11 +255,9 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         bool wantEs = lang.StartsWith("es", StringComparison.OrdinalIgnoreCase);
         bool wantMale = gender == "male";
 
-        // 1. Try modern Windows Speech_OneCore voices first (includes Raul/Pablo Male + Sabina/Laura Female!)
         if (TrySelectFromOneCore(spVoice, wantEs, wantMale))
             return;
 
-        // 2. Fallback to standard SAPI5 Desktop voices
         TrySelectFromTokenList(spVoice, spVoice.GetVoices(), wantEs, wantMale);
     }
 
@@ -282,7 +302,10 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
                 dynamic tok = tokens.Item(i);
                 allTokens.Add(tok);
                 string desc = ((string)tok.GetDescription()).ToLowerInvariant();
-                int score = ScoreVoice(desc, wantEs, wantMale);
+                string attrGender = TryGetAttr(tok, "Gender");
+                string attrLang = TryGetAttr(tok, "Language");
+
+                int score = ScoreVoice(desc, attrGender, attrLang, wantEs, wantMale);
                 if (score > bestScore)
                 {
                     bestScore = score;
@@ -294,6 +317,11 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
             if (chosen is not null && bestScore > 0)
             {
                 spVoice.Voice = chosen;
+                if (_activeVoiceToken is not null && !ReferenceEquals(_activeVoiceToken, chosen))
+                {
+                    try { Marshal.ReleaseComObject(_activeVoiceToken); } catch { }
+                }
+                _activeVoiceToken = chosen;
                 _selectedVoiceName = ShortVoiceLabel(chosenLabel);
                 return true;
             }
@@ -319,55 +347,85 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         }
     }
 
-    private static int ScoreVoice(string desc, bool wantEs, bool wantMale)
+    private static string TryGetAttr(dynamic tok, string name)
     {
+        try { return ((string)tok.GetAttribute(name)).Trim().ToLowerInvariant(); }
+        catch { return string.Empty; }
+    }
+
+    internal static int ScoreVoice(string desc, string attrGender, string attrLangLcid, bool wantEs, bool wantMale)
+    {
+        bool isEsVoice = attrLangLcid.EndsWith("0a", StringComparison.OrdinalIgnoreCase) ||
+                         desc.Contains("spanish") || desc.Contains("español") ||
+                         desc.Contains("raul") || desc.Contains("pablo") || desc.Contains("sabina") || desc.Contains("helena") || desc.Contains("laura");
+        bool isEnVoice = attrLangLcid is "409" or "809" or "c09" ||
+                         attrLangLcid.EndsWith("09", StringComparison.OrdinalIgnoreCase) ||
+                         desc.Contains("english") || desc.Contains("david") || desc.Contains("mark") || desc.Contains("zira") || desc.Contains("hazel");
+
+        // Strictly require language match if specified
+        if (wantEs && !isEsVoice) return 0;
+        if (!wantEs && !isEnVoice) return 0;
+
+        // Strictly reject explicit opposite-gender tokens (prevents selecting Zira female for Male EN!)
+        if (wantMale && attrGender == "female") return 0;
+        if (!wantMale && attrGender == "male") return 0;
+
         if (wantEs)
         {
             if (wantMale)
             {
-                if (desc.Contains("raul")) return 120;
-                if (desc.Contains("pablo")) return 110;
-                if (desc.Contains("jorge") || desc.Contains("tomas") || desc.Contains("alvaro")) return 105;
-                if (desc.Contains("spanish") || desc.Contains("español")) return 40;
+                if (desc.Contains("raul")) return 130;
+                if (desc.Contains("pablo")) return 120;
+                if (desc.Contains("jorge") || desc.Contains("tomas") || desc.Contains("alvaro")) return 115;
+                if (attrGender == "male") return 90;
             }
             else
             {
-                if (desc.Contains("sabina")) return 120;
-                if (desc.Contains("laura")) return 115;
-                if (desc.Contains("helena")) return 100;
-                if (desc.Contains("elena") || desc.Contains("dalia")) return 110;
-                if (desc.Contains("spanish") || desc.Contains("español")) return 40;
+                if (desc.Contains("sabina")) return 130;
+                if (desc.Contains("laura")) return 125;
+                if (desc.Contains("helena")) return 110;
+                if (desc.Contains("elena") || desc.Contains("dalia")) return 120;
+                if (attrGender == "female") return 90;
             }
         }
         else
         {
             if (wantMale)
             {
-                if (desc.Contains("mark")) return 120;
-                if (desc.Contains("david")) return 115;
-                if (desc.Contains("george")) return 105;
-                if (desc.Contains("english")) return 40;
+                if (desc.Contains("mark")) return 130;
+                if (desc.Contains("david")) return 125;
+                if (desc.Contains("george")) return 115;
+                if (attrGender == "male") return 90;
             }
             else
             {
-                if (desc.Contains("zira")) return 120;
-                if (desc.Contains("hazel") || desc.Contains("aria") || desc.Contains("eva")) return 110;
-                if (desc.Contains("english")) return 40;
+                if (desc.Contains("zira")) return 130;
+                if (desc.Contains("hazel") || desc.Contains("aria") || desc.Contains("eva")) return 120;
+                if (attrGender == "female") return 90;
             }
         }
-        return 0;
+        return attrGender == string.Empty ? 20 : 0;
     }
 
     private static string ShortVoiceLabel(string desc)
     {
         if (desc.Contains("Raul", StringComparison.OrdinalIgnoreCase)) return "Raul-H";
         if (desc.Contains("Pablo", StringComparison.OrdinalIgnoreCase)) return "Pablo-H";
+        if (desc.Contains("Jorge", StringComparison.OrdinalIgnoreCase)) return "Jorge-H";
+        if (desc.Contains("Tomas", StringComparison.OrdinalIgnoreCase)) return "Tomas-H";
+        if (desc.Contains("Alvaro", StringComparison.OrdinalIgnoreCase)) return "Alvaro-H";
         if (desc.Contains("Sabina", StringComparison.OrdinalIgnoreCase)) return "Sabina-M";
         if (desc.Contains("Laura", StringComparison.OrdinalIgnoreCase)) return "Laura-M";
         if (desc.Contains("Helena", StringComparison.OrdinalIgnoreCase)) return "Helena-M";
+        if (desc.Contains("Elena", StringComparison.OrdinalIgnoreCase)) return "Elena-M";
+        if (desc.Contains("Dalia", StringComparison.OrdinalIgnoreCase)) return "Dalia-M";
         if (desc.Contains("David", StringComparison.OrdinalIgnoreCase)) return "David-H";
         if (desc.Contains("Mark", StringComparison.OrdinalIgnoreCase)) return "Mark-H";
+        if (desc.Contains("George", StringComparison.OrdinalIgnoreCase)) return "George-H";
         if (desc.Contains("Zira", StringComparison.OrdinalIgnoreCase)) return "Zira-M";
+        if (desc.Contains("Hazel", StringComparison.OrdinalIgnoreCase)) return "Hazel-M";
+        if (desc.Contains("Aria", StringComparison.OrdinalIgnoreCase)) return "Aria-M";
+        if (desc.Contains("Eva", StringComparison.OrdinalIgnoreCase)) return "Eva-M";
         return "OneCore";
     }
 

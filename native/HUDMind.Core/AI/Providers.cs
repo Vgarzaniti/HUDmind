@@ -40,6 +40,7 @@ public interface IAIProvider : IAsyncDisposable
         string recentHistory = "",
         string visualTimeline = "",
         HudSensorSnapshot? sensorSnapshot = null,
+        string recentChatHistory = "",
         CancellationToken ct = default) =>
         Task.FromResult(new ProviderCallResult(null, 501, "Chat interactivo no implementado en este adaptador."));
     Task<(bool Ok, string Message)> TestConnectionAsync(CancellationToken ct = default);
@@ -94,11 +95,58 @@ public static class SharedHttpFactory
         var client = new HttpClient(handler)
         {
             Timeout = TimeSpan.FromSeconds(12.0), // Per-call timeouts enforced via linked CTS
+            MaxResponseContentBufferSize = 2 * 1024 * 1024, // Prevents CWE-400 unbounded 2GB read DoS
             DefaultRequestVersion = HttpVersion.Version20,
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower
         };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("HUDMind-Native/1.1");
         return client;
+    }
+
+    internal static bool IsSafeModelSegment(string? model)
+    {
+        var m = (model ?? string.Empty).Trim();
+        return m.Length is >= 1 and <= 128 &&
+               !m.Contains("..", StringComparison.Ordinal) &&
+               !m.Contains('?') &&
+               !m.Contains('#') &&
+               m.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-' or ':' or '/');
+    }
+
+    internal static string ExtractGeminiTextExcludingThoughts(JsonElement parts)
+    {
+        var sb = new StringBuilder();
+        foreach (var p in parts.EnumerateArray())
+        {
+            if (p.TryGetProperty("thought", out var th) && th.ValueKind == JsonValueKind.True)
+                continue;
+            if (p.TryGetProperty("text", out var t))
+                sb.Append(t.GetString());
+        }
+        return sb.ToString();
+    }
+
+    internal static string? ExtractOpenAiMessageText(JsonElement choice)
+    {
+        if (!choice.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var contentEl))
+            return null;
+
+        if (contentEl.ValueKind == JsonValueKind.String)
+            return contentEl.GetString();
+
+        if (contentEl.ValueKind == JsonValueKind.Array)
+        {
+            var sb = new StringBuilder();
+            foreach (var part in contentEl.EnumerateArray())
+            {
+                if (part.ValueKind == JsonValueKind.String)
+                    sb.Append(part.GetString());
+                else if (part.ValueKind == JsonValueKind.Object && part.TryGetProperty("text", out var tEl))
+                    sb.Append(tEl.GetString());
+            }
+            return sb.ToString();
+        }
+        return null;
     }
 
     internal static double? ExtractRetryAfterSeconds(HttpResponseMessage resp)
@@ -127,7 +175,7 @@ public sealed class GeminiFastProvider : IAIProvider
     public async Task PrewarmAsync(CancellationToken ct = default)
     {
         var key = Account.ApiKey.Trim();
-        if (string.IsNullOrEmpty(key))
+        if (string.IsNullOrEmpty(key) || !SharedHttpFactory.IsSafeModelSegment(Account.Model))
             return;
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -160,14 +208,17 @@ public sealed class GeminiFastProvider : IAIProvider
         var key = Account.ApiKey.Trim();
         if (string.IsNullOrEmpty(key))
             return new ProviderCallResult(null, 401, "Falta API key de Gemini.");
+        if (!SharedHttpFactory.IsSafeModelSegment(Account.Model))
+            return new ProviderCallResult(null, 400, "Nombre de modelo inválido.");
 
         var safeModel = Uri.EscapeDataString(Account.Model.Trim());
         var url = $"https://generativelanguage.googleapis.com/v1beta/models/{safeModel}:generateContent";
         var prompt = CompactWireProtocol.BuildRealtimePrompt(profile, config, recentHistory, forceAdvice, visualTimeline: spatialTelemetry);
         var modelLow = Account.Model.ToLowerInvariant();
-        bool isGen3 = modelLow.Contains("3.") || modelLow.Contains("3-");
-        // Grounded 4-field line (FASE|QUE_VEO|URG|CONSEJO) + clear 10-16 word Spanish sentence + stopSequences=["\n"]
-        int maxOut = isGen3 ? 160 : 115;
+        bool isGen3 = modelLow.Contains("gemini-3");
+        bool isGen25Flash = modelLow.Contains("2.5") && !modelLow.Contains("pro");
+        // Grounded 4-field line (FASE|QUE_VEO|URG|CONSEJO) + clear 10-16 word sentence + stopSequences=["\n"]
+        int maxOut = isGen3 ? 160 : 120;
 
         var buf = new ArrayBufferWriter<byte>(jpegBytes.Length * 4 / 3 + 1024);
         using (var w = new Utf8JsonWriter(buf))
@@ -202,7 +253,7 @@ public sealed class GeminiFastProvider : IAIProvider
             w.WriteStartArray();
             w.WriteStringValue("\n");
             w.WriteEndArray();
-            if (modelLow.Contains("2.5"))
+            if (isGen25Flash)
             {
                 w.WritePropertyName("thinkingConfig");
                 w.WriteStartObject();
@@ -220,7 +271,7 @@ public sealed class GeminiFastProvider : IAIProvider
             w.WriteEndObject();
         }
 
-        using var content = new ByteArrayContent(buf.WrittenSpan.ToArray());
+        using var content = new ReadOnlyMemoryContent(buf.WrittenMemory);
         content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
         req.Headers.Add("x-goog-api-key", key);
@@ -241,13 +292,8 @@ public sealed class GeminiFastProvider : IAIProvider
                 var c0 = cands[0];
                 if (c0.TryGetProperty("content", out var contentEl) && contentEl.TryGetProperty("parts", out var parts))
                 {
-                    var sb = new StringBuilder();
-                    foreach (var p in parts.EnumerateArray())
-                    {
-                        if (p.TryGetProperty("text", out var t))
-                            sb.Append(t.GetString());
-                    }
-                    var parsed = CompactWireProtocol.ParseCompactLine(sb.ToString());
+                    var textOut = SharedHttpFactory.ExtractGeminiTextExcludingThoughts(parts);
+                    var parsed = CompactWireProtocol.ParseCompactLine(textOut);
                     return parsed is not null
                         ? new ProviderCallResult(parsed)
                         : new ProviderCallResult(null, 422, "Salida compacta no válida");
@@ -277,17 +323,22 @@ public sealed class GeminiFastProvider : IAIProvider
         string recentHistory = "",
         string visualTimeline = "",
         HudSensorSnapshot? sensorSnapshot = null,
+        string recentChatHistory = "",
         CancellationToken ct = default)
     {
         var key = Account.ApiKey.Trim();
         if (string.IsNullOrEmpty(key))
             return new ProviderCallResult(null, 401, "Falta API key de Gemini.");
+        if (!SharedHttpFactory.IsSafeModelSegment(Account.Model))
+            return new ProviderCallResult(null, 400, "Nombre de modelo inválido.");
 
         var safeModel = Uri.EscapeDataString(Account.Model.Trim());
         var url = $"https://generativelanguage.googleapis.com/v1beta/models/{safeModel}:generateContent";
-        var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(profile, config, userQuestion, recentHistory, visualTimeline, sensorSnapshot);
+        var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(
+            profile, config, userQuestion, recentHistory, visualTimeline, sensorSnapshot, recentChatHistory);
         var modelLow = Account.Model.ToLowerInvariant();
-        bool isGen3 = modelLow.Contains("3.") || modelLow.Contains("3-");
+        bool isGen3 = modelLow.Contains("gemini-3");
+        bool isGen25Flash = modelLow.Contains("2.5") && !modelLow.Contains("pro");
 
         var buf = new ArrayBufferWriter<byte>((jpegBytes?.Length ?? 0) * 4 / 3 + 1024);
         using (var w = new Utf8JsonWriter(buf))
@@ -321,7 +372,7 @@ public sealed class GeminiFastProvider : IAIProvider
             w.WriteNumber("maxOutputTokens", 180);
             if (jpegBytes is { Length: > 0 })
                 w.WriteString("mediaResolution", "MEDIA_RESOLUTION_MEDIUM");
-            if (modelLow.Contains("2.5"))
+            if (isGen25Flash)
             {
                 w.WritePropertyName("thinkingConfig");
                 w.WriteStartObject();
@@ -339,7 +390,7 @@ public sealed class GeminiFastProvider : IAIProvider
             w.WriteEndObject();
         }
 
-        using var content = new ByteArrayContent(buf.WrittenSpan.ToArray());
+        using var content = new ReadOnlyMemoryContent(buf.WrittenMemory);
         content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
         req.Headers.Add("x-goog-api-key", key);
@@ -357,13 +408,7 @@ public sealed class GeminiFastProvider : IAIProvider
             if (doc.RootElement.TryGetProperty("candidates", out var cands) && cands.GetArrayLength() > 0 &&
                 cands[0].TryGetProperty("content", out var contentEl) && contentEl.TryGetProperty("parts", out var parts))
             {
-                var sb = new StringBuilder();
-                foreach (var p in parts.EnumerateArray())
-                {
-                    if (p.TryGetProperty("text", out var t))
-                        sb.Append(t.GetString());
-                }
-                var reply = sb.ToString().Trim();
+                var reply = SharedHttpFactory.ExtractGeminiTextExcludingThoughts(parts).Trim();
                 if (!string.IsNullOrWhiteSpace(reply))
                     return new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Medium, reply, reply, "[CHAT]"));
             }
@@ -379,6 +424,8 @@ public sealed class GeminiFastProvider : IAIProvider
         var key = Account.ApiKey.Trim();
         if (string.IsNullOrEmpty(key))
             return (false, "Falta API key de Gemini.");
+        if (!SharedHttpFactory.IsSafeModelSegment(Account.Model))
+            return (false, "Nombre de modelo inválido.");
         try
         {
             var safeModel = Uri.EscapeDataString(Account.Model.Trim());
@@ -417,9 +464,12 @@ public sealed class AnthropicClaudeProvider : IAIProvider
     {
         var key = Account.ApiKey.Trim();
         if (string.IsNullOrEmpty(key)) return;
+        var baseUrl = Account.ResolvedBaseUrl();
+        var (okUrl, _) = BaseUrlSecurityValidator.Validate(baseUrl, allowLoopbackHttp: false);
+        if (!okUrl) return;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(2.5));
-        using var req = new HttpRequestMessage(HttpMethod.Get, "https://api.anthropic.com/v1/models");
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/models");
         req.Headers.Add("x-api-key", key);
         req.Headers.Add("anthropic-version", "2023-06-01");
         try
@@ -525,6 +575,7 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         string recentHistory = "",
         string visualTimeline = "",
         HudSensorSnapshot? sensorSnapshot = null,
+        string recentChatHistory = "",
         CancellationToken ct = default)
     {
         var key = Account.ApiKey.Trim();
@@ -535,7 +586,8 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         if (!okUrl)
             return new ProviderCallResult(null, 400, errUrl);
 
-        var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(profile, config, userQuestion, recentHistory, visualTimeline, sensorSnapshot);
+        var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(
+            profile, config, userQuestion, recentHistory, visualTimeline, sensorSnapshot, recentChatHistory);
         var partsList = new List<object>();
         if (jpegBytes is { Length: > 0 })
             partsList.Add(new { type = "image", source = new { type = "base64", media_type = "image/jpeg", data = Convert.ToBase64String(jpegBytes) } });
@@ -631,7 +683,7 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         var (okUrl, _) = BaseUrlSecurityValidator.Validate(baseUrl, allowLoopback);
         if (!okUrl) return;
 
-        var modelsUrl = Account.Provider == "pollinations" && string.IsNullOrWhiteSpace(Account.ApiKey)
+        var modelsUrl = Account.Provider.Equals("pollinations", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(Account.ApiKey)
             ? "https://text.pollinations.ai/models"
             : $"{baseUrl}/models";
 
@@ -652,6 +704,45 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         }
     }
 
+    private static string ResolveChatCompletionsEndpoint(string baseUrl) =>
+        baseUrl.EndsWith("/openai", StringComparison.OrdinalIgnoreCase) ||
+        baseUrl.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
+            ? baseUrl
+            : $"{baseUrl}/chat/completions";
+
+    private static bool IsReasoningModel(string? model)
+    {
+        var m = (model ?? string.Empty).Trim().ToLowerInvariant();
+        return m.StartsWith("o1", StringComparison.Ordinal) ||
+               m.StartsWith("o3", StringComparison.Ordinal) ||
+               m.StartsWith("o4", StringComparison.Ordinal) ||
+               m.StartsWith("gpt-5", StringComparison.Ordinal) ||
+               m.Contains("/o1", StringComparison.Ordinal) ||
+               m.Contains("/o3", StringComparison.Ordinal) ||
+               m.Contains("/o4", StringComparison.Ordinal);
+    }
+
+    private static Dictionary<string, object> BuildChatCompletionPayload(string model, object[] messages, bool isChat)
+    {
+        var dict = new Dictionary<string, object>
+        {
+            ["model"] = model,
+            ["messages"] = messages
+        };
+        if (IsReasoningModel(model))
+        {
+            dict["max_completion_tokens"] = isChat ? 520 : 420;
+        }
+        else
+        {
+            dict["temperature"] = isChat ? 0.45 : 0.35;
+            dict["max_tokens"] = isChat ? 180 : 120;
+            if (!isChat)
+                dict["stop"] = new[] { "\n" };
+        }
+        return dict;
+    }
+
     public async Task<ProviderCallResult> AnalyzeFrameAsync(
         byte[] jpegBytes,
         GameProfile profile,
@@ -668,31 +759,27 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         if (!okUrl)
             return new ProviderCallResult(null, 400, errUrl);
 
-        var endpoint = baseUrl.EndsWith("/openai", StringComparison.OrdinalIgnoreCase)
-            ? baseUrl
-            : $"{baseUrl}/chat/completions";
+        var endpoint = ResolveChatCompletionsEndpoint(baseUrl);
+        string targetModel = string.IsNullOrWhiteSpace(Account.Model) ? "openai-fast" : Account.Model;
 
-        object payloadObj;
+        Dictionary<string, object> payloadObj;
         if (!Account.SupportsVision)
         {
             if (sensorSnapshot is null || !sensorSnapshot.HasUsefulData)
-                return new ProviderCallResult(CoachResponse.Silent(), null, string.Empty);
+            {
+                return forceAdvice
+                    ? new ProviderCallResult(null, 422, "Sin datos OCR/log legibles en este modelo ciego")
+                    : new ProviderCallResult(CoachResponse.Silent(), null, string.Empty);
+            }
 
             var sensorPrompt = CompactWireProtocol.BuildTextOnlySensorPrompt(
                 profile, config, sensorSnapshot, recentHistory,
                 visualTimeline: spatialTelemetry, forceAdvice: forceAdvice);
 
-            payloadObj = new
-            {
-                model = string.IsNullOrWhiteSpace(Account.Model) ? "openai-fast" : Account.Model,
-                temperature = 0.35,
-                max_tokens = 115,
-                stop = new[] { "\n" },
-                messages = new object[]
-                {
-                    new { role = "user", content = sensorPrompt }
-                }
-            };
+            payloadObj = BuildChatCompletionPayload(
+                targetModel,
+                [new { role = "user", content = sensorPrompt }],
+                isChat: false);
         }
         else
         {
@@ -700,14 +787,9 @@ public sealed class OpenAICompatibleProvider : IAIProvider
                 profile, config, recentHistory, forceAdvice,
                 visualTimeline: spatialTelemetry);
             var b64 = Convert.ToBase64String(jpegBytes);
-            payloadObj = new
-            {
-                model = Account.Model,
-                temperature = 0.35,
-                max_tokens = 115,
-                stop = new[] { "\n" },
-                messages = new object[]
-                {
+            payloadObj = BuildChatCompletionPayload(
+                targetModel,
+                [
                     new
                     {
                         role = "user",
@@ -721,8 +803,8 @@ public sealed class OpenAICompatibleProvider : IAIProvider
                             }
                         }
                     }
-                }
-            };
+                ],
+                isChat: false);
         }
 
         using var req = new HttpRequestMessage(HttpMethod.Post, endpoint)
@@ -732,7 +814,7 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         var key = Account.ApiKey.Trim();
         if (!string.IsNullOrEmpty(key))
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-        if (Account.Provider == "openrouter")
+        if (Account.Provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase))
         {
             req.Headers.TryAddWithoutValidation("HTTP-Referer", "https://github.com/hudmind");
             req.Headers.TryAddWithoutValidation("X-Title", "HUDMind");
@@ -751,7 +833,7 @@ public sealed class OpenAICompatibleProvider : IAIProvider
             using var doc = JsonDocument.Parse(body);
             if (doc.RootElement.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
             {
-                var content = choices[0].GetProperty("message").GetProperty("content").GetString();
+                var content = SharedHttpFactory.ExtractOpenAiMessageText(choices[0]);
                 var parsed = CompactWireProtocol.ParseCompactLine(content);
                 return parsed is not null
                     ? new ProviderCallResult(parsed)
@@ -781,6 +863,7 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         string recentHistory = "",
         string visualTimeline = "",
         HudSensorSnapshot? sensorSnapshot = null,
+        string recentChatHistory = "",
         CancellationToken ct = default)
     {
         var baseUrl = Account.ResolvedBaseUrl();
@@ -789,13 +872,13 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         if (!okUrl)
             return new ProviderCallResult(null, 400, errUrl);
 
-        var endpoint = baseUrl.EndsWith("/openai", StringComparison.OrdinalIgnoreCase)
-            ? baseUrl
-            : $"{baseUrl}/chat/completions";
+        var endpoint = ResolveChatCompletionsEndpoint(baseUrl);
+        string targetModel = string.IsNullOrWhiteSpace(Account.Model) ? "openai-fast" : Account.Model;
 
         var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(
             profile, config, userQuestion, recentHistory, visualTimeline,
-            Account.SupportsVision ? null : sensorSnapshot);
+            Account.SupportsVision ? null : sensorSnapshot,
+            recentChatHistory);
 
         object messageContent = Account.SupportsVision && jpegBytes is { Length: > 0 }
             ? new object[]
@@ -805,13 +888,10 @@ public sealed class OpenAICompatibleProvider : IAIProvider
             }
             : prompt;
 
-        var payloadObj = new
-        {
-            model = string.IsNullOrWhiteSpace(Account.Model) ? "openai-fast" : Account.Model,
-            temperature = 0.45,
-            max_tokens = 180,
-            messages = new object[] { new { role = "user", content = messageContent } }
-        };
+        var payloadObj = BuildChatCompletionPayload(
+            targetModel,
+            [new { role = "user", content = messageContent }],
+            isChat: true);
 
         using var req = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
@@ -820,7 +900,7 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         var key = Account.ApiKey.Trim();
         if (!string.IsNullOrEmpty(key))
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-        if (Account.Provider == "openrouter")
+        if (Account.Provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase))
         {
             req.Headers.TryAddWithoutValidation("HTTP-Referer", "https://github.com/hudmind");
             req.Headers.TryAddWithoutValidation("X-Title", "HUDMind");
@@ -838,7 +918,7 @@ public sealed class OpenAICompatibleProvider : IAIProvider
             using var doc = JsonDocument.Parse(body);
             if (doc.RootElement.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
             {
-                var reply = choices[0].GetProperty("message").GetProperty("content").GetString()?.Trim();
+                var reply = SharedHttpFactory.ExtractOpenAiMessageText(choices[0])?.Trim();
                 if (!string.IsNullOrWhiteSpace(reply))
                     return new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Medium, reply, reply, "[CHAT]"));
             }
@@ -857,7 +937,7 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         if (!okUrl)
             return (false, errUrl);
 
-        var modelsUrl = Account.Provider == "pollinations" && string.IsNullOrWhiteSpace(Account.ApiKey)
+        var modelsUrl = Account.Provider.Equals("pollinations", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(Account.ApiKey)
             ? "https://text.pollinations.ai/models"
             : $"{baseUrl}/models";
 
@@ -930,9 +1010,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
 
         // Text-only ("blind") accounts are enabled ONLY when _textOnlySensor (WinRT OCR + Game Logs) is attached!
         _providers = accounts
-            .Where(a => a.IsReady() &&
-                        !string.Equals(a.Provider, "ollama", StringComparison.OrdinalIgnoreCase) &&
-                        (a.SupportsVision || _textOnlySensor is not null))
+            .Where(a => a.IsReady() && (a.SupportsVision || _textOnlySensor is not null))
             .OrderBy(a => a.Priority)
             .Select(create)
             .ToList();
@@ -960,20 +1038,26 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
     {
         if (!_circuits.TryGetValue(accountId, out var st))
             return false;
-        if (nowUtc >= st.OpenUntilUtc)
+        lock (st)
         {
-            st.OpenUntilUtc = DateTimeOffset.MinValue;
-            return false;
+            if (nowUtc >= st.OpenUntilUtc)
+            {
+                st.OpenUntilUtc = DateTimeOffset.MinValue;
+                return false;
+            }
+            return true;
         }
-        return true;
     }
 
     private void RecordSuccess(string accountId)
     {
         if (_circuits.TryGetValue(accountId, out var st))
         {
-            st.ConsecutiveTransientFailures = 0;
-            st.OpenUntilUtc = DateTimeOffset.MinValue;
+            lock (st)
+            {
+                st.ConsecutiveTransientFailures = 0;
+                st.OpenUntilUtc = DateTimeOffset.MinValue;
+            }
         }
     }
 
@@ -1041,13 +1125,17 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
                 {
                     sensorExtracted = true;
                     lazySensor = await _textOnlySensor.ExtractAsync(jpegBytes, profile, frameCts.Token);
-                    if (!forceAdvice && LocalSilentPhases.Contains(lazySensor.Phase))
+                    bool anyVisionAhead = candidates.Any(c => !attemptedIds.Contains(c.prov.Account.Id) && c.prov.Account.SupportsVision);
+                    if (!anyVisionAhead && !forceAdvice && LocalSilentPhases.Contains(lazySensor.Phase))
                     {
                         return (CoachResponse.Silent($"[{lazySensor.Phase}] {lazySensor.OcrZonesSummary}"), lazySensor.OcrMs, "ocr-local-filter");
                     }
-                    if (!forceAdvice && !lazySensor.HasUsefulData)
+                    if (!lazySensor.HasUsefulData)
                     {
-                        return (CoachResponse.Silent("[SIN-HUD] Sin texto/logs legibles"), lazySensor.OcrMs, "ocr-local-filter");
+                        if (anyVisionAhead)
+                            continue; // Skip unhelpful blind candidate -> let backup Vision provider inspect pixels!
+                        if (!forceAdvice)
+                            return (CoachResponse.Silent("[SIN-HUD] Sin texto/logs legibles"), lazySensor.OcrMs, "ocr-local-filter");
                     }
                 }
             }
@@ -1092,6 +1180,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         UserConfig config,
         string recentHistory = "",
         string visualTimeline = "",
+        string recentChatHistory = "",
         CancellationToken ct = default)
     {
         if (_providers.Count == 0)
@@ -1126,6 +1215,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
                 res = await prov.AskQuestionAsync(
                     jpegBytes, userQuestion, profile, config, recentHistory, visualTimeline,
                     sensorSnapshot: prov.Account.SupportsVision ? null : lazySensor,
+                    recentChatHistory: recentChatHistory,
                     ct: ct);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
@@ -1211,40 +1301,63 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         attemptedIds.Add(second.prov.Account.Id);
         var t2 = RunOne(second);
         var pending = new List<Task<(int idx, IAIProvider prov, ProviderCallResult res, double ms)>> { t1, t2 };
+        bool disposedRace = false;
 
-        while (pending.Count > 0)
+        try
         {
-            var done = await Task.WhenAny(pending);
-            pending.Remove(done);
+            while (pending.Count > 0)
+            {
+                var done = await Task.WhenAny(pending);
+                pending.Remove(done);
 
-            (int idx, IAIProvider prov, ProviderCallResult res, double ms) outcome;
-            try
-            {
-                outcome = await done;
-            }
-            catch (OperationCanceledException)
-            {
-                continue;
-            }
+                (int idx, IAIProvider prov, ProviderCallResult res, double ms) outcome;
+                try
+                {
+                    outcome = await done;
+                }
+                catch (OperationCanceledException)
+                {
+                    continue;
+                }
 
-            if (outcome.res.Response is not null)
+                if (outcome.res.Response is not null)
+                {
+                    await raceCts.CancelAsync();
+                    if (pending.Count > 0)
+                    {
+                        ObserveAndDispose(pending[0], raceCts);
+                        pending.Clear();
+                        disposedRace = true;
+                    }
+                    else
+                    {
+                        raceCts.Dispose();
+                        disposedRace = true;
+                    }
+
+                    RecordSuccess(outcome.prov.Account.Id);
+                    Volatile.Write(ref _activeIndex, outcome.idx);
+                    return (true, ApplyFreshnessDeadline(outcome.res.Response, outcome.ms, forceAdvice, outcome.prov.Account.Model), outcome.ms, outcome.prov.Account.Model);
+                }
+
+                if (outcome.res.ErrorCode != 422)
+                    ApplyFailureCircuit(outcome.prov, outcome.res.ErrorCode, outcome.res.RetryAfterSeconds);
+            }
+        }
+        finally
+        {
+            if (!disposedRace)
             {
-                await raceCts.CancelAsync();
+                try { raceCts.Cancel(); } catch { }
                 if (pending.Count > 0)
-                    ObserveAndDispose(pending[0], raceCts);
-                else
-                    raceCts.Dispose();
-
-                RecordSuccess(outcome.prov.Account.Id);
-                Volatile.Write(ref _activeIndex, outcome.idx);
-                return (true, ApplyFreshnessDeadline(outcome.res.Response, outcome.ms, forceAdvice, outcome.prov.Account.Model), outcome.ms, outcome.prov.Account.Model);
+                {
+                    foreach (var p in pending)
+                        _ = p.ContinueWith(static t => { _ = t.Exception; }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                }
+                raceCts.Dispose();
             }
-
-            if (outcome.res.ErrorCode != 422)
-                ApplyFailureCircuit(outcome.prov, outcome.res.ErrorCode, outcome.res.RetryAfterSeconds);
         }
 
-        raceCts.Dispose();
         return (false, null, 0, first.prov.Account.Model);
     }
 
@@ -1277,29 +1390,34 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         var st = _circuits.GetOrAdd(prov.Account.Id, _ => new CircuitState());
         double secs;
 
-        if (code is 401 or 403)
+        lock (st)
         {
-            secs = 600.0;
-        }
-        else if (code == 402)
-        {
-            secs = 300.0;
-        }
-        else if (code == 429)
-        {
-            secs = retryAfterSeconds ?? 45.0;
-        }
-        else
-        {
-            // Transient 5xx/timeout: open circuit only after 2 consecutive failures (ISO 25010 Fault Tolerance)
-            st.ConsecutiveTransientFailures++;
-            if (st.ConsecutiveTransientFailures < 2)
-                return;
-            secs = Math.Min(120.0, 15.0 * Math.Pow(2, st.ConsecutiveTransientFailures - 2));
+            if (code is 401 or 403)
+            {
+                secs = 600.0;
+            }
+            else if (code == 402)
+            {
+                secs = 300.0;
+            }
+            else if (code == 429)
+            {
+                secs = retryAfterSeconds ?? 45.0;
+            }
+            else
+            {
+                // Transient 5xx/timeout: open circuit only after 2 consecutive failures (ISO 25010 Fault Tolerance)
+                st.ConsecutiveTransientFailures++;
+                if (st.ConsecutiveTransientFailures < 2)
+                    return;
+                secs = Math.Min(120.0, 15.0 * Math.Pow(2, st.ConsecutiveTransientFailures - 2));
+            }
+
+            st.OpenUntilUtc = DateTimeOffset.UtcNow.AddSeconds(secs);
         }
 
-        st.OpenUntilUtc = DateTimeOffset.UtcNow.AddSeconds(secs);
-        _onLog?.Invoke($"Failover silencioso: '{prov.Account.Label}' (HTTP {code?.ToString() ?? "?"}) en pausa {secs:F0}s.");
+        var safeLabel = SecretRedactor.Redact(prov.Account.Label, [prov.Account.ApiKey]);
+        _onLog?.Invoke($"Failover silencioso: '{safeLabel}' (HTTP {code?.ToString() ?? "?"}) en pausa {secs:F0}s.");
     }
 
     public async ValueTask DisposeAsync()

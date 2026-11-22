@@ -22,7 +22,7 @@
                 <Image Source="Assets/hudmind-icon.png" Width="30" Height="30" Margin="0,0,10,0" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" />
                 <TextBlock Text="HUDMind" FontSize="22" FontWeight="Bold" Foreground="#38BDF8" VerticalAlignment="Center" />
                 <Border Background="#10B981" CornerRadius="6" Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center">
-                    <TextBlock Text=".NET 9 · 0% GPU · $0 COSTO · HTTP/2" FontSize="10.5" FontWeight="Bold" Foreground="#052E16" />
+                    <TextBlock x:Name="TxtHeaderBadge" Text=".NET 9 · 0% GPU · $0 COSTO · MULTI-IA" FontSize="10.5" FontWeight="Bold" Foreground="#052E16" />
                 </Border>
                 <Border x:Name="PauseBadge" Background="#F59E0B" CornerRadius="6" Padding="8,2" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed">
                     <TextBlock Text="PAUSADO" FontSize="10.5" FontWeight="Bold" Foreground="#1E1B18" />
@@ -106,13 +106,13 @@
                         </Border>
                         <Border Background="#0F172A" CornerRadius="8" Padding="10" Margin="0,0,8,0" BorderBrush="#1E293B" BorderThickness="1">
                             <StackPanel>
-                                <TextBlock Text="VISIÓN IA (HTTP/2)" FontSize="10" Foreground="#94A3B8" FontWeight="Bold" />
+                                <TextBlock x:Name="LblAiCardTitle" Text="VISIÓN IA / RESPUESTA" FontSize="10" Foreground="#94A3B8" FontWeight="Bold" />
                                 <TextBlock x:Name="StatAiMs" Text="— ms" FontSize="19" FontWeight="Bold" Foreground="#10B981" Margin="0,2,0,0" />
                             </StackPanel>
                         </Border>
                         <Border Background="#0F172A" CornerRadius="8" Padding="10" Margin="0,0,8,0" BorderBrush="#1E293B" BorderThickness="1">
                             <StackPanel>
-                                <TextBlock Text="VOZ SAPI5 INSTANTÁNEA" FontSize="10" Foreground="#94A3B8" FontWeight="Bold" />
+                                <TextBlock x:Name="LblVoiceCardTitle" Text="VOZ DEL COACH" FontSize="10" Foreground="#94A3B8" FontWeight="Bold" />
                                 <TextBlock x:Name="StatVoiceMs" Text="— ms" FontSize="19" FontWeight="Bold" Foreground="#F59E0B" Margin="0,2,0,0" />
                             </StackPanel>
                         </Border>
@@ -141,6 +141,11 @@
                                  VirtualizingPanel.IsVirtualizing="True"
                                  VirtualizingPanel.VirtualizationMode="Recycling"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ContextMenu>
+                                <ContextMenu Background="#0F172A" Foreground="#F1F5F9" BorderBrush="#334155">
+                                    <MenuItem Header="📋 Copiar línea seleccionada" Click="MenuCopyLog_Click" />
+                                </ContextMenu>
+                            </ListBox.ContextMenu>
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding}" TextWrapping="Wrap" Foreground="#CBD5E1" />
@@ -224,10 +229,14 @@
                             <ComboBox x:Name="CmbNewProvider" Grid.Column="0" Margin="0,0,6,0" SelectionChanged="CmbNewProvider_SelectionChanged">
                                 <ComboBoxItem Content="groq" IsSelected="True" />
                                 <ComboBoxItem Content="gemini" />
+                                <ComboBoxItem Content="openai" />
+                                <ComboBoxItem Content="xai" />
                                 <ComboBoxItem Content="claude" />
                                 <ComboBoxItem Content="openrouter" />
-                                <ComboBoxItem Content="openai" />
+                                <ComboBoxItem Content="mistral" />
                                 <ComboBoxItem Content="pollinations" />
+                                <ComboBoxItem Content="airforce" />
+                                <ComboBoxItem Content="ollama" />
                             </ComboBox>
                             <TextBox x:Name="TxtNewLabel" Grid.Column="1" Margin="0,0,6,0" Text="Groq LPU Gratis (~0.4s)" />
                             <TextBox x:Name="TxtNewModel" Grid.Column="2" Margin="0,0,6,0" Text="meta-llama/llama-4-scout-17b-16e-instruct" />
@@ -240,7 +249,7 @@
                         <Button Content="↑ Subir" Click="BtnMoveUp_Click" Margin="0,0,6,0" />
                         <Button Content="↓ Bajar" Click="BtnMoveDown_Click" Margin="0,0,6,0" />
                         <Button Content="Activar / Pausar" Click="BtnToggleAccount_Click" Margin="0,0,6,0" />
-                        <Button Content="🔍 Probar Conexión" Click="BtnTestAccount_Click" Margin="0,0,6,0" />
+                        <Button x:Name="BtnTestAccount" Content="🔍 Probar Conexión" Click="BtnTestAccount_Click" Margin="0,0,6,0" />
                         <Button Content="Eliminar" Background="#7F1D1D" BorderBrush="#EF4444" Click="BtnDeleteAccount_Click" />
                     </StackPanel>
                 </Grid>
@@ -261,6 +270,7 @@
                     </StackPanel>
                     <TextBox x:Name="TxtCustomRules"
                              Grid.Row="1"
+                             MaxLength="600"
                              AcceptsReturn="True"
                              TextWrapping="Wrap"
                              VerticalScrollBarVisibility="Auto"
@@ -287,6 +297,7 @@
                             <ColumnDefinition Width="90" />
                         </Grid.ColumnDefinitions>
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="36" />
                             <RowDefinition Height="36" />
                             <RowDefinition Height="36" />
                             <RowDefinition Height="36" />
@@ -379,9 +390,12 @@
                         <TextBlock Grid.Row="12" Grid.Column="0" Text="Tecla Analizar Ahora:" VerticalAlignment="Center" />
                         <TextBox x:Name="TxtAnalyzeKey" Grid.Row="12" Grid.Column="1" VerticalAlignment="Center" />
 
-                        <TextBlock Grid.Row="13" Grid.Column="0" Text="Volumen Voz:" VerticalAlignment="Center" />
-                        <Slider x:Name="SldVolume" Grid.Row="13" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldVolume_ValueChanged" />
-                        <TextBlock x:Name="LblVolumePct" Grid.Row="13" Grid.Column="2" Text="75%" Foreground="#38BDF8" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
+                        <TextBlock Grid.Row="13" Grid.Column="0" Text="Tecla Mute Mic Live:" VerticalAlignment="Center" />
+                        <TextBox x:Name="TxtMicKey" Grid.Row="13" Grid.Column="1" VerticalAlignment="Center" ToolTip="Ej: F8, Ctrl+M" />
+
+                        <TextBlock Grid.Row="14" Grid.Column="0" Text="Volumen Voz:" VerticalAlignment="Center" />
+                        <Slider x:Name="SldVolume" Grid.Row="14" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldVolume_ValueChanged" />
+                        <TextBlock x:Name="LblVolumePct" Grid.Row="14" Grid.Column="2" Text="75%" Foreground="#38BDF8" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
                     </Grid>
 
                     <StackPanel Orientation="Horizontal" Margin="0,10,0,0">

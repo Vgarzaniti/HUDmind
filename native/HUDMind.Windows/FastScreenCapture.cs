@@ -11,9 +11,9 @@ using Microsoft.Win32;
 namespace HUDMind.Windows;
 
 /// <summary>
-/// Ultra-fast zero-churn Windows capture using Win32 StretchBlt directly into a reusable target-sized Bitmap.
-/// Eliminates 6–25 MB per-frame full-res Bitmap allocations, computes 64-bit dHash directly from LockBits
-/// BEFORE JPEG encoding (0 bytes allocated on unchanged frames), and extracts &lt;0.2ms CPU spatial telemetry.
+/// Ultra-fast zero-churn Windows capture using Win32 StretchBlt (HALFTONE + SetBrushOrgEx)
+/// directly into a reusable target-sized Bitmap, 3x3 cell-averaged 64-bit dHash, solid/black
+/// frame rejection, and zero heap waste on unchanged frames.
 /// </summary>
 public sealed class FastScreenCapture : IScreenCaptureService
 {
@@ -44,12 +44,13 @@ public sealed class FastScreenCapture : IScreenCaptureService
     private Bitmap? _reusableBmp;
     private int _bmpW;
     private int _bmpH;
-    private MemoryStream _jpegStream = new(8192);
+    private readonly MemoryStream _jpegStream = new(16384);
     private EncoderParameters? _cachedEncParams;
     private int _cachedQuality = -1;
     private Rectangle[] _cachedScreens = [];
     private Rectangle _cachedVirtualScreen;
-    private bool _screensDirty = true;
+    private volatile bool _screensDirty = true;
+    private int _lastMeanLuma = -1;
     private bool _disposed;
 
     public FastScreenCapture()
@@ -84,7 +85,7 @@ public sealed class FastScreenCapture : IScreenCaptureService
                 var (outW, outH) = FitAspect(bounds.Width, bounds.Height, targetWidth, targetHeight);
                 EnsureReusableBitmap(outW, outH);
 
-                var swCap = Stopwatch.StartNew();
+                long tCap = Stopwatch.GetTimestamp();
                 var screenDc = GetDC(IntPtr.Zero);
                 if (screenDc == IntPtr.Zero)
                     return (null, false);
@@ -94,7 +95,6 @@ public sealed class FastScreenCapture : IScreenCaptureService
                     var destDc = g.GetHdc();
                     try
                     {
-                        // HALFTONE + SetBrushOrgEx keeps small HUD numbers, timers & kickoffs razor-sharp!
                         SetStretchBltMode(destDc, Halftone);
                         SetBrushOrgEx(destDc, 0, 0, IntPtr.Zero);
                         if (!StretchBlt(
@@ -114,30 +114,35 @@ public sealed class FastScreenCapture : IScreenCaptureService
                 {
                     ReleaseDC(IntPtr.Zero, screenDc);
                 }
-                swCap.Stop();
+                double capMs = Stopwatch.GetElapsedTime(tCap).TotalMilliseconds;
 
-                var swEnc = Stopwatch.StartNew();
-                var (hash, spatial) = ComputeDHashAndSpatial(_reusableBmp!);
+                long tEnc = Stopwatch.GetTimestamp();
+                var (hash, lumaRange, meanLuma) = ComputeCellAveragedDHash(_reusableBmp!);
 
-                // Early-exit BEFORE JPEG encoding if frame hasn't visually changed (0 bytes allocated!)
-                if (!isForced && lastAcceptedHash.HasValue &&
+                // Reject uniform pitch-black / solid loading screens / UAC blank frames automatically
+                if (!isForced && lumaRange < 8)
+                    return (null, true);
+
+                // Early-exit BEFORE JPEG encoding unless scene or global brightness shifted notably
+                bool sameLumaBand = _lastMeanLuma < 0 || Math.Abs(meanLuma - _lastMeanLuma) < 18;
+                if (!isForced && lastAcceptedHash.HasValue && sameLumaBand &&
                     PerceptualHasher.HammingDistance(hash, lastAcceptedHash.Value) < phashThreshold)
                 {
                     return (null, true);
                 }
 
+                _lastMeanLuma = meanLuma;
                 byte[] jpegBytes = EncodeJpeg(_reusableBmp!, Math.Clamp(jpegQuality, 35, 92));
-                swEnc.Stop();
+                double encMs = Stopwatch.GetElapsedTime(tEnc).TotalMilliseconds;
 
                 return (new CapturedFrameData(
                     jpegBytes,
                     hash,
                     frameId,
-                    swCap.Elapsed.TotalMilliseconds,
-                    swEnc.Elapsed.TotalMilliseconds,
+                    capMs,
+                    encMs,
                     DateTimeOffset.UtcNow,
-                    IsForced: isForced,
-                    SpatialTelemetry: spatial
+                    IsForced: isForced
                 ), false);
             }
             catch
@@ -185,73 +190,55 @@ public sealed class FastScreenCapture : IScreenCaptureService
         return (Math.Max(16, (int)(srcW * scale)), Math.Max(16, (int)(srcH * scale)));
     }
 
-    private static unsafe (ulong Hash, string Spatial) ComputeDHashAndSpatial(Bitmap bmp)
+    private static unsafe (ulong Hash, int LumaRange, int MeanLuma) ComputeCellAveragedDHash(Bitmap bmp)
     {
         int w = bmp.Width;
         int h = bmp.Height;
         Span<byte> gray = stackalloc byte[PerceptualHasher.GridWidth * PerceptualHasher.GridHeight];
 
-        int allyL = 0, allyC = 0, allyR = 0;
-        int rivL = 0, rivC = 0, rivR = 0;
-        int hudBright = 0, hudTotal = 0;
+        int minLuma = 255;
+        int maxLuma = 0;
+        int sumLuma = 0;
 
         var rect = new Rectangle(0, 0, w, h);
         var data = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
         try
         {
             if (data.Scan0 == IntPtr.Zero)
-                return (0UL, string.Empty);
+                return (0UL, 0, 0);
 
             byte* scan0 = (byte*)data.Scan0;
             int stride = data.Stride;
+            int stepX = Math.Max(2, w / 36);
+            int stepY = Math.Max(2, h / 32);
 
-            // 1. Direct subsampled 9x8 dHash (<0.03ms, zero Bitmap allocations)
+            // 3x3 sub-sampled cell averaging (~648 pixels) avoids single-pixel noise & tracks corner HUD changes
             int gIdx = 0;
             for (int gy = 0; gy < PerceptualHasher.GridHeight; gy++)
             {
-                int sy = Math.Min(h - 1, (gy * h + h / 2) / PerceptualHasher.GridHeight);
-                byte* row = scan0 + (sy * stride);
+                int cy = Math.Clamp((gy * h + h / 2) / PerceptualHasher.GridHeight, 0, h - 1);
                 for (int gx = 0; gx < PerceptualHasher.GridWidth; gx++)
                 {
-                    int sx = Math.Min(w - 1, (gx * w + w / 2) / PerceptualHasher.GridWidth);
-                    int b = row[sx * 3];
-                    int gr = row[sx * 3 + 1];
-                    int r = row[sx * 3 + 2];
-                    gray[gIdx++] = (byte)((r * 77 + gr * 150 + b * 29) >> 8);
-                }
-            }
-
-            // 2. Lightweight 24x14 spatial scan for keyless text-only fallback models (<0.1ms)
-            for (int sy = 0; sy < 14; sy++)
-            {
-                int py = (sy * h) / 14;
-                byte* row = scan0 + (py * stride);
-                for (int sx = 0; sx < 24; sx++)
-                {
-                    int px = (sx * w) / 24;
-                    int b = row[px * 3];
-                    int gr = row[px * 3 + 1];
-                    int r = row[px * 3 + 2];
-
-                    if (sy is >= 2 and <= 10)
+                    int cx = Math.Clamp((gx * w + w / 2) / PerceptualHasher.GridWidth, 0, w - 1);
+                    int acc = 0;
+                    for (int dy = -1; dy <= 1; dy++)
                     {
-                        bool ally = (b > r + 40 && b > 125) || (gr > r + 35 && gr > 130 && b > 80);
-                        bool rival = r > b + 48 && r > 150 && gr < 145;
-                        if (ally)
+                        int py = Math.Clamp(cy + dy * stepY, 0, h - 1);
+                        byte* row = scan0 + (py * stride);
+                        for (int dx = -1; dx <= 1; dx++)
                         {
-                            if (sx < 8) allyL++; else if (sx < 16) allyC++; else allyR++;
-                        }
-                        else if (rival)
-                        {
-                            if (sx < 8) rivL++; else if (sx < 16) rivC++; else rivR++;
+                            int px = Math.Clamp(cx + dx * stepX, 0, w - 1);
+                            int off = px * 3;
+                            int luma = (row[off + 2] * 77 + row[off + 1] * 150 + row[off] * 29) >> 8;
+                            acc += luma;
+                            if (luma < minLuma) minLuma = luma;
+                            if (luma > maxLuma) maxLuma = luma;
                         }
                     }
-                    else if (sy >= 11 && (sx <= 6 || sx >= 17))
-                    {
-                        hudTotal++;
-                        if ((r > 170 && gr > 120) || (b > 165 && gr > 140))
-                            hudBright++;
-                    }
+
+                    byte avg = (byte)(acc / 9);
+                    gray[gIdx++] = avg;
+                    sumLuma += avg;
                 }
             }
         }
@@ -261,11 +248,7 @@ public sealed class FastScreenCapture : IScreenCaptureService
         }
 
         ulong hash = PerceptualHasher.ComputeDHash64(gray);
-        string allySec = allyL + allyC + allyR < 2 ? "rotando" : (allyL >= allyC && allyL >= allyR ? "izq" : (allyC >= allyR ? "centro" : "der"));
-        string rivSec = rivL + rivC + rivR < 2 ? "media" : (rivL >= rivC && rivL >= rivR ? "izq" : (rivC >= rivR ? "centro" : "der"));
-        int hudPct = hudTotal > 0 ? Math.Clamp((hudBright * 170) / hudTotal, 5, 100) : 50;
-        string spatial = $"Aliado={allySec}, Rival={rivSec}, HUD_Recurso~{hudPct}%";
-        return (hash, spatial);
+        return (hash, maxLuma - minLuma, sumLuma / gray.Length);
     }
 
     private byte[] EncodeJpeg(Bitmap bmp, int quality)

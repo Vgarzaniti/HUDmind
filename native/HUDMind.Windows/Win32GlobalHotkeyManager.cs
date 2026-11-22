@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using HUDMind.Core.Config;
 
 namespace HUDMind.Windows;
 
@@ -7,9 +8,6 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
     private const int WmHotkey = 0x0312;
     private const int WmQuit = 0x0012;
     private const uint PmNoRemove = 0x0000;
-    private const uint ModAlt = 0x0001;
-    private const uint ModControl = 0x0002;
-    private const uint ModShift = 0x0004;
     private const uint ModNoRepeat = 0x4000;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -46,63 +44,102 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
     private volatile uint _threadId;
     private Action? _onPause;
     private Action? _onAnalyze;
+    private Action? _onToggleMic;
 
-    public (bool PauseOk, bool AnalyzeOk) Start(
+    public (bool PauseOk, bool AnalyzeOk, bool MicOk) Start(
         string pauseHotkey,
         string analyzeHotkey,
+        string micHotkey,
         Action onPause,
         Action onAnalyze,
+        Action? onToggleMic = null,
         Action<string>? onWarning = null)
     {
         Stop();
         _onPause = onPause;
         _onAnalyze = onAnalyze;
+        _onToggleMic = onToggleMic;
 
-        var (pMod, pVk) = ParseHotkey(pauseHotkey, 0x78);   // default F9
-        var (aMod, aVk) = ParseHotkey(analyzeHotkey, 0x79); // default F10
+        uint pMod = 0, pVk = 0x78;
+        if (!HotkeyParser.TryParse(pauseHotkey, out pMod, out pVk, out _))
+        {
+            onWarning?.Invoke($"Tecla Pausar '{pauseHotkey}' inválida; usando F9 por defecto.");
+            pMod = 0;
+            pVk = 0x78;
+        }
+
+        uint aMod = 0, aVk = 0x79;
+        if (!HotkeyParser.TryParse(analyzeHotkey, out aMod, out aVk, out _))
+        {
+            onWarning?.Invoke($"Tecla Analizar '{analyzeHotkey}' inválida; usando F10 por defecto.");
+            aMod = 0;
+            aVk = 0x79;
+        }
+
+        bool hasMic = !string.IsNullOrWhiteSpace(micHotkey) && _onToggleMic is not null;
+        uint mMod = 0, mVk = 0x77;
+        if (hasMic && !HotkeyParser.TryParse(micHotkey, out mMod, out mVk, out _))
+        {
+            onWarning?.Invoke($"Tecla Mic '{micHotkey}' inválida; usando F8 por defecto.");
+            mMod = 0;
+            mVk = 0x77;
+        }
 
         bool pauseOk = false;
         bool analyzeOk = false;
+        bool micOk = false;
         using var readyEv = new ManualResetEventSlim(false);
 
         _thread = new Thread(() =>
         {
-            // Force Win32 message queue creation BEFORE publishing _threadId (eliminates PostThreadMessage race)
             _ = PeekMessage(out _, IntPtr.Zero, 0, 0, PmNoRemove);
             _threadId = GetCurrentThreadId();
 
             pauseOk = RegisterHotKey(IntPtr.Zero, 1, pMod | ModNoRepeat, pVk);
             if (!pauseOk)
-                onWarning?.Invoke($"No se pudo registrar tecla Pausar '{pauseHotkey}' (Win32 err={Marshal.GetLastWin32Error()}).");
+                onWarning?.Invoke($"No se pudo registrar tecla Pausar '{pauseHotkey}' (Win32 err={Marshal.GetLastWin32Error()} — otro programa la usa).");
 
             analyzeOk = RegisterHotKey(IntPtr.Zero, 2, aMod | ModNoRepeat, aVk);
             if (!analyzeOk)
-                onWarning?.Invoke($"No se pudo registrar tecla Analizar '{analyzeHotkey}' (Win32 err={Marshal.GetLastWin32Error()}).");
+                onWarning?.Invoke($"No se pudo registrar tecla Analizar '{analyzeHotkey}' (Win32 err={Marshal.GetLastWin32Error()} — otro programa la usa).");
+
+            if (hasMic)
+            {
+                micOk = RegisterHotKey(IntPtr.Zero, 3, mMod | ModNoRepeat, mVk);
+                if (!micOk)
+                    onWarning?.Invoke($"No se pudo registrar tecla Mic '{micHotkey}' (Win32 err={Marshal.GetLastWin32Error()}).");
+            }
 
             readyEv.Set();
             try
             {
                 while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
                 {
-                    if (msg.message == WmHotkey)
+                    if (msg.message != WmHotkey) continue;
+                    int id = (int)msg.wParam;
+                    Action? target = id switch
                     {
-                        int id = (int)msg.wParam;
-                        try
-                        {
-                            if (id == 1) _onPause?.Invoke();
-                            else if (id == 2) _onAnalyze?.Invoke();
-                        }
-                        catch (Exception ex)
-                        {
-                            onWarning?.Invoke($"Error en callback de hotkey: {ex.Message}");
-                        }
-                    }
+                        1 => _onPause,
+                        2 => _onAnalyze,
+                        3 => _onToggleMic,
+                        _ => null
+                    };
+                    if (target is null) continue;
+
+                    // Dispatch asynchronously so GetMessage pump & Stop() never block on callbacks!
+                    ThreadPool.UnsafeQueueUserWorkItem(static state =>
+                    {
+                        var (fn, warn) = ((Action, Action<string>?))state!;
+                        try { fn(); }
+                        catch (Exception ex) { warn?.Invoke($"Error en callback de hotkey: {ex.Message}"); }
+                    }, (target, onWarning));
                 }
             }
             finally
             {
                 if (pauseOk) UnregisterHotKey(IntPtr.Zero, 1);
                 if (analyzeOk) UnregisterHotKey(IntPtr.Zero, 2);
+                if (micOk) UnregisterHotKey(IntPtr.Zero, 3);
             }
         })
         {
@@ -111,7 +148,7 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
         };
         _thread.Start();
         readyEv.Wait(TimeSpan.FromSeconds(2));
-        return (pauseOk, analyzeOk);
+        return (pauseOk, analyzeOk, micOk);
     }
 
     public void Stop()
@@ -126,36 +163,8 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
         _threadId = 0;
     }
 
-    public static (uint Modifiers, uint VirtualKey) ParseHotkey(string? raw, uint fallbackVk)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-            return (0, fallbackVk);
-
-        uint mods = 0;
-        uint vk = fallbackVk;
-        foreach (var token in raw.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var t = token.ToUpperInvariant();
-            if (t is "CTRL" or "CONTROL") mods |= ModControl;
-            else if (t == "ALT") mods |= ModAlt;
-            else if (t == "SHIFT") mods |= ModShift;
-            else if (t.StartsWith('F') && int.TryParse(t[1..], out int fNum) && fNum is >= 1 and <= 24)
-                vk = (uint)(0x70 + (fNum - 1));
-            else if (t.StartsWith("NUM") && int.TryParse(t[3..], out int nNum) && nNum is >= 0 and <= 9)
-                vk = (uint)(0x60 + nNum);
-            else if (t is "INSERT" or "INS") vk = 0x2D;
-            else if (t == "DELETE" || t == "DEL") vk = 0x2E;
-            else if (t == "HOME") vk = 0x24;
-            else if (t == "END") vk = 0x23;
-            else if (t is "PAGEUP" or "PGUP") vk = 0x21;
-            else if (t is "PAGEDOWN" or "PGDN") vk = 0x22;
-            else if (t == "PAUSE") vk = 0x13;
-            else if (t == "SPACE") vk = 0x20;
-            else if (t.Length == 1 && char.IsLetterOrDigit(t[0]))
-                vk = t[0];
-        }
-        return (mods, vk);
-    }
+    public static (uint Modifiers, uint VirtualKey) ParseHotkey(string? raw, uint fallbackVk) =>
+        HotkeyParser.TryParse(raw, out uint mod, out uint vk, out _) ? (mod, vk) : (0, fallbackVk);
 
     public void Dispose() => Stop();
 }

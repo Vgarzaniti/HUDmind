@@ -9,9 +9,9 @@ namespace HUDMind.Windows;
 /// <summary>
 /// Hybrid Voice Engine combining:
 /// 1) Human Neural Voices (es-AR-TomasNeural Male / es-AR-ElenaNeural Female; EN Andrew / Ava)
-///    via a persistent warm zero-GPU sidecar with LRU RAM cache and instant Drop-Oldest cancellation.
+///    via a persistent warm zero-GPU sidecar when workspace Python runtime is present (async stderr+stdout drained).
 /// 2) Instant Windows OneCore Voices (Raul Male / Sabina-Laura Female, &lt;8ms offline, 0% GPU)
-///    selectable directly or used automatically as instant fallback if offline.
+///    automatically used in standalone HUDMind.exe installs or if Neural fails online.
 /// </summary>
 public sealed class HybridVoiceService : IVoiceOutputService
 {
@@ -22,12 +22,13 @@ public sealed class HybridVoiceService : IVoiceOutputService
     private Process? _neuralProc;
     private StreamWriter? _neuralIn;
     private volatile bool _neuralReady;
-    private volatile bool _neuralUnavailable;
+    private long _lastNeuralFailTick;
     private volatile bool _disposed;
 
     private string _language = "es";
     private string _gender = "male";
     private string _style = "neural";
+    private string _rate = "+15%";
     private double _volume = 0.75;
     private int _reqSeq;
 
@@ -35,6 +36,10 @@ public sealed class HybridVoiceService : IVoiceOutputService
     {
         _workspaceRoot = workspaceRoot ?? ConfigRepository.DiscoverWorkspaceRoot();
     }
+
+    public bool IsNeuralWorkerPresent =>
+        File.Exists(Path.Combine(_workspaceRoot, ".venv", "Scripts", "python.exe")) &&
+        File.Exists(Path.Combine(_workspaceRoot, "src", "output", "neural_worker.py"));
 
     public string EngineName
     {
@@ -68,7 +73,7 @@ public sealed class HybridVoiceService : IVoiceOutputService
         _volume = Math.Clamp(volume, 0.0, 1.0);
 
         _instant.WarmUp(_language, _volume, _gender, "instant");
-        if (_style == "neural")
+        if (_style == "neural" && IsNeuralWorkerPresent)
             EnsureNeuralWorkerStarted();
     }
 
@@ -77,12 +82,23 @@ public sealed class HybridVoiceService : IVoiceOutputService
         if (_disposed) return;
         _language = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
         _gender = string.Equals(gender, "female", StringComparison.OrdinalIgnoreCase) ? "female" : "male";
-        _style = string.Equals(style, "instant", StringComparison.OrdinalIgnoreCase) ? "instant" : "neural";
+        var newStyle = string.Equals(style, "instant", StringComparison.OrdinalIgnoreCase) ? "instant" : "neural";
+        bool switchedToInstant = _style == "neural" && newStyle == "instant";
+        _style = newStyle;
         _volume = Math.Clamp(volume, 0.0, 1.0);
 
+        if (switchedToInstant && _neuralReady)
+            TrySendNeuralCommand(new { cmd = "stop" });
+
         _instant.UpdateSettings(_language, _volume, _gender, "instant");
-        if (_style == "neural" && !_neuralReady && !_neuralUnavailable)
+        if (_style == "neural" && !_neuralReady && IsNeuralWorkerPresent)
             _ = Task.Run(EnsureNeuralWorkerStarted);
+    }
+
+    public void SetSpeechRate(string? rate)
+    {
+        if (!string.IsNullOrWhiteSpace(rate))
+            _rate = rate.Trim();
     }
 
     public double SpeakInstant(string text)
@@ -90,9 +106,9 @@ public sealed class HybridVoiceService : IVoiceOutputService
         if (_disposed || string.IsNullOrWhiteSpace(text))
             return 0;
 
-        if (_style == "neural")
+        if (_style == "neural" && IsNeuralWorkerPresent)
         {
-            if (!_neuralReady && !_neuralUnavailable)
+            if (!_neuralReady && CanRetryNeuralStart())
                 EnsureNeuralWorkerStarted();
 
             if (_neuralReady && TrySendNeuralCommand(new
@@ -101,17 +117,16 @@ public sealed class HybridVoiceService : IVoiceOutputService
                 id = Interlocked.Increment(ref _reqSeq),
                 text = text.Trim(),
                 voice = ResolveNeuralVoice(_language, _gender),
-                rate = "+15%",
+                rate = _rate,
                 volume = _volume
             }))
             {
-                // Stop OneCore in case it was speaking before user switched to Neural
                 _instant.StopSpeaking();
-                return 1.5; // Non-blocking instant dispatch to persistent neural audio worker
+                return 1.5;
             }
         }
 
-        // Instant OneCore path (or automatic zero-gap fallback if Neural worker unavailable)
+        // Instant OneCore path (or automatic fallback when standalone/offline)
         return _instant.SpeakInstant(text);
     }
 
@@ -122,11 +137,17 @@ public sealed class HybridVoiceService : IVoiceOutputService
             TrySendNeuralCommand(new { cmd = "stop" });
     }
 
+    private bool CanRetryNeuralStart()
+    {
+        long failTick = Volatile.Read(ref _lastNeuralFailTick);
+        return failTick == 0 || Stopwatch.GetElapsedTime(failTick).TotalSeconds >= 20.0;
+    }
+
     private void EnsureNeuralWorkerStarted()
     {
         lock (_procLock)
         {
-            if (_disposed || _neuralUnavailable)
+            if (_disposed || !CanRetryNeuralStart())
                 return;
             if (_neuralProc is { HasExited: false } && _neuralReady)
                 return;
@@ -134,17 +155,13 @@ public sealed class HybridVoiceService : IVoiceOutputService
             var pyExe = Path.Combine(_workspaceRoot, ".venv", "Scripts", "python.exe");
             var workerScript = Path.Combine(_workspaceRoot, "src", "output", "neural_worker.py");
             if (!File.Exists(pyExe) || !File.Exists(workerScript))
-            {
-                _neuralUnavailable = true;
                 return;
-            }
 
             try
             {
                 var psi = new ProcessStartInfo
                 {
                     FileName = pyExe,
-                    Arguments = $"\"{workerScript}\"",
                     WorkingDirectory = _workspaceRoot,
                     UseShellExecute = false,
                     CreateNoWindow = true,
@@ -152,40 +169,70 @@ public sealed class HybridVoiceService : IVoiceOutputService
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     StandardInputEncoding = Encoding.UTF8,
-                    StandardOutputEncoding = Encoding.UTF8
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
                 };
+                psi.ArgumentList.Add(workerScript);
 
                 var proc = Process.Start(psi);
                 if (proc is null)
                 {
-                    _neuralUnavailable = true;
+                    Volatile.Write(ref _lastNeuralFailTick, Stopwatch.GetTimestamp());
                     return;
                 }
 
-                // Wait briefly for {"ready": true} handshake
+                // Drain stderr concurrently to prevent Windows 4KB pipe deadlock!
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (!proc.HasExited)
+                        {
+                            var errLine = await proc.StandardError.ReadLineAsync();
+                            if (errLine is null) break;
+                        }
+                    }
+                    catch { }
+                });
+
                 var readyTask = proc.StandardOutput.ReadLineAsync();
-                if (readyTask.Wait(TimeSpan.FromSeconds(4)) &&
-                    readyTask.Result is not null &&
-                    readyTask.Result.Contains("ready", StringComparison.OrdinalIgnoreCase))
+                bool isValidHandshake = readyTask.Wait(TimeSpan.FromSeconds(4)) &&
+                    IsWorkerReadyJson(readyTask.Result);
+
+                if (isValidHandshake)
                 {
                     _neuralProc = proc;
                     _neuralIn = proc.StandardInput;
                     _neuralReady = true;
+                    Volatile.Write(ref _lastNeuralFailTick, 0);
 
-                    // Drain stdout asynchronously to detect synthesis errors and avoid pipe deadlock
                     _ = Task.Run(() => DrainWorkerOutputAsync(proc));
                 }
                 else
                 {
                     try { proc.Kill(entireProcessTree: true); } catch { }
                     proc.Dispose();
-                    _neuralUnavailable = true;
+                    Volatile.Write(ref _lastNeuralFailTick, Stopwatch.GetTimestamp());
                 }
             }
             catch
             {
-                _neuralUnavailable = true;
+                Volatile.Write(ref _lastNeuralFailTick, Stopwatch.GetTimestamp());
             }
+        }
+    }
+
+    private static bool IsWorkerReadyJson(string? line)
+    {
+        if (string.IsNullOrWhiteSpace(line)) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            return doc.RootElement.TryGetProperty("ready", out var r) && r.ValueKind == JsonValueKind.True;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -197,6 +244,12 @@ public sealed class HybridVoiceService : IVoiceOutputService
             {
                 var line = await proc.StandardOutput.ReadLineAsync();
                 if (line is null) break;
+                // Detect runtime synthesis failure so future lines fall back cleanly to OneCore
+                if (line.Contains("\"ok\":false", StringComparison.OrdinalIgnoreCase) ||
+                    line.Contains("\"ok\": false", StringComparison.OrdinalIgnoreCase))
+                {
+                    Volatile.Write(ref _lastNeuralFailTick, Stopwatch.GetTimestamp());
+                }
             }
         }
         catch
@@ -229,6 +282,7 @@ public sealed class HybridVoiceService : IVoiceOutputService
             catch
             {
                 _neuralReady = false;
+                Volatile.Write(ref _lastNeuralFailTick, Stopwatch.GetTimestamp());
                 return false;
             }
         }
