@@ -63,7 +63,7 @@ public static class SharedHttpFactory
     public static HttpClient GetSharedClient(bool allowLoopback = false) =>
         allowLoopback ? SharedLoopbackClient.Value : SharedRemoteClient.Value;
 
-    public static HttpClient CreateSafeClient(bool allowLoopback = false)
+    public static HttpClient CreateSafeClient(bool allowLoopback = false, TimeSpan? timeout = null)
     {
         var handler = new SocketsHttpHandler
         {
@@ -103,7 +103,7 @@ public static class SharedHttpFactory
 
         var client = new HttpClient(handler)
         {
-            Timeout = TimeSpan.FromSeconds(12.0), // Per-call timeouts enforced via linked CTS
+            Timeout = timeout ?? TimeSpan.FromSeconds(12.0), // Per-call timeouts enforced via linked CTS
             MaxResponseContentBufferSize = 2 * 1024 * 1024, // Prevents CWE-400 unbounded 2GB read DoS
             DefaultRequestVersion = HttpVersion.Version20,
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower

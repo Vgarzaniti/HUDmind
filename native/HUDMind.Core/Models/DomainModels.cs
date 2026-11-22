@@ -301,6 +301,9 @@ public sealed class UserConfig
     [JsonPropertyName("enable_audio_cues")]
     public bool EnableAudioCues { get; set; } = true;
 
+    [JsonPropertyName("check_updates_on_startup")]
+    public bool CheckUpdatesOnStartup { get; set; } = true;
+
     [JsonIgnore]
     public string PreviousMatchFocus { get; set; } = string.Empty;
 
@@ -337,6 +340,7 @@ public sealed class UserConfig
         ImageCompressionQuality = source.ImageCompressionQuality;
         TokenEfficiencyMode = source.TokenEfficiencyMode;
         EnableAudioCues = source.EnableAudioCues;
+        CheckUpdatesOnStartup = source.CheckUpdatesOnStartup;
         PreviousMatchFocus = source.PreviousMatchFocus;
         SetCommunicationMode(source.CommunicationMode);
     }

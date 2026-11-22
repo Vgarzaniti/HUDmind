@@ -11,6 +11,7 @@ using HUDMind.Core.AI;
 using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
+using HUDMind.Core.Updates;
 using HUDMind.Windows;
 using MediaColor = System.Windows.Media.Color;
 
@@ -43,7 +44,13 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<string> _logEntries = [];
     private readonly OverlayWindow _overlay = new();
     private readonly HybridVoiceService _sharedVoice;
+    private readonly GitHubReleaseUpdateService _updateService = new();
     private Win32TrayIcon? _trayIcon;
+    private CancellationTokenSource? _updateCts;
+    private AppUpdateInfo? _availableUpdate;
+    private string? _downloadedUpdatePath;
+    private bool _checkingUpdates;
+    private bool _downloadingUpdate;
 
     private bool _shutdownComplete;
     private bool _closingInProgress;
@@ -104,6 +111,8 @@ public partial class MainWindow : Window
             Hide();
             _trayIcon.Show();
         }
+        if (_config.CheckUpdatesOnStartup)
+            _ = CheckForUpdatesAsync(manual: false);
     }
 
     private void MainWindow_StateChanged(object? sender, EventArgs e)
@@ -176,10 +185,14 @@ public partial class MainWindow : Window
         ChkEnableHotkeys.IsChecked = _config.EnableHotkeys;
         ChkMinimizeToTray.IsChecked = _config.MinimizeToTray;
         ChkEnableAudioCues.IsChecked = _config.EnableAudioCues;
+        ChkCheckUpdatesOnStartup.IsChecked = _config.CheckUpdatesOnStartup;
         TxtPauseKey.Text = _config.HotkeyTogglePause;
         TxtAnalyzeKey.Text = _config.HotkeyAnalyzeNow;
         TxtMicKey.Text = _config.HotkeyToggleMic;
         RefreshHotkeyButtonLabels();
+
+        var (curVer, _) = GitHubReleaseUpdateService.GetCurrentAppVersion();
+        BtnVersionCheck.Content = $"v{GitHubReleaseUpdateService.FormatVersion(curVer)}";
 
         ConfigureOverlayFromCurrentConfig();
         RefreshAccountsList();
@@ -342,6 +355,9 @@ public partial class MainWindow : Window
 
         try
         {
+            _updateCts?.Cancel();
+            _updateCts?.Dispose();
+            _updateCts = null;
             await _coordinator.DisposeAsync();
             _sharedVoice.Dispose();
             _trayIcon?.Dispose();
@@ -1261,6 +1277,7 @@ public partial class MainWindow : Window
         _config.EnableHotkeys = ChkEnableHotkeys.IsChecked == true;
         _config.MinimizeToTray = ChkMinimizeToTray.IsChecked == true;
         _config.EnableAudioCues = ChkEnableAudioCues.IsChecked == true;
+        _config.CheckUpdatesOnStartup = ChkCheckUpdatesOnStartup.IsChecked == true;
         if (HotkeyParser.TryParse(TxtPauseKey.Text, out _, out _, out var pSafe)) _config.HotkeyTogglePause = pSafe;
         if (HotkeyParser.TryParse(TxtAnalyzeKey.Text, out _, out _, out var aSafe)) _config.HotkeyAnalyzeNow = aSafe;
         if (HotkeyParser.TryParse(TxtMicKey.Text, out _, out _, out var mSafe)) _config.HotkeyToggleMic = mSafe;
@@ -1342,5 +1359,303 @@ public partial class MainWindow : Window
             }
         }
         if (cb.Items.Count > 0) cb.SelectedIndex = 0;
+    }
+
+    private async void BtnCheckUpdates_Click(object sender, RoutedEventArgs e) =>
+        await CheckForUpdatesAsync(manual: true);
+
+    private async Task CheckForUpdatesAsync(bool manual)
+    {
+        if (_shutdownComplete || _checkingUpdates || _downloadingUpdate)
+            return;
+
+        _checkingUpdates = true;
+        BtnCheckUpdates.IsEnabled = false;
+        BtnVersionCheck.IsEnabled = false;
+        try
+        {
+            _updateCts?.Cancel();
+            _updateCts?.Dispose();
+            _updateCts = new CancellationTokenSource();
+
+            var result = await _updateService.CheckForUpdatesAsync(ct: _updateCts.Token);
+            if (_shutdownComplete)
+                return;
+
+            if (result.IsUpdateAvailable && result.Update is not null)
+            {
+                ShowAvailableUpdateBanner(result.Update);
+                AppendLog($"🚀 Nueva actualización disponible: {result.Update.TagName} (actual: v{GitHubReleaseUpdateService.FormatVersion(result.Update.CurrentVersion)}).");
+            }
+            else if (manual)
+            {
+                AppendLog($"ℹ Actualizaciones: {result.StatusMessage}");
+                System.Windows.MessageBox.Show(
+                    result.StatusMessage,
+                    "HUDMind · Actualizaciones",
+                    MessageBoxButton.OK,
+                    result.WasRateLimited ? MessageBoxImage.Warning : MessageBoxImage.Information);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Ignored on shutdown or superseded check
+        }
+        catch (Exception ex)
+        {
+            if (manual && !_shutdownComplete)
+            {
+                var safe = SecretRedactor.Redact(ex.Message);
+                AppendLog($"⚠ Error buscando actualizaciones: {safe}");
+                System.Windows.MessageBox.Show(
+                    $"No se pudo consultar GitHub Releases:\n{safe}",
+                    "HUDMind · Actualizaciones",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }
+        finally
+        {
+            _checkingUpdates = false;
+            if (!_shutdownComplete)
+            {
+                BtnCheckUpdates.IsEnabled = !_downloadingUpdate;
+                BtnVersionCheck.IsEnabled = !_downloadingUpdate;
+            }
+        }
+    }
+
+    private void ShowAvailableUpdateBanner(AppUpdateInfo update)
+    {
+        _availableUpdate = update;
+        _downloadedUpdatePath = null;
+
+        UpdateBanner.Background = new SolidColorBrush(MediaColor.FromRgb(0x0C, 0x4A, 0x6E));
+        UpdateBanner.BorderBrush = new SolidColorBrush(MediaColor.FromRgb(0x38, 0xBD, 0xF8));
+        TxtUpdateBannerTitle.Text =
+            $"🚀 Nueva actualización disponible: {update.TagName} (tenés v{GitHubReleaseUpdateService.FormatVersion(update.CurrentVersion)})";
+
+        var notesSummary = GitHubReleaseUpdateService.SummarizeReleaseNotes(update.ReleaseNotes);
+        if (update.PreferredAsset is not null)
+        {
+            var sizeMb = update.PreferredAsset.SizeBytes > 0
+                ? $" ({update.PreferredAsset.SizeBytes / (1024.0 * 1024.0):F1} MB)"
+                : string.Empty;
+            TxtUpdateBannerDetails.Text = string.IsNullOrEmpty(notesSummary)
+                ? $"{update.PreferredAsset.Name}{sizeMb} · Tocá 'Descargar actualización' para bajar el nuevo .exe."
+                : $"{update.PreferredAsset.Name}{sizeMb} · {notesSummary}";
+        }
+        else
+        {
+            TxtUpdateBannerDetails.Text = string.IsNullOrEmpty(notesSummary)
+                ? "Tocá 'Descargar actualización' para abrir la release oficial en GitHub."
+                : notesSummary;
+        }
+
+        TxtUpdateBannerDetails.ToolTip = string.IsNullOrWhiteSpace(update.ReleaseNotes) ? null : update.ReleaseNotes;
+        UpdateProgressBar.Visibility = Visibility.Collapsed;
+        UpdateProgressBar.Value = 0;
+
+        BtnDownloadUpdate.Content = update.PreferredAsset is not null
+            ? "⬇ Descargar actualización"
+            : "⬇ Descargar desde GitHub";
+        BtnDownloadUpdate.Visibility = Visibility.Visible;
+        BtnDownloadUpdate.IsEnabled = true;
+        BtnLaunchUpdate.Visibility = Visibility.Collapsed;
+        BtnOpenUpdateFolder.Visibility = Visibility.Collapsed;
+        UpdateBanner.Visibility = Visibility.Visible;
+
+        BtnVersionCheck.Content = $"⬆ {update.TagName}";
+        BtnVersionCheck.BorderBrush = new SolidColorBrush(MediaColor.FromRgb(0x10, 0xB9, 0x81));
+        BtnVersionCheck.Foreground = new SolidColorBrush(MediaColor.FromRgb(0x10, 0xB9, 0x81));
+    }
+
+    private async void BtnDownloadUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (_availableUpdate is null || _downloadingUpdate || _shutdownComplete)
+            return;
+
+        if (_availableUpdate.PreferredAsset is null)
+        {
+            OpenExternalUrl(_availableUpdate.ReleaseHtmlUrl);
+            return;
+        }
+
+        var asset = _availableUpdate.PreferredAsset;
+        var baseName = Path.GetFileNameWithoutExtension(asset.Name);
+        var suggestedName = asset.Name.Contains(_availableUpdate.TagName, StringComparison.OrdinalIgnoreCase)
+            ? asset.Name
+            : $"{baseName}-{_availableUpdate.TagName}.exe";
+
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = $"Guardar HUDMind {_availableUpdate.TagName}",
+            InitialDirectory = KnownFolders.GetDownloadsDirectory(),
+            FileName = suggestedName,
+            Filter = "Ejecutable Windows (*.exe)|*.exe",
+            DefaultExt = ".exe",
+            AddExtension = true
+        };
+        if (dlg.ShowDialog(this) != true)
+            return;
+
+        var currentExe = Environment.ProcessPath;
+        if (!string.IsNullOrEmpty(currentExe) &&
+            string.Equals(Path.GetFullPath(dlg.FileName), Path.GetFullPath(currentExe), StringComparison.OrdinalIgnoreCase))
+        {
+            System.Windows.MessageBox.Show(
+                "Windows no permite sobrescribir el .exe que está ejecutándose ahora. Guardalo con otro nombre o en Descargas.",
+                "HUDMind · Actualizaciones",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        _downloadingUpdate = true;
+        BtnDownloadUpdate.IsEnabled = false;
+        BtnCheckUpdates.IsEnabled = false;
+        BtnVersionCheck.IsEnabled = false;
+        UpdateProgressBar.Visibility = Visibility.Visible;
+        UpdateProgressBar.IsIndeterminate = asset.SizeBytes <= 0;
+        UpdateProgressBar.Value = 0;
+        TxtUpdateBannerDetails.Text = $"Iniciando descarga de {asset.Name}...";
+
+        try
+        {
+            _updateCts?.Cancel();
+            _updateCts?.Dispose();
+            _updateCts = new CancellationTokenSource();
+
+            var progress = new Progress<UpdateDownloadProgress>(p =>
+            {
+                if (_shutdownComplete) return;
+                if (p.TotalBytes is > 0)
+                {
+                    double pct = Math.Clamp(p.BytesReceived * 100.0 / p.TotalBytes.Value, 0, 100);
+                    UpdateProgressBar.IsIndeterminate = false;
+                    UpdateProgressBar.Value = pct;
+                    TxtUpdateBannerDetails.Text =
+                        $"Descargando {asset.Name}: {p.BytesReceived / (1024.0 * 1024.0):F1} / {p.TotalBytes.Value / (1024.0 * 1024.0):F1} MB ({pct:F0}%)";
+                }
+                else
+                {
+                    UpdateProgressBar.IsIndeterminate = true;
+                    TxtUpdateBannerDetails.Text =
+                        $"Descargando {asset.Name}: {p.BytesReceived / (1024.0 * 1024.0):F1} MB...";
+                }
+            });
+
+            var result = await _updateService.DownloadAssetAsync(
+                asset,
+                dlg.FileName,
+                _availableUpdate.ChecksumAsset,
+                progress,
+                _updateCts.Token);
+
+            if (_shutdownComplete)
+                return;
+
+            UpdateProgressBar.Visibility = Visibility.Collapsed;
+            if (result.Success)
+            {
+                _downloadedUpdatePath = result.FilePath;
+                UpdateBanner.Background = new SolidColorBrush(MediaColor.FromRgb(0x06, 0x4E, 0x3B));
+                UpdateBanner.BorderBrush = new SolidColorBrush(MediaColor.FromRgb(0x10, 0xB9, 0x81));
+                TxtUpdateBannerTitle.Text = $"✅ Actualización {_availableUpdate.TagName} lista para usar";
+                TxtUpdateBannerDetails.Text = result.Sha256Verified
+                    ? $"Guardado en {result.FilePath} · Integridad SHA-256 verificada."
+                    : $"Guardado en {result.FilePath}.";
+                BtnDownloadUpdate.Visibility = Visibility.Collapsed;
+                BtnLaunchUpdate.Visibility = Visibility.Visible;
+                BtnOpenUpdateFolder.Visibility = Visibility.Visible;
+                AppendLog($"✅ {result.Message} ({result.FilePath})");
+            }
+            else
+            {
+                TxtUpdateBannerDetails.Text = $"⚠ {result.Message}";
+                BtnDownloadUpdate.IsEnabled = true;
+                AppendLog($"⚠ Error descargando actualización: {result.Message}");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            if (!_shutdownComplete)
+            {
+                UpdateProgressBar.Visibility = Visibility.Collapsed;
+                TxtUpdateBannerDetails.Text = "Descarga cancelada.";
+                BtnDownloadUpdate.IsEnabled = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!_shutdownComplete)
+            {
+                UpdateProgressBar.Visibility = Visibility.Collapsed;
+                var safe = SecretRedactor.Redact(ex.Message);
+                TxtUpdateBannerDetails.Text = $"⚠ Error descargando: {safe}";
+                BtnDownloadUpdate.IsEnabled = true;
+                AppendLog($"⚠ Error descargando actualización: {safe}");
+            }
+        }
+        finally
+        {
+            _downloadingUpdate = false;
+            if (!_shutdownComplete)
+            {
+                BtnCheckUpdates.IsEnabled = true;
+                BtnVersionCheck.IsEnabled = true;
+            }
+        }
+    }
+
+    private async void BtnLaunchUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_downloadedUpdatePath) || !File.Exists(_downloadedUpdatePath))
+            return;
+
+        BtnLaunchUpdate.IsEnabled = false;
+        try
+        {
+            if (_coordinator.IsRunning)
+                await _coordinator.StopAsync();
+            (System.Windows.Application.Current as App)?.ReleaseSingleInstanceMutex();
+            Process.Start(new ProcessStartInfo(_downloadedUpdatePath) { UseShellExecute = true });
+            Close();
+        }
+        catch (Exception ex)
+        {
+            BtnLaunchUpdate.IsEnabled = true;
+            AppendLog($"⚠ No se pudo abrir la nueva versión: {SecretRedactor.Redact(ex.Message)}");
+        }
+    }
+
+    private void BtnOpenUpdateFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_downloadedUpdatePath) || !File.Exists(_downloadedUpdatePath))
+            return;
+
+        try
+        {
+            var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+            psi.ArgumentList.Add($"/select,{_downloadedUpdatePath}");
+            Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"⚠ No se pudo abrir carpeta de descarga: {SecretRedactor.Redact(ex.Message)}");
+        }
+    }
+
+    private void BtnOpenReleasePage_Click(object sender, RoutedEventArgs e)
+    {
+        if (_availableUpdate is not null)
+            OpenExternalUrl(_availableUpdate.ReleaseHtmlUrl);
+    }
+
+    private void BtnDismissUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (_downloadingUpdate)
+            _updateCts?.Cancel();
+        UpdateBanner.Visibility = Visibility.Collapsed;
     }
 }

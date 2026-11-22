@@ -292,6 +292,15 @@ await RunTest("W7. WinRtNaturalVoiceService parses rates/RIFF WAV cleanly & Hybr
     return Task.CompletedTask;
 });
 
+// W8. KnownFolders.GetDownloadsDirectory resolves an existing local folder
+await RunTest("W8. KnownFolders.GetDownloadsDirectory resolves an existing directory", () =>
+{
+    var downloads = KnownFolders.GetDownloadsDirectory();
+    Assert(!string.IsNullOrWhiteSpace(downloads) && Directory.Exists(downloads),
+        $"Expected existing Downloads/Desktop fallback directory, got '{downloads}'");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

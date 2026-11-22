@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HUDMind.Core.AI;
@@ -8,6 +9,7 @@ using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 using HUDMind.Core.Pipeline;
+using HUDMind.Core.Updates;
 
 int passed = 0;
 int failed = 0;
@@ -1097,6 +1099,126 @@ await RunTest("34. BlackScreenDiagnostic emits one Borderless warning on >=6 bla
     diag.Observe(cap, p, testMode: false, logs.Add, ov, enableOverlay: true);
     Assert(logs.Count == 2, "Diagnostic should re-arm after healthy non-black frames resume");
     return Task.CompletedTask;
+});
+
+// 35. GitHubReleaseUpdateService version comparison, release parsing & asset selection
+await RunTest("35. GitHubReleaseUpdateService parses semver tags, skips drafts/prereleases & picks matching .exe", () =>
+{
+    Assert(GitHubReleaseUpdateService.TryParseReleaseVersion("v1.2.0", out var v120, out bool p120) && !p120, "v1.2.0 should parse");
+    Assert(GitHubReleaseUpdateService.TryParseReleaseVersion("1.2", out var v12, out _), "1.2 should parse");
+    Assert(v120 == v12, "1.2 and v1.2.0 must normalize equally");
+    Assert(GitHubReleaseUpdateService.TryParseReleaseVersion("v1.2.0-beta.1+abc", out var vPre, out bool isPre) && isPre && vPre == v120, "Prerelease suffix parsed");
+
+    Assert(GitHubReleaseUpdateService.IsNewerVersion(new Version(1, 1, 0), false, new Version(1, 2, 0), false), "1.2.0 > 1.1.0");
+    Assert(!GitHubReleaseUpdateService.IsNewerVersion(new Version(1, 2, 0), false, new Version(1, 2, 0), false), "1.2.0 == 1.2.0");
+    Assert(GitHubReleaseUpdateService.IsNewerVersion(new Version(1, 2, 0), true, new Version(1, 2, 0), false), "Stable beats prerelease");
+    Assert(!GitHubReleaseUpdateService.IsNewerVersion(new Version(1, 1, 0), false, new Version(1, 2, 0), true), "Never push prerelease to stable user");
+
+    var svc = new GitHubReleaseUpdateService(new HttpClient(new FakeHttpHandler(_ => throw new NotImplementedException())));
+    var releaseJson = """
+    {
+      "tag_name": "v1.2.0",
+      "name": "HUDMind v1.2.0",
+      "body": "## Novedades\n- Mejora en Overlay\n- Actualizador integrado",
+      "html_url": "https://github.com/Vgarzaniti/HUDmind/releases/tag/v1.2.0",
+      "draft": false,
+      "prerelease": false,
+      "assets": [
+        { "name": "HUDMind.Native-Standalone-win-x64.exe", "browser_download_url": "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/HUDMind.Native-Standalone-win-x64.exe", "size": 95000000, "content_type": "application/octet-stream" },
+        { "name": "HUDMind.Native-win-x64.exe", "browser_download_url": "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/HUDMind.Native-win-x64.exe", "size": 26000000, "content_type": "application/octet-stream" },
+        { "name": "SHA256SUMS.txt", "browser_download_url": "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/SHA256SUMS.txt", "size": 256, "content_type": "text/plain" }
+      ]
+    }
+    """;
+
+    var standaloneRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: true);
+    Assert(standaloneRes.IsUpdateAvailable && standaloneRes.Update is not null, "Update should be detected");
+    Assert(standaloneRes.Update!.PreferredAsset?.Name == "HUDMind.Native-Standalone-win-x64.exe", "Self-contained should prefer Standalone asset");
+    Assert(standaloneRes.Update.ChecksumAsset?.Name == "SHA256SUMS.txt", "SHA256SUMS.txt selected");
+
+    var compactRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: false);
+    Assert(compactRes.Update!.PreferredAsset?.Name == "HUDMind.Native-win-x64.exe", "Framework-dependent should prefer compact asset");
+
+    var upToDate = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 2, 0), preferSelfContained: false);
+    Assert(!upToDate.IsUpdateAvailable, "Same version should report up to date");
+    return Task.CompletedTask;
+});
+
+// 36. GitHubReleaseUpdateService URL trust, redirect validation, SHA-256 verification & 404 handling
+await RunTest("36. GitHubReleaseUpdateService validates GitHub redirects, verifies SHA-256 & blocks untrusted hosts", async () =>
+{
+    Assert(GitHubReleaseUpdateService.IsTrustedGitHubUrl("https://objects.githubusercontent.com/github-production-release-asset/123?X-Amz-Signature=abc"), "Presigned GitHub CDN URL allowed");
+    Assert(!GitHubReleaseUpdateService.IsTrustedGitHubUrl("http://github.com/Vgarzaniti/HUDmind"), "Cleartext HTTP blocked");
+    Assert(!GitHubReleaseUpdateService.IsTrustedGitHubUrl("https://evil.example/HUDMind.exe"), "Untrusted domain blocked");
+    Assert(!GitHubReleaseUpdateService.IsTrustedGitHubUrl("https://169.254.169.254/latest"), "IP literal blocked");
+    Assert(!GitHubReleaseUpdateService.IsTrustedGitHubUrl("https://user@github.com/repo"), "UserInfo blocked");
+
+    byte[] payload = Encoding.UTF8.GetBytes("FAKE_PE_BINARY_HUDMIND_V1_2_0");
+    string expectedHash = Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
+    string badHash = new string('0', 64);
+    bool serveBadHash = false;
+    bool redirectToEvil = false;
+
+    using var client = new HttpClient(new FakeHttpHandler(req =>
+    {
+        var url = req.RequestUri!.AbsoluteUri;
+        if (url.EndsWith("/releases/latest", StringComparison.Ordinal))
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+
+        if (url.Contains("/releases/download/v1.2.0/HUDMind.Native-win-x64.exe", StringComparison.Ordinal))
+        {
+            var redir = new HttpResponseMessage(HttpStatusCode.Found);
+            redir.Headers.Location = new Uri(redirectToEvil
+                ? "https://evil.example/trojan.exe"
+                : "https://objects.githubusercontent.com/assets/hudmind.exe?token=xyz");
+            return Task.FromResult(redir);
+        }
+
+        if (url.StartsWith("https://objects.githubusercontent.com/assets/hudmind.exe", StringComparison.Ordinal))
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(payload) });
+
+        if (url.EndsWith("SHA256SUMS.txt", StringComparison.Ordinal))
+        {
+            var hash = serveBadHash ? badHash : expectedHash;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent($"{hash}  HUDMind.Native-win-x64.exe\n", Encoding.UTF8)
+            });
+        }
+
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest));
+    }));
+
+    var svc = new GitHubReleaseUpdateService(client);
+    var notFoundRes = await svc.CheckForUpdatesAsync(new Version(1, 1, 0));
+    Assert(!notFoundRes.IsUpdateAvailable && notFoundRes.WasNotFound, "404 should return WasNotFound cleanly");
+
+    var asset = new ReleaseAssetInfo("HUDMind.Native-win-x64.exe", "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/HUDMind.Native-win-x64.exe", payload.Length, "application/octet-stream");
+    var sumAsset = new ReleaseAssetInfo("SHA256SUMS.txt", "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/SHA256SUMS.txt", 100, "text/plain");
+
+    var tmpDir = Path.Combine(Path.GetTempPath(), $"hudmind_upd_{Guid.NewGuid():N}");
+    try
+    {
+        var okPath = Path.Combine(tmpDir, "HUDMind-v1.2.0.exe");
+        var okRes = await svc.DownloadAssetAsync(asset, okPath, sumAsset);
+        Assert(okRes.Success && okRes.Sha256Verified && File.Exists(okPath), $"Valid download + SHA256 must pass: {okRes.Message}");
+
+        serveBadHash = true;
+        var badPath = Path.Combine(tmpDir, "HUDMind-bad.exe");
+        var badRes = await svc.DownloadAssetAsync(asset, badPath, sumAsset);
+        Assert(!badRes.Success && !badRes.Sha256Verified && !File.Exists(badPath), "SHA-256 mismatch must fail and delete temp/target file");
+
+        serveBadHash = false;
+        redirectToEvil = true;
+        bool blockedEvil = false;
+        try { await svc.DownloadAssetAsync(asset, Path.Combine(tmpDir, "HUDMind-evil.exe"), sumAsset); }
+        catch (InvalidOperationException) { blockedEvil = true; }
+        Assert(blockedEvil, "Redirect to untrusted domain must be blocked");
+    }
+    finally
+    {
+        if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, recursive: true);
+    }
 });
 
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");

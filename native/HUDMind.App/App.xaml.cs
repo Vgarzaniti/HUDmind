@@ -50,9 +50,18 @@ public partial class App : System.Windows.Application
         }
     }
 
+    public void ReleaseSingleInstanceMutex()
+    {
+        if (_singleInstanceMutex is null)
+            return;
+        try { _singleInstanceMutex.ReleaseMutex(); } catch { }
+        try { _singleInstanceMutex.Dispose(); } catch { }
+        _singleInstanceMutex = null;
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
-        _singleInstanceMutex?.Dispose();
+        ReleaseSingleInstanceMutex();
         base.OnExit(e);
     }
 }

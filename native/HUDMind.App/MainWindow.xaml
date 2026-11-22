@@ -13,15 +13,27 @@
     <Grid Margin="14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <!-- Header -->
-        <DockPanel Grid.Row="0" Margin="0,0,0,12">
+        <DockPanel Grid.Row="0" Margin="0,0,0,10">
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
                 <Image Source="Assets/hudmind-icon.png" Width="30" Height="30" Margin="0,0,10,0" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" />
                 <TextBlock Text="HUDMind" FontSize="22" FontWeight="Bold" Foreground="#38BDF8" VerticalAlignment="Center" />
-                <Border Background="#10B981" CornerRadius="6" Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center">
+                <Button x:Name="BtnVersionCheck"
+                        Content="v1.1.0"
+                        FontSize="10.5"
+                        Padding="7,2"
+                        Margin="8,0,0,0"
+                        VerticalAlignment="Center"
+                        Background="#0F172A"
+                        BorderBrush="#334155"
+                        Foreground="#94A3B8"
+                        ToolTip="Clic para buscar actualizaciones en GitHub Releases"
+                        Click="BtnCheckUpdates_Click" />
+                <Border Background="#10B981" CornerRadius="6" Padding="8,2" Margin="8,0,0,0" VerticalAlignment="Center">
                     <TextBlock x:Name="TxtHeaderBadge" Text=".NET 9 · 0% GPU · $0 COSTO · MULTI-IA" FontSize="10.5" FontWeight="Bold" Foreground="#052E16" />
                 </Border>
                 <Border x:Name="PauseBadge" Background="#F59E0B" CornerRadius="6" Padding="8,2" Margin="8,0,0,0" VerticalAlignment="Center" Visibility="Collapsed">
@@ -38,8 +50,79 @@
                        VerticalAlignment="Center" />
         </DockPanel>
 
+        <!-- In-App Update Notification Banner (auto-shown when a newer GitHub Release exists) -->
+        <Border x:Name="UpdateBanner"
+                Grid.Row="1"
+                Visibility="Collapsed"
+                Background="#0C4A6E"
+                BorderBrush="#38BDF8"
+                BorderThickness="1.5"
+                CornerRadius="9"
+                Padding="12,9"
+                Margin="0,0,0,10">
+            <DockPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" Margin="12,0,0,0" VerticalAlignment="Center">
+                    <Button x:Name="BtnDownloadUpdate"
+                            Content="⬇ Descargar actualización"
+                            Background="#059669"
+                            BorderBrush="#10B981"
+                            Foreground="#FFFFFF"
+                            Padding="12,5"
+                            Margin="0,0,6,0"
+                            Click="BtnDownloadUpdate_Click" />
+                    <Button x:Name="BtnLaunchUpdate"
+                            Content="▶ Abrir nuevo .exe"
+                            Background="#0284C7"
+                            BorderBrush="#38BDF8"
+                            Foreground="#FFFFFF"
+                            Padding="12,5"
+                            Margin="0,0,6,0"
+                            Visibility="Collapsed"
+                            Click="BtnLaunchUpdate_Click" />
+                    <Button x:Name="BtnOpenUpdateFolder"
+                            Content="📂 Carpeta"
+                            Padding="10,5"
+                            Margin="0,0,6,0"
+                            Visibility="Collapsed"
+                            Click="BtnOpenUpdateFolder_Click" />
+                    <Button x:Name="BtnOpenReleasePage"
+                            Content="🌐 Ver en GitHub"
+                            Padding="10,5"
+                            Margin="0,0,6,0"
+                            Click="BtnOpenReleasePage_Click" />
+                    <Button x:Name="BtnDismissUpdate"
+                            Content="✕"
+                            Padding="8,5"
+                            ToolTip="Ocultar aviso (o cancelar descarga en curso)"
+                            Click="BtnDismissUpdate_Click" />
+                </StackPanel>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock x:Name="TxtUpdateBannerTitle"
+                               Text="🚀 Nueva actualización disponible"
+                               Foreground="#F8FAFC"
+                               FontWeight="Bold"
+                               FontSize="13" />
+                    <TextBlock x:Name="TxtUpdateBannerDetails"
+                               Text=""
+                               Foreground="#BAE6FD"
+                               FontSize="11.5"
+                               TextWrapping="Wrap"
+                               Margin="0,2,0,0" />
+                    <ProgressBar x:Name="UpdateProgressBar"
+                                 Height="5"
+                                 Minimum="0"
+                                 Maximum="100"
+                                 Margin="0,6,0,0"
+                                 Background="#082F49"
+                                 Foreground="#10B981"
+                                 BorderThickness="0"
+                                 Visibility="Collapsed" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
         <!-- Main Tabs -->
-        <TabControl x:Name="MainTabs" Grid.Row="1">
+        <TabControl x:Name="MainTabs" Grid.Row="2">
 
             <!-- TAB 1: CONTROL & LIVE LATENCY -->
             <TabItem Header="⚡ Coach en Vivo">
@@ -387,7 +470,8 @@
                         <CheckBox x:Name="ChkOverlayCompact" Content="Overlay Compacto (estilo pill)" Foreground="#F1F5F9" Margin="0,0,18,6" />
                         <CheckBox x:Name="ChkEnableHotkeys" Content="Teclas Globales (Win32)" Foreground="#F1F5F9" Margin="0,0,18,6" />
                         <CheckBox x:Name="ChkMinimizeToTray" Content="Minimizar a Bandeja del Sistema" Foreground="#38BDF8" Margin="0,0,18,6" />
-                        <CheckBox x:Name="ChkEnableAudioCues" Content="Tonos sutiles (Pausa/Mic/PTT)" Foreground="#F1F5F9" Margin="0,0,0,6" ToolTip="Emite un tono suave de confirmación al pausar, alternar micrófono o pulsar Push-to-Talk (silenciado en modo Solo Texto)." />
+                        <CheckBox x:Name="ChkEnableAudioCues" Content="Tonos sutiles (Pausa/Mic/PTT)" Foreground="#F1F5F9" Margin="0,0,18,6" ToolTip="Emite un tono suave de confirmación al pausar, alternar micrófono o pulsar Push-to-Talk (silenciado en modo Solo Texto)." />
+                        <CheckBox x:Name="ChkCheckUpdatesOnStartup" Content="Buscar actualizaciones al iniciar" Foreground="#10B981" Margin="0,0,0,6" ToolTip="Consulta GitHub Releases en segundo plano al abrir HUDMind (sin descargas automáticas sin tu permiso)." />
                     </WrapPanel>
 
                     <Grid Margin="0,0,0,10">
@@ -531,7 +615,8 @@
                         <Button Content="💾 Guardar y Aplicar en Vivo" Background="#0284C7" BorderBrush="#38BDF8" Click="BtnSaveConfig_Click" Margin="0,0,10,8" />
                         <Button Content="👁 Probar Overlay + Voz" Click="BtnPreviewOverlay_Click" Margin="0,0,10,8" />
                         <Button x:Name="BtnTestMic" Content="🎤 Probar Micrófono" Click="BtnTestMic_Click" Margin="0,0,10,8" />
-                        <Button Content="🎮 Instalar GSI Oficial (CS2 / Dota 2)" Click="BtnInstallGsi_Click" Margin="0,0,0,8" ToolTip="Crea gamestate_integration_hudmind.cfg en Steam sin tocar memoria del juego" />
+                        <Button Content="🎮 Instalar GSI Oficial (CS2 / Dota 2)" Click="BtnInstallGsi_Click" Margin="0,0,10,8" ToolTip="Crea gamestate_integration_hudmind.cfg en Steam sin tocar memoria del juego" />
+                        <Button x:Name="BtnCheckUpdates" Content="🔄 Buscar Actualizaciones" Click="BtnCheckUpdates_Click" Margin="0,0,0,8" ToolTip="Verifica si hay una nueva versión disponible en GitHub Releases" />
                     </WrapPanel>
                 </StackPanel>
                 </ScrollViewer>

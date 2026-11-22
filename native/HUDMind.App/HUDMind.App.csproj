@@ -14,6 +14,7 @@
   <ItemGroup>
     <Resource Include="Assets\hudmind.ico" />
     <Resource Include="Assets\hudmind-icon.png" />
+    <AssemblyMetadata Include="IsSelfContained" Value="$(SelfContained)" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\HUDMind.Core\HUDMind.Core.csproj" />

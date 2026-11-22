@@ -38,7 +38,14 @@
 *(Para CS2 / Dota 2 GSI, podés instalar `gamestate_integration_hudmind.cfg` en 1 clic desde **⚙ Coach, Rango y Voz → 🎮 Instalar GSI Oficial**).*
 
 - **Gestión completa sin tocar JSON:** agregá o **editá** cuentas IA (con `BaseUrl` HTTPS custom y selector de modo `Visión` vs `Solo Texto`), creá o editá **perfiles de juegos** (`EXEs`, `Cooldown`, `pHash` y reglas personales), activá tonos sutiles Win32, abrí tus resúmenes Markdown (`logs/reviews/`) en **`📂 Resúmenes`** y aprovechá diagnóstico automático ante pantallas negras de Fullscreen Exclusivo.
-- **100% Portable:** los 7 perfiles incluidos vienen embebidos en el binario y se auto-crean en `%LocalAppData%\HUDMind\profiles` al ejecutar en una PC nueva sin carpeta `profiles/`.
+- **100% Portable & Aviso de Actualizaciones:** los 7 perfiles incluidos vienen embebidos en el binario y se auto-crean en `%LocalAppData%\HUDMind\profiles`. Al abrir el `.exe`, HUDMind consulta **GitHub Releases** en segundo plano y muestra un cartel dentro de la ventana cuando hay una versión nueva disponible, con botón **`⬇ Descargar actualización`** y verificación **SHA-256**.
+
+---
+
+## Descarga Rápida (Releases)
+
+1. Descargá **`HUDMind.Native-Standalone-win-x64.exe`** desde la pestaña **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** (no requiere instalar .NET 9 aparte), o **`HUDMind.Native-win-x64.exe`** (~26 MB) si ya tenés .NET 9 Desktop Runtime.
+2. Ejecutá el `.exe` y pegá una API Key gratuita de **Groq** o **Gemini** en **🔑 Cuentas IA**.
 
 ---
 
@@ -48,7 +55,7 @@
 # 1. Compilar solución completa (0 warnings / 0 errors)
 dotnet build native\HUDMind.sln -c Release
 
-# 2. Suite Core multiplataforma (34 pruebas) + suite nativa Windows (7 pruebas) + smoke WPF
+# 2. Suite Core multiplataforma (36 pruebas) + suite nativa Windows (8 pruebas) + smoke WPF
 dotnet run --project native\HUDMind.Tests\HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native\HUDMind.Windows.Tests\HUDMind.Windows.Tests.csproj -c Release --no-build
 .\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe --smoke-startup
@@ -69,15 +76,16 @@ También podés iniciar directamente con [HUDMind.bat](HUDMind.bat).
 ```text
 .
 ├── .github/workflows/ci.yml        # CI .NET 9 (ubuntu-latest core + windows-latest build/tests/smoke)
+├── .github/workflows/release.yml   # Release automática Windows x64 (tags v*.*.* o manual + SHA256SUMS)
 ├── .gitignore                      # Protege .env, config/*.json, custom_rules.md, logs/, bin/obj y dist/
 ├── HUDMind.bat                     # Lanzador Windows de la app nativa
 ├── native/
 │   ├── HUDMind.sln                 # Solución .NET 9
-│   ├── HUDMind.Core/               # Modelos, Config/SSRF/Redaction, Embedded Profiles, Wire Protocol, Motores
+│   ├── HUDMind.Core/               # Modelos, Config/SSRF/Redaction, Embedded Profiles, Updates, Wire Protocol, Motores
 │   ├── HUDMind.Windows/            # GDI Capture, WinMM Audio/Devices, WinRT Natural TTS + OneCore, GSI, OCR
-│   ├── HUDMind.App/                # UI WPF (0% GPU), PerMonitorV2 Overlay y Tray Icon Win32
-│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (34 casos)
-│   └── HUDMind.Windows.Tests/      # Suite de pruebas Win32, GSI, TLS, Logs y Audio (7 casos)
+│   ├── HUDMind.App/                # UI WPF (0% GPU), PerMonitorV2 Overlay, Tray Icon Win32 y Banner de Updates
+│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (36 casos)
+│   └── HUDMind.Windows.Tests/      # Suite de pruebas Win32, GSI, TLS, Logs y Audio (8 casos)
 ├── profiles/                       # Perfiles de juegos y prompts tácticos
 ├── docs/                           # Documentación técnica (SRS, arquitectura, perfiles, plan IEEE 29119)
 └── archive/legacy_python/          # Código Python legado archivado tras la migración a .NET 9
