@@ -6,9 +6,11 @@ namespace HUDMind.Core.Pipeline;
 public sealed partial class InterventionMemory
 {
     private sealed record MemoryEntry(DateTimeOffset TimestampUtc, UrgencyLevel Urgency, string Text, HashSet<string> Keywords);
+    private sealed record VisualEvent(DateTimeOffset TimestampUtc, string Phase, string Summary);
 
     private readonly object _sync = new();
     private readonly LinkedList<MemoryEntry> _entries = new();
+    private readonly LinkedList<VisualEvent> _timeline = new();
     private readonly int _maxItems;
     private readonly TimeSpan _ttl;
 
@@ -30,7 +32,50 @@ public sealed partial class InterventionMemory
     public void Clear()
     {
         lock (_sync)
+        {
             _entries.Clear();
+            _timeline.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Records every grounded visual observation (even during REPLAY/KICKOFF/silence)
+    /// so the AI understands match progression across ANY game.
+    /// </summary>
+    public void RecordObservation(string phase, string visualSummary, DateTimeOffset? nowUtc = null)
+    {
+        if (string.IsNullOrWhiteSpace(visualSummary) && string.IsNullOrWhiteSpace(phase))
+            return;
+
+        var ts = nowUtc ?? DateTimeOffset.UtcNow;
+        var cleanPhase = string.IsNullOrWhiteSpace(phase) ? "PLAY" : phase.Trim().ToUpperInvariant();
+        var cleanSum = visualSummary.Trim();
+        if (cleanSum.Length > 100) cleanSum = cleanSum[..100];
+
+        lock (_sync)
+        {
+            PruneLocked(ts);
+            _timeline.AddLast(new VisualEvent(ts, cleanPhase, cleanSum));
+            while (_timeline.Count > 6)
+                _timeline.RemoveFirst();
+        }
+    }
+
+    public string FormatVisualTimeline(DateTimeOffset? nowUtc = null, int maxEvents = 4)
+    {
+        var ts = nowUtc ?? DateTimeOffset.UtcNow;
+        lock (_sync)
+        {
+            PruneLocked(ts);
+            if (_timeline.Count == 0)
+                return string.Empty;
+
+            return string.Join(" ; ", _timeline.TakeLast(maxEvents).Select(ev =>
+            {
+                int ago = Math.Max(1, (int)Math.Round((ts - ev.TimestampUtc).TotalSeconds));
+                return $"hace {ago}s [{ev.Phase}] {ev.Summary}";
+            }));
+        }
     }
 
     public void Record(CoachResponse response, DateTimeOffset? nowUtc = null)
@@ -100,6 +145,8 @@ public sealed partial class InterventionMemory
     {
         while (_entries.First is not null && (nowUtc - _entries.First.Value.TimestampUtc) > _ttl)
             _entries.RemoveFirst();
+        while (_timeline.First is not null && (nowUtc - _timeline.First.Value.TimestampUtc) > TimeSpan.FromSeconds(90))
+            _timeline.RemoveFirst();
     }
 
     private static HashSet<string> ExtractKeywords(string text)

@@ -52,6 +52,7 @@ public partial class MainWindow : Window
         _config = _repo.LoadUserConfig();
         _accounts = _repo.LoadAccounts();
         _profiles = _repo.LoadProfiles();
+        _profiles.Insert(0, ConfigRepository.CreateUniversalProfile(_repo.ProfilesDir));
 
         BindInitialUi();
         Closing += MainWindow_Closing;

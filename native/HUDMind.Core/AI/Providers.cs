@@ -150,11 +150,11 @@ public sealed class GeminiFastProvider : IAIProvider
 
         var safeModel = Uri.EscapeDataString(Account.Model.Trim());
         var url = $"https://generativelanguage.googleapis.com/v1beta/models/{safeModel}:generateContent";
-        var prompt = CompactWireProtocol.BuildRealtimePrompt(profile, config, recentHistory, forceAdvice);
+        var prompt = CompactWireProtocol.BuildRealtimePrompt(profile, config, recentHistory, forceAdvice, visualTimeline: spatialTelemetry);
         var modelLow = Account.Model.ToLowerInvariant();
         bool isGen3 = modelLow.Contains("3.") || modelLow.Contains("3-");
-        // Gemini 3.x MINIMAL thinking shares maxOutputTokens; 64 + stopSequences=["\n"] prevents 422 & preserves speed!
-        int maxOut = isGen3 ? 64 : 38;
+        // Grounded 4-field line (FASE|QUE_VEO|URG|CONSEJO) + clear 10-16 word Spanish sentence + stopSequences=["\n"]
+        int maxOut = isGen3 ? 160 : 115;
 
         var buf = new ArrayBufferWriter<byte>(jpegBytes.Length * 4 / 3 + 1024);
         using (var w = new Utf8JsonWriter(buf))
@@ -181,9 +181,10 @@ public sealed class GeminiFastProvider : IAIProvider
 
             w.WritePropertyName("generationConfig");
             w.WriteStartObject();
-            w.WriteNumber("temperature", 0.55);
+            w.WriteNumber("temperature", 0.35);
             w.WriteNumber("maxOutputTokens", maxOut);
-            w.WriteString("mediaResolution", "MEDIA_RESOLUTION_LOW");
+            // MEDIA_RESOLUTION_MEDIUM (256 vision tokens vs 64 LOW) makes HUD numbers, kickoffs & replays legible!
+            w.WriteString("mediaResolution", "MEDIA_RESOLUTION_MEDIUM");
             w.WritePropertyName("stopSequences");
             w.WriteStartArray();
             w.WriteStringValue("\n");
@@ -329,13 +330,13 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         if (!okUrl)
             return new ProviderCallResult(null, 400, errUrl);
 
-        var prompt = CompactWireProtocol.BuildRealtimePrompt(profile, config, recentHistory, forceAdvice);
+        var prompt = CompactWireProtocol.BuildRealtimePrompt(profile, config, recentHistory, forceAdvice, visualTimeline: spatialTelemetry);
         var b64 = Convert.ToBase64String(jpegBytes);
         var payload = new
         {
             model = Account.Model,
-            max_tokens = 38,
-            temperature = 0.5,
+            max_tokens = 115,
+            temperature = 0.35,
             stop_sequences = new[] { "\n" },
             messages = new[]
             {
@@ -486,22 +487,12 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         var isKeyless = Account.Provider is "pollinations" or "airforce" && string.IsNullOrWhiteSpace(Account.ApiKey);
         var prompt = CompactWireProtocol.BuildRealtimePrompt(
             profile, config, recentHistory, forceAdvice,
-            spatialTelemetry: isKeyless ? spatialTelemetry : string.Empty);
+            visualTimeline: spatialTelemetry);
 
         object payloadObj;
         if (isKeyless)
         {
-            payloadObj = new
-            {
-                model = string.IsNullOrWhiteSpace(Account.Model) ? "openai-fast" : Account.Model,
-                temperature = 0.7,
-                max_tokens = 38,
-                stop = new[] { "\n" },
-                messages = new object[]
-                {
-                    new { role = "user", content = prompt }
-                }
-            };
+            return new ProviderCallResult(null, 400, "Proveedor sin visión omitido para evitar consejos alucinados.");
         }
         else
         {
@@ -509,8 +500,8 @@ public sealed class OpenAICompatibleProvider : IAIProvider
             payloadObj = new
             {
                 model = Account.Model,
-                temperature = 0.5,
-                max_tokens = 38,
+                temperature = 0.35,
+                max_tokens = 115,
                 stop = new[] { "\n" },
                 messages = new object[]
                 {
@@ -523,7 +514,7 @@ public sealed class OpenAICompatibleProvider : IAIProvider
                             new
                             {
                                 type = "image_url",
-                                image_url = new { url = $"data:image/jpeg;base64,{b64}", detail = "low" }
+                                image_url = new { url = $"data:image/jpeg;base64,{b64}", detail = "auto" }
                             }
                         }
                     }
@@ -641,8 +632,8 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
     public ProviderFailoverRouter(
         IEnumerable<ProviderAccount> accounts,
         Func<ProviderAccount, IAIProvider>? factory = null,
-        double hedgeDelaySeconds = 1.10,
-        double freshnessDeadlineMs = 2400.0,
+        double hedgeDelaySeconds = 1.45,
+        double freshnessDeadlineMs = 3400.0,
         Action<string>? onLog = null)
     {
         _hedgeDelaySeconds = Math.Max(0.05, hedgeDelaySeconds);
@@ -650,8 +641,11 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         _onLog = onLog;
         var create = factory ?? CreateDefaultAdapter;
 
+        // Only route to REAL Vision models (never silent blind text-only hallucination!)
         _providers = accounts
-            .Where(a => a.IsReady() && !string.Equals(a.Provider, "ollama", StringComparison.OrdinalIgnoreCase))
+            .Where(a => a.IsReady() &&
+                        !string.Equals(a.Provider, "ollama", StringComparison.OrdinalIgnoreCase) &&
+                        !(a.Provider is "pollinations" or "airforce" && string.IsNullOrWhiteSpace(a.ApiKey)))
             .OrderBy(a => a.Priority)
             .Select(create)
             .ToList();

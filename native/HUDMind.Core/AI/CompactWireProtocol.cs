@@ -6,45 +6,77 @@ namespace HUDMind.Core.AI;
 
 public static class CompactWireProtocol
 {
+    private static readonly HashSet<string> SilentPhases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "MENU", "LOBBY", "LOADING", "REPLAY", "PAUSE", "PAUSED", "SCOREBOARD", "DEAD", "DESKTOP"
+    };
+
+    private static readonly HashSet<string> KnownPhases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "MENU", "LOBBY", "LOADING", "REPLAY", "PAUSE", "PAUSED", "SCOREBOARD", "DEAD", "DESKTOP",
+        "KICKOFF", "ROUND_START", "TRAINING", "PLAY", "MATCH"
+    };
+
     public static string BuildRealtimePrompt(
         GameProfile profile,
         UserConfig config,
         string recentHistory,
         bool forceAdvice,
-        string spatialTelemetry = "")
+        string visualTimeline = "")
     {
         var lang = (config.VoiceLanguage ?? config.TextLanguage ?? "es").Trim().ToLowerInvariant();
-        var langTag = lang == "en" ? "en (concise Discord coach)" : "es (español natural, estilo coach Discord)";
+        bool isEn = lang == "en";
 
-        var modeRule = config.CoachMode.Trim().ToLowerInvariant() switch
+        var gameLabel = profile.Manifest.GameId.Equals("universal", StringComparison.OrdinalIgnoreCase)
+            ? "the video game currently on screen"
+            : SanitizeInline(profile.Manifest.DisplayName, 48);
+
+        var modeNote = config.CoachMode.Trim().ToLowerInvariant() switch
         {
-            "training" => "TRAINING: coach mechanics & positioning.",
-            "auto" => "AUTO: menu/lobby->NONE; training->mechanics; match->rotation, teammates, resources & clock.",
-            _ => "MATCH: coach rotation, teammates, resources & clock; menu->NONE."
+            "training" => isEn
+                ? "Mode=TRAINING: coach mechanics, spacing & consistency naturally."
+                : "Modo=ENTRENAMIENTO: guiá mecánicas, control y posicionamiento como entrenador real.",
+            "auto" => isEn
+                ? "Auto-detect phase from screen: MENU/LOADING/REPLAY/DESKTOP -> NONE; KICKOFF/ROUND_START -> opening/kickoff read; TRAINING -> mechanics; PLAY -> live match coaching."
+                : "Detectá solo la FASE real en pantalla: MENU/LOADING/REPLAY/DESKTOP -> NONE (silencio); KICKOFF (saque/cuenta regresiva/inicio de ronda) -> lectura de saque/apertura; TRAINING -> entrenamiento; PLAY -> partida en vivo.",
+            _ => isEn
+                ? "Mode=MATCH: only coach live gameplay or kickoff/round start; MENU/REPLAY/LOADING -> NONE."
+                : "Modo=PARTIDA: solo hablá en partida o saque; en MENU/REPLAY/LOADING devolvé NONE."
         };
 
-        var sb = new StringBuilder(320);
-        sb.Append("Live eSports coach for ").Append(SanitizeInline(profile.Manifest.DisplayName, 48))
-          .Append(". Lang: ").Append(langTag).Append(".\n");
-        sb.Append(modeRule).Append('\n');
-        sb.Append("Improvise 1 macro/positioning/economy tip valid 10-25s referencing 1 real HUD detail (never robotic/textbook).\n");
-
-        if (!string.IsNullOrWhiteSpace(profile.TacticalSummary))
-            sb.Append("Focus: ").Append(SanitizeInline(profile.TacticalSummary, 180)).Append('\n');
+        var sb = new StringBuilder(680);
+        if (isEn)
+        {
+            sb.Append("You are a calm, sharp human eSports coach watching ").Append(gameLabel).Append(" LIVE on Discord (100% generic across any game).\n");
+            sb.Append(modeNote).Append('\n');
+            sb.Append("CRITICAL RULES:\n");
+            sb.Append("1) OBSERVE FIRST: Read ONLY what is literally visible (scoreboard, timer, countdown, boost/HP/ammo/resources, ball/teammates/enemies). NEVER invent numbers or events you do not clearly see.\n");
+            sb.Append("2) SILENCE OVER NONSENSE: If it is a menu, loading screen, goal replay, pause, desktop, or nothing clearly useful to say -> reply NONE.\n");
+            sb.Append("3) CLEAR HUMAN SPEECH: Write 1 complete, natural, easy-to-understand sentence (10-16 words) that makes immediate tactical sense for the next 10-20 seconds (positioning, kickoff role, resource economy, clock/score). Never cryptic 4-word fragments.\n");
+        }
+        else
+        {
+            sb.Append("Sos un coach humano real de eSports mirando ").Append(gameLabel).Append(" EN VIVO por Discord (100% genérico para cualquier juego).\n");
+            sb.Append(modeNote).Append('\n');
+            sb.Append("REGLAS CRÍTICAS:\n");
+            sb.Append("1) OBSERVÁ PRIMERO: Leé SOLO lo que se ve literalmente en pantalla (marcador, reloj, cuenta regresiva de saque, boost/vida/munición/recursos, pelota, compañeros o rivales). JAMÁS inventes números ni jugadas que no veas claras.\n");
+            sb.Append("2) SILENCIO ANTES QUE DECIR CUALQUIER COSA: Si es menú, pantalla de carga, repetición de gol (REPLAY), pausa, escritorio o no hay nada claro y útil -> usá NONE.\n");
+            sb.Append("3) CONSEJO CLARO Y ENTENDIBLE: Escribí 1 sola oración completa en español argentino natural (10 a 16 palabras) que se entienda perfecto al escucharla y sirva para los próximos 10-20s (saque, rotación, recursos, reloj/marcador). Nunca frases cortadas ni robóticas.\n");
+        }
 
         if (!string.IsNullOrWhiteSpace(profile.CustomRules))
-            sb.Append("Player rules: ").Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
+            sb.Append("Reglas del jugador: ").Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
 
-        if (!string.IsNullOrWhiteSpace(spatialTelemetry))
-            sb.Append("HUD_SCAN: ").Append(SanitizeInline(spatialTelemetry, 200)).Append('\n');
-
-        if (forceAdvice)
-            sb.Append("F10 MANUAL: give best tactical tip NOW (do not reply NONE).\n");
+        if (!string.IsNullOrWhiteSpace(visualTimeline))
+            sb.Append("Contexto reciente de la partida: ").Append(SanitizeInline(visualTimeline, 300)).Append('\n');
 
         if (!string.IsNullOrWhiteSpace(recentHistory))
-            sb.Append("No repeat: ").Append(SanitizeInline(recentHistory, 220)).Append('\n');
+            sb.Append("No repitas estos consejos ya dados: ").Append(SanitizeInline(recentHistory, 240)).Append('\n');
 
-        sb.Append("Output STRICTLY 1 line: H|<max 8 words> OR M|<max 8 words> OR L|<max 8 words> OR NONE.");
+        if (forceAdvice)
+            sb.Append("SOLICITUD MANUAL (F10): el jugador pidió una lectura táctica clara de esta situación exacta ahora.\n");
+
+        sb.Append("Formato ESTRICTO en 1 sola línea: FASE|qué ves en 6-10 palabras|H/M/L/NONE|consejo claro completo (vacío si NONE)");
         return sb.ToString();
     }
 
@@ -89,20 +121,45 @@ public static class CompactWireProtocol
         if (firstLine.Contains('|'))
         {
             var parts = firstLine.Split('|').Select(s => s.Trim().Trim('"', '\'', '`')).ToArray();
-            if (parts.Length >= 2 && TryMapUrgency(parts[0], out var urg))
+
+            // 4-field grounded generic protocol: FASE | QUE_VEO | URGENCIA/NONE | CONSEJO
+            if (parts.Length >= 3 && KnownPhases.Contains(parts[0]))
+            {
+                var phase = parts[0].ToUpperInvariant();
+                var whatISee = parts[1];
+                var ctxTag = $"[{phase}] {whatISee}".Trim();
+                var urgToken = parts[2].ToUpperInvariant();
+                var advice = parts.Length >= 4 ? parts[3] : string.Empty;
+
+                if (SilentPhases.Contains(phase) || urgToken is "NONE" or "NO" or "SILENCE" or "" || string.IsNullOrWhiteSpace(advice) || advice.Equals("NONE", StringComparison.OrdinalIgnoreCase))
+                    return CoachResponse.Silent(Truncate(ctxTag, 155));
+
+                if (!TryMapUrgency(urgToken, out var urgency))
+                    urgency = UrgencyLevel.Medium;
+
+                return new CoachResponse(
+                    true,
+                    urgency,
+                    Truncate(advice, 130),
+                    Truncate(advice, 190),
+                    Truncate(ctxTag, 155));
+            }
+
+            // Legacy 2/3-field compact protocol: H/M/L | CONSEJO [| CTX]
+            if (parts.Length >= 2 && TryMapUrgency(parts[0], out var legacyUrg))
             {
                 var callout = parts[1];
                 if (string.IsNullOrWhiteSpace(callout) || callout.Equals("NONE", StringComparison.OrdinalIgnoreCase))
                     return CoachResponse.Silent();
 
                 var ctx = parts.Length >= 3 ? Truncate(parts[2], 150) : string.Empty;
-                return new CoachResponse(true, urg, Truncate(callout, 115), Truncate(callout, 170), ctx);
+                return new CoachResponse(true, legacyUrg, Truncate(callout, 130), Truncate(callout, 190), ctx);
             }
         }
 
         var cleaned = firstLine.Trim('"', '\'', '`', ' ');
-        if (cleaned.Length is >= 4 and <= 135 && !cleaned.StartsWith('{'))
-            return new CoachResponse(true, UrgencyLevel.Medium, Truncate(cleaned, 115), cleaned);
+        if (cleaned.Length is >= 8 and <= 160 && !cleaned.StartsWith('{') && !cleaned.Contains('|'))
+            return new CoachResponse(true, UrgencyLevel.Medium, Truncate(cleaned, 130), cleaned);
 
         return null;
     }
@@ -138,7 +195,7 @@ public static class CompactWireProtocol
             var ctx = root.TryGetProperty("match_context", out var mc) ? mc.GetString() ?? string.Empty : string.Empty;
             var urgRaw = root.TryGetProperty("urgency", out var ug) ? ug.GetString() ?? "medium" : "medium";
             TryMapUrgency(urgRaw, out var urgency);
-            return new CoachResponse(intervene, urgency, Truncate(overlay, 115), Truncate(voice, 175), Truncate(ctx, 155));
+            return new CoachResponse(intervene, urgency, Truncate(overlay, 130), Truncate(voice, 190), Truncate(ctx, 155));
         }
         catch
         {

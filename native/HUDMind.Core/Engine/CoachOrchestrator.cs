@@ -207,9 +207,10 @@ public sealed class CoachOrchestrator : IAsyncDisposable
     private (int W, int H, int Quality) ResolveTargetResolution() =>
         _config.TokenEfficiencyMode.ToLowerInvariant() switch
         {
-            "eco" => (512, 288, Math.Min(_config.ImageCompressionQuality, 58)),
-            "balanced" => (640, 360, Math.Min(_config.ImageCompressionQuality, 68)),
-            _ => (960, 540, Math.Min(_config.ImageCompressionQuality, 78))
+            // Sharp readable HUD resolution so scoreboard, timer, kickoff countdown & boost are always legible
+            "eco" => (800, 450, Math.Max(_config.ImageCompressionQuality, 74)),
+            "balanced" => (960, 540, Math.Max(_config.ImageCompressionQuality, 78)),
+            _ => (1280, 720, Math.Max(_config.ImageCompressionQuality, 82))
         };
 
     private double EffectiveCooldown(GameProfile profile)
@@ -237,6 +238,16 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                 {
                     var fg = _windowDetector.GetForegroundExecutable();
                     var matched = _profiles.FirstOrDefault(p => p.MatchesProcess(fg));
+                    // If user chose Universal profile, watch ANY active foreground game/window except HUDMind/Explorer!
+                    if (matched is null &&
+                        string.Equals(_forcedGameId, "universal", StringComparison.OrdinalIgnoreCase) &&
+                        !string.IsNullOrWhiteSpace(fg) &&
+                        !fg.Equals("HUDMind.exe", StringComparison.OrdinalIgnoreCase) &&
+                        !fg.Equals("HUDMind.Native.exe", StringComparison.OrdinalIgnoreCase) &&
+                        !fg.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        matched = _profiles.FirstOrDefault(p => p.Manifest.GameId == "universal");
+                    }
                     if (matched is not null && !ReferenceEquals(matched, _activeProfile))
                     {
                         _activeProfile = matched;
@@ -353,15 +364,30 @@ public sealed class CoachOrchestrator : IAsyncDisposable
             {
                 Interlocked.Increment(ref _aiCalls);
                 var history = _memory.FormatCompactHistory();
+                var timeline = _memory.FormatVisualTimeline();
                 var (resp, aiMs, model) = await _router.AnalyzeFrameAsync(
                     frame.JpegBytes,
                     profile,
                     _config,
                     history,
                     forceNow,
-                    frame.SpatialTelemetry,
+                    timeline,
                     ct);
                 _lastAiMs = aiMs;
+
+                // Always record visual observation (even during REPLAY/KICKOFF/MENU) so the AI knows the match story!
+                if (resp is not null && !string.IsNullOrWhiteSpace(resp.MatchContext))
+                {
+                    var ctx = resp.MatchContext.Trim();
+                    string phase = "PLAY";
+                    string summary = ctx;
+                    if (ctx.StartsWith('[') && ctx.IndexOf(']') is int closeIdx && closeIdx > 1)
+                    {
+                        phase = ctx[1..closeIdx];
+                        summary = ctx[(closeIdx + 1)..].Trim();
+                    }
+                    _memory.RecordObservation(phase, summary);
+                }
 
                 if (resp is { ShouldIntervene: true } && !string.IsNullOrWhiteSpace(resp.OverlayText))
                 {
@@ -384,14 +410,18 @@ public sealed class CoachOrchestrator : IAsyncDisposable
 
                         _lastVoiceMs = voiceMs;
                         double totalMs = frame.CaptureMs + frame.EncodeMs + aiMs + voiceMs;
+                        string seenNote = !string.IsNullOrWhiteSpace(resp.MatchContext) ? $" | vio: {resp.MatchContext}" : string.Empty;
                         _onLog?.Invoke(
-                            $"[{resp.Urgency.ToString().ToUpperInvariant()}] \"{resp.OverlayText}\" | " +
-                            $"TOTAL={totalMs:F0}ms (cap={frame.CaptureMs + frame.EncodeMs:F1}ms + IA={aiMs:F0}ms + voz={voiceMs:F1}ms) [{model}]");
+                            $"[{resp.Urgency.ToString().ToUpperInvariant()}] \"{resp.OverlayText}\"{seenNote} | " +
+                            $"TOTAL={totalMs:F0}ms (cap={frame.CaptureMs + frame.EncodeMs:F1}ms + IA={aiMs:F0}ms) [{model}]");
                     }
                 }
                 else
                 {
-                    _onLog?.Invoke($"Sin intervención ({aiMs:F0}ms, {frame.JpegBytes.Length / 1024.0:F1}KB) [{model}]");
+                    string seenNote = resp is not null && !string.IsNullOrWhiteSpace(resp.MatchContext)
+                        ? $" | vio: {resp.MatchContext}"
+                        : string.Empty;
+                    _onLog?.Invoke($"Silencio inteligente ({aiMs:F0}ms, {frame.JpegBytes.Length / 1024.0:F1}KB){seenNote} [{model}]");
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

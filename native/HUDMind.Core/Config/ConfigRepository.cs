@@ -305,6 +305,24 @@ public sealed partial class ConfigRepository
         return result;
     }
 
+    public static GameProfile CreateUniversalProfile(string profilesRoot) =>
+        new()
+        {
+            DirectoryPath = profilesRoot,
+            Manifest = new GameManifest
+            {
+                GameId = "universal",
+                DisplayName = "Cualquier Juego (Universal)",
+                ProcessNames = [],
+                CaptureFps = 1.5,
+                PhashThreshold = 7,
+                CooldownSeconds = 8.0,
+                MaxResolution = [1280, 720],
+                Language = "es",
+                Notes = "Coach universal genérico que detecta fase (menú, replay, saque, entrenamiento o partida) en cualquier videojuego."
+            }
+        };
+
     public void SaveCustomRules(GameProfile profile, string rulesText)
     {
         var trimmed = (rulesText ?? string.Empty).Trim();

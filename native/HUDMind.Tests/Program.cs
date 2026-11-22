@@ -31,15 +31,21 @@ void Assert(bool cond, string msg)
     if (!cond) throw new Exception(msg);
 }
 
-// 1. Compact Wire Protocol Parser
-await RunTest("01. CompactWireProtocol parses H/M/L, NONE, and JSON fallback", () =>
+// 1. Compact Wire Protocol Parser (4-field Grounded Generic + Legacy + JSON)
+await RunTest("01. CompactWireProtocol parses 4-field FASE|QUE_VEO|URG|CONSEJO, silences REPLAY/MENU & JSON", () =>
 {
     var rNone = CompactWireProtocol.ParseCompactLine("NONE");
     Assert(rNone is { ShouldIntervene: false }, "NONE should not intervene");
 
+    var rReplay = CompactWireProtocol.ParseCompactLine("REPLAY|Repetición de gol 1-2|H|Debería ignorarse en replay");
+    Assert(rReplay is { ShouldIntervene: false } && rReplay.MatchContext.Contains("[REPLAY]"), "REPLAY must force silence while keeping timeline context");
+
+    var rKickoff = CompactWireProtocol.ParseCompactLine("KICKOFF|Cuenta regresiva 2, boost 33, compañero izquierda|M|Dejá que vaya tu compañero de izquierda y quedate cubriendo el arco.");
+    Assert(rKickoff is { ShouldIntervene: true, Urgency: UrgencyLevel.Medium }, "KICKOFF should parse cleanly");
+    Assert(rKickoff!.OverlayText.Contains("cubriendo el arco") && rKickoff.MatchContext.Contains("[KICKOFF]"), "Kickoff advice & context preserved");
+
     var rHigh = CompactWireProtocol.ParseCompactLine("H|Rotá segundo palo, tenés 18 de boost");
-    Assert(rHigh is { ShouldIntervene: true, Urgency: UrgencyLevel.High }, "H should parse as High");
-    Assert(rHigh!.OverlayText.Contains("18 de boost"), "OverlayText preserved");
+    Assert(rHigh is { ShouldIntervene: true, Urgency: UrgencyLevel.High }, "Legacy H| should parse as High");
 
     var rJson = CompactWireProtocol.ParseCompactLine("{\"should_intervene\":true,\"urgency\":\"medium\",\"overlay_text\":\"Usá flash\",\"voice_line\":\"Tirá flash\"}");
     Assert(rJson is { ShouldIntervene: true, Urgency: UrgencyLevel.Medium, OverlayText: "Usá flash" }, "JSON fallback works");
@@ -233,7 +239,7 @@ await RunTest("10. GeminiFastProvider sends x-goog-api-key header, stopSequences
     Assert(res.Response is { ShouldIntervene: true, Urgency: UrgencyLevel.High }, "Parsed Gemini response");
     Assert(seenHeaderKey == "AIzaSecretHeaderTest999", "Key must be in x-goog-api-key header");
     Assert(seenUrl is not null && !seenUrl.Contains("AIzaSecret"), "Key must NEVER appear in URL");
-    Assert(seenBody is not null && seenBody.Contains("\"maxOutputTokens\":64") && seenBody.Contains("\"stopSequences\":[\"\\n\"]") && seenBody.Contains("\"thinkingLevel\":\"MINIMAL\""),
+    Assert(seenBody is not null && seenBody.Contains("\"maxOutputTokens\":160") && seenBody.Contains("\"stopSequences\":[\"\\n\"]") && seenBody.Contains("\"thinkingLevel\":\"MINIMAL\"") && seenBody.Contains("\"MEDIA_RESOLUTION_MEDIUM\""),
         $"Unexpected Gemini payload: {seenBody}");
 });
 

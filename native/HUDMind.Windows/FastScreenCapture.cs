@@ -18,7 +18,7 @@ namespace HUDMind.Windows;
 public sealed class FastScreenCapture : IScreenCaptureService
 {
     private const int Srccopy = 0x00CC0020;
-    private const int ColorOnColor = 3;
+    private const int Halftone = 4;
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetDC(IntPtr hWnd);
@@ -28,6 +28,9 @@ public sealed class FastScreenCapture : IScreenCaptureService
 
     [DllImport("gdi32.dll")]
     private static extern int SetStretchBltMode(IntPtr hdc, int mode);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool SetBrushOrgEx(IntPtr hdc, int x, int y, IntPtr lppt);
 
     [DllImport("gdi32.dll")]
     private static extern bool StretchBlt(
@@ -91,7 +94,9 @@ public sealed class FastScreenCapture : IScreenCaptureService
                     var destDc = g.GetHdc();
                     try
                     {
-                        SetStretchBltMode(destDc, ColorOnColor);
+                        // HALFTONE + SetBrushOrgEx keeps small HUD numbers, timers & kickoffs razor-sharp!
+                        SetStretchBltMode(destDc, Halftone);
+                        SetBrushOrgEx(destDc, 0, 0, IntPtr.Zero);
                         if (!StretchBlt(
                                 destDc, 0, 0, outW, outH,
                                 screenDc, bounds.Left, bounds.Top, bounds.Width, bounds.Height,
