@@ -8,9 +8,14 @@
     <Nullable>enable</Nullable>
     <AssemblyName>HUDMind.Native</AssemblyName>
     <Version>1.1.0</Version>
+    <ApplicationIcon>Assets\hudmind.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\hudmind.ico" />
+    <Resource Include="Assets\hudmind-icon.png" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\HUDMind.Core\HUDMind.Core.csproj" />
     <ProjectReference Include="..\HUDMind.Windows\HUDMind.Windows.csproj" />

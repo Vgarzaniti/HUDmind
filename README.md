@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/hudmind-banner.png" alt="HUDMind — Real-Time AI eSports Coach" width="100%" />
+</p>
+
 # HUDMind — Coach Táctico Multimodal de Videojuegos en Tiempo Real (Windows)
 
 **HUDMind (`v0.5.0`)** es un copiloto y coach táctico de videojuegos en tiempo real para **Windows 10/11**, ultra-ligero y 100% pasivo (compatible con motores Anti-Cheat). Observa la ventana activa de tu juego a baja frecuencia, recorta exactamente el área útil del cliente (`GetClientRect` + `ClientToScreen`), filtra frames repetidos en CPU (`pHash` + compuerta pre-captura) para no desperdiciar tokens ni FPS, y te asiste mediante:

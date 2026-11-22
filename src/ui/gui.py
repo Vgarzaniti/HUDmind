@@ -20,6 +20,7 @@ import sys
 import threading
 import tkinter as tk
 import webbrowser
+from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any
 
@@ -535,6 +536,10 @@ class HUDMindGUI:
 
         self._root = tk.Tk()
         self._root.title("HUDMind — Panel de Configuración y Coach IA")
+        ico_path = Path(__file__).resolve().parents[2] / "assets" / "hudmind.ico"
+        if ico_path.is_file():
+            with contextlib.suppress(Exception):
+                self._root.iconbitmap(default=str(ico_path))
         self._root.geometry("960x660")
         self._root.minsize(850, 580)
         self._root.configure(bg=_BG_ROOT)
