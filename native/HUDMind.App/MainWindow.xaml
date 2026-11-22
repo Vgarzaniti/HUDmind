@@ -23,7 +23,7 @@
                 <Image Source="Assets/hudmind-icon.png" Width="30" Height="30" Margin="0,0,10,0" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" />
                 <TextBlock Text="HUDMind" FontSize="22" FontWeight="Bold" Foreground="#38BDF8" VerticalAlignment="Center" />
                 <Button x:Name="BtnVersionCheck"
-                        Content="v1.1.0"
+                        Content="v1.1.1"
                         FontSize="10.5"
                         Padding="7,2"
                         Margin="8,0,0,0"
