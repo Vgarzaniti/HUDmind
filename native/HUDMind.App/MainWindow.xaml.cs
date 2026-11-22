@@ -39,7 +39,7 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
 
     private CoachOrchestrator? _orchestrator;
-    private GeminiLiveCoachOrchestrator? _liveOrchestrator;
+    private RealtimeLiveCoachOrchestrator? _liveOrchestrator;
     private bool _shutdownComplete;
     private bool _closingInProgress;
     private bool _syncingVoiceUi;
@@ -219,20 +219,17 @@ public partial class MainWindow : Window
             bool testMode = GetSelectedTag(CmbRunMode) == "test";
             string? forcedId = CmbGameProfile.SelectedItem?.ToString();
             bool wantLive = GetSelectedTag(CmbEngineType) == "live";
-            var geminiKey = _accounts.FirstOrDefault(a =>
-                a.Enabled &&
-                a.Provider.Equals("gemini", StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrWhiteSpace(a.ApiKey))?.ApiKey.Trim();
+            var liveBackend = wantLive ? LiveBackendFactory.TryCreateFromAccounts(_accounts) : null;
 
             _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
 
             BtnStartStop.IsEnabled = false;
             try
             {
-                if (wantLive && !string.IsNullOrWhiteSpace(geminiKey))
+                if (liveBackend is not null)
                 {
-                    _liveOrchestrator = new GeminiLiveCoachOrchestrator(
-                        geminiKey,
+                    _liveOrchestrator = new RealtimeLiveCoachOrchestrator(
+                        liveBackend,
                         _config,
                         _profiles,
                         new Win32WindowDetector(),
@@ -248,12 +245,12 @@ public partial class MainWindow : Window
                         localPhaseGate: new TextOnlySensorService()
                     );
                     await _liveOrchestrator.StartAsync();
-                    HeaderStatusText.Text = $"🎙 LIVE Conversacional · Voz {GeminiLiveCoachOrchestrator.ResolveLiveVoiceName(_config.VoiceGender)}";
+                    HeaderStatusText.Text = $"🎙 LIVE Conversacional · Voz {_liveOrchestrator.ActiveVoiceLabel}";
                 }
                 else
                 {
-                    if (wantLive && string.IsNullOrWhiteSpace(geminiKey))
-                        AppendLog("Sin API Key de Gemini para modo Live — iniciando motor Multi-IA clásico.");
+                    if (wantLive)
+                        AppendLog("Ninguna cuenta activa soporta Live Audio+Video — iniciando motor Multi-IA clásico.");
 
                     var textOnlySensor = new TextOnlySensorService();
                     var router = new ProviderFailoverRouter(_accounts, onLog: AppendLog, textOnlySensor: textOnlySensor);
@@ -527,7 +524,7 @@ public partial class MainWindow : Window
         _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
         _liveOrchestrator?.SetVoiceGenderLive(_config.VoiceGender);
         _previewVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
-        AppendLog($"Voz cambiada en vivo a: {(g == "female" ? "👩 Mujer" : "👨 Hombre")} ({(_liveOrchestrator is { IsRunning: true } ? GeminiLiveCoachOrchestrator.ResolveLiveVoiceName(g) : _config.VoiceStyle)}).");
+        AppendLog($"Voz cambiada en vivo a: {(g == "female" ? "👩 Mujer" : "👨 Hombre")} ({(_liveOrchestrator is { IsRunning: true } ? _liveOrchestrator.ActiveVoiceLabel : _config.VoiceStyle)}).");
     }
 
     private void CmbVoiceSettings_SelectionChanged(object sender, SelectionChangedEventArgs e)
