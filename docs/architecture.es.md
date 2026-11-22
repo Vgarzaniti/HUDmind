@@ -1,4 +1,6 @@
-# Arquitectura Técnica — HUDMind Native v1.1.0 (ISO/IEC/IEEE 42010)
+> 🌐 **Idioma / Language:** **[🇪🇸 Español](architecture.es.md)** | [🇺🇸 English](architecture.en.md)
+
+# Arquitectura Técnica — HUDMind Native v1.1.1 (ISO/IEC/IEEE 42010)
 
 Este documento describe la arquitectura modular de **HUDMind Native** sobre **.NET 9**, su separación estricta entre lógica pura, capa Win32 y UI WPF, sus motores polimórficos y sus Registros de Decisión de Arquitectura (ADRs).
 
@@ -7,9 +9,9 @@ Este documento describe la arquitectura modular de **HUDMind Native** sobre **.N
 ## 1. Principios de Diseño
 
 1. **Separación de Responsabilidades y Portabilidad (`Core` vs `Windows` vs `App`):**
-   - `HUDMind.Core` (`net9.0`, 100% multiplataforma): modelos, configuración atómica, seguridad SSRF/CWE-22/redacción, protocolo compacto, memoria anti-repetición, registro extensible de proveedores, failover router y ambos orquestadores (`CoachOrchestrator` y `RealtimeLiveCoachOrchestrator`).
-   - `HUDMind.Windows` (`net9.0-windows10.0.19041.0`): captura GDI `StretchBlt`, detección de proceso/ventana cliente, WinRT OCR, Valve GSI TCP, Riot TLS client, tailers de logs, Win32 hotkeys/PTT, audio WinMM streaming y tonos `PlaySoundW`.
-   - `HUDMind.App` (`net9.0-windows10.0.19041.0` WPF): `MainWindow`, `OverlayWindow`, `Win32TrayIcon` y `CoachEngineCoordinator`.
+   - `HUDMind.Core` (`net9.0`, 100% multiplataforma): modelos, configuración atómica, seguridad SSRF/CWE-22/redacción, protocolo compacto, memoria anti-repetición, registro extensible de proveedores, failover router, servicio de actualizaciones (`GitHubReleaseUpdateService`) y ambos orquestadores (`CoachOrchestrator` y `RealtimeLiveCoachOrchestrator`).
+   - `HUDMind.Windows` (`net9.0-windows10.0.19041.0`): captura GDI `StretchBlt`, detección de proceso/ventana cliente, WinRT OCR, Valve GSI TCP, Riot TLS client, tailers de logs, Win32 hotkeys/PTT, audio WinMM streaming, tonos `PlaySoundW` y resolución de carpetas conocidas (`KnownFolders`).
+   - `HUDMind.App` (`net9.0-windows10.0.19041.0` WPF): `MainWindow` (con banner integrado de actualizaciones), `OverlayWindow`, `Win32TrayIcon` y `CoachEngineCoordinator`.
 2. **0% GPU y Anticheat-Safe por construcción:**
    - Renderizado WPF forzado por CPU (`RenderMode.SoftwareOnly`).
    - Captura sin hooks invasivos ni inyección de procesos; detección por `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` cacheada por `(HWND, PID)` y PTT mediante consulta directa `GetAsyncKeyState`.
@@ -23,7 +25,7 @@ Este documento describe la arquitectura modular de **HUDMind Native** sobre **.N
 ```text
 +-----------------------------------------------------------------------------------+
 |                        HUDMind.App (WPF · RenderMode.SoftwareOnly)                |
-|  MainWindow (4 pestañas)  |  OverlayWindow (WS_EX_TRANSPARENT)  |  Win32TrayIcon  |
+|  MainWindow (4 pestañas + UpdateBanner) | OverlayWindow (WS_EX_TRANSPARENT) | Tray|
 +-----------------------------------------+-----------------------------------------+
                                           |
                                           v
@@ -76,6 +78,7 @@ Este documento describe la arquitectura modular de **HUDMind Native** sobre **.N
 | Audio Live (Mic + Speaker) | Threads WinMM / Cola PCM (`Win32StreamingMicCapture` & `Win32StreamingPcmPlayer`) | Captura 16kHz y reproducción 24kHz en memoria; supresión de eco e interrupción instantánea (*barge-in*). |
 | Hotkeys Globales | Hilo dedicado Win32 (`GetMessage`) | `RegisterHotKey` + `PostThreadMessage(WM_QUIT)` en cierre ordenado; `0%` CPU en espera. |
 | Receptor GSI CS2/Dota2 | `TcpListener` loopback + `SemaphoreSlim(4)` | Máximo 4 sockets simultáneos con `CancellationTokenSource` acotado y limpieza en `Stop()`. |
+| Verificador de Updates | `Task` async + `DispatcherTimer` (60 min en reposo) | Solo consulta en arranque y en reposo (`!IsRunning`); valida redirecciones HTTPS a GitHub y SHA-256 en streaming. |
 
 ---
 
@@ -91,3 +94,4 @@ Este documento describe la arquitectura modular de **HUDMind Native** sobre **.N
 | **ADR-006** | Protocolo `FASE\|QUE_VEO\|URG\|CONSEJO` + `HudPhaseClassifier` | Respuestas verbosas sin estructura | Minimiza tokens de salida (`<= 160`), facilita parseo instantáneo sin fallos de JSON parcial y filtra menús/replays de forma determinista. |
 | **ADR-007** | Confirmación sonora vía WAV embebido *pinned* (`Win32AudioCue` + `PlaySoundW`) | Síntesis TTS o archivos WAV externos en disco | Latencia de disparo en microsegundos, cero I/O de disco y silencio garantizado cuando `text_only` o `EnableAudioCues=false`. |
 | **ADR-008** | Voz clásica 100% C# (`WinRtNaturalVoiceService` + `InstantSapiVoiceService`) y perfiles embebidos | Subproceso Python archivado o dependencia de carpeta externa obligatoria | Cero procesos Python en runtime, respeto directo al dispositivo `AudioOutputDeviceName` y portabilidad plug-and-play en cualquier PC Windows. |
+| **ADR-009** | Actualizador asistido in-app vía GitHub Releases con verificación `SHA-256` sin auto-parcheo en caliente | Scripts `.bat`/PowerShell auto-reemplazando el `.exe` en ejecución | Evita falsos positivos heurísticos de antivirus/SmartScreen, valida redirecciones únicamente a GitHub CDN y permite descargar y lanzar limpiamente el nuevo binario. |
