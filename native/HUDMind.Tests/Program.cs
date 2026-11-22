@@ -177,10 +177,10 @@ await RunTest("07. ProviderFailoverRouter Hedged Vision beats stalled primary wi
 await RunTest("08. ProviderFailoverRouter fails over cleanly on 422 and 429 to backup account", async () =>
 {
     var a1 = new ProviderAccount { Id = "p1", Label = "P1", Provider = "gemini", ApiKey = "AIzaTest12345678", Model = "gemini-3.5-flash-lite", Priority = 1 };
-    var a2 = new ProviderAccount { Id = "p2", Label = "P2", Provider = "openrouter", ApiKey = "sk-or-test123456", Model = "google/gemma:free", Priority = 2 };
+    var a2 = new ProviderAccount { Id = "p2", Label = "P2", Provider = "openrouter", ApiKey = "sk-or-test123456", Model = "google/gemma-3-27b-it:free", Priority = 2 };
     var expected = new CoachResponse(true, UrgencyLevel.Medium, "Rotá atrás", "Rotá atrás");
 
-    Assert(!a2.IsFastCloudVision, "OpenRouter :free must be excluded from IsFastCloudVision hedging");
+    Assert(a2.SupportsVision && !a2.IsFastCloudVision, "OpenRouter :free Vision must be supported for failover but excluded from hedging");
 
     await using var router = new ProviderFailoverRouter(
         [a1, a2],
@@ -191,7 +191,7 @@ await RunTest("08. ProviderFailoverRouter fails over cleanly on 422 and 429 to b
 
     var profile = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "Rocket League" } };
     var (resp, _, model) = await router.AnalyzeFrameAsync([1, 2, 3], profile, new UserConfig(), "", false);
-    Assert(resp == expected && model == "google/gemma:free", "422 must fall back to backup provider");
+    Assert(resp == expected && model == "google/gemma-3-27b-it:free", "422 must fall back to backup provider");
 });
 
 // 9. Freshness Deadline discards slow automatic advice but keeps manual F10
@@ -311,6 +311,52 @@ await RunTest("12. CoachOrchestrator wakes immediately on F10, delivers to overl
     Assert(sw.ElapsedMilliseconds < 800, $"F10 should bypass 2000ms capture sleep (took {sw.ElapsedMilliseconds}ms)");
 });
 
+// 13. Lazy Text-Only Sensor Layer: 0 calls on Vision, active ONLY for blind text-only models!
+await RunTest("13. TextOnlySensorService pays 0ms on Vision models, activates ONLY on blind models & silences REPLAY locally", async () =>
+{
+    var profile = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "Rocket League" } };
+    var visionAcc = new ProviderAccount { Id = "v1", Label = "Gemini Vision", Provider = "gemini", ApiKey = "AIzaTest12345678", Model = "gemini-3.5-flash-lite", Priority = 1 };
+    var blindAcc = new ProviderAccount { Id = "b1", Label = "Pollinations Blind", Provider = "pollinations", ApiKey = "", Model = "openai-fast", Priority = 2 };
+
+    Assert(visionAcc.SupportsVision && !blindAcc.SupportsVision, "SupportsVision flags accurate");
+
+    // Case A: Vision model succeeds -> sensor MUST NOT be called at all (0 calls!)
+    var sensorA = new CountingSensor(new HudSensorSnapshot("PLAY", "[TOP-CENTER] 1 00:42 2", "", "", 30, true));
+    await using (var routerA = new ProviderFailoverRouter(
+        [visionAcc, blindAcc],
+        factory: acc => new StubProvider(acc, 5, new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Medium, "Rotá bien", "Rotá bien"))),
+        textOnlySensor: sensorA))
+    {
+        var (r, _, _) = await routerA.AnalyzeFrameAsync([1, 2, 3], profile, new UserConfig(), "", false);
+        Assert(r is { ShouldIntervene: true } && sensorA.CallCount == 0, $"Sensor should NOT run for Vision! Calls={sensorA.CallCount}");
+    }
+
+    // Case B: Only blind model active + REPLAY detected by OCR -> silenced locally WITHOUT calling cloud!
+    var sensorReplay = new CountingSensor(new HudSensorSnapshot("REPLAY", "[CENTER] REPLAY GOL", "", "", 25, true));
+    int blindCloudCalls = 0;
+    await using (var routerB = new ProviderFailoverRouter(
+        [blindAcc],
+        factory: acc => new CallbackStubProvider(acc, snap => { blindCloudCalls++; return new ProviderCallResult(CoachResponse.Silent()); }),
+        textOnlySensor: sensorReplay))
+    {
+        var (r, _, model) = await routerB.AnalyzeFrameAsync([1, 2, 3], profile, new UserConfig(), "", false);
+        Assert(r is { ShouldIntervene: false } && model == "ocr-local-filter", "REPLAY silenced locally");
+        Assert(sensorReplay.CallCount == 1 && blindCloudCalls == 0, "Blind cloud skipped on local REPLAY");
+    }
+
+    // Case C: Blind model active + PLAY OCR & Game Log -> passes real HudSensorSnapshot to blind model!
+    var sensorPlay = new CountingSensor(new HudSensorSnapshot("PLAY", "[TOP-CENTER] 1 00:42 2 | [BOT-RIGHT] 14", "RL_LOG: Freeplay", "BOT-RIGHT: '68' -> '14'", 32, true));
+    HudSensorSnapshot? receivedSnap = null;
+    await using (var routerC = new ProviderFailoverRouter(
+        [blindAcc],
+        factory: acc => new CallbackStubProvider(acc, snap => { receivedSnap = snap; return new ProviderCallResult(new CoachResponse(true, UrgencyLevel.High, "Juntá boost", "Juntá boost")); }),
+        textOnlySensor: sensorPlay))
+    {
+        var (r, _, _) = await routerC.AnalyzeFrameAsync([1, 2, 3], profile, new UserConfig(), "", false);
+        Assert(r is { ShouldIntervene: true } && receivedSnap is { Phase: "PLAY", HasUsefulData: true }, "Sensor snapshot delivered to blind model");
+    }
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -318,13 +364,34 @@ sealed class StubProvider(ProviderAccount account, int delayMs, ProviderCallResu
 {
     public ProviderAccount Account { get; } = account;
     public Task PrewarmAsync(CancellationToken ct = default) => Task.CompletedTask;
-    public async Task<ProviderCallResult> AnalyzeFrameAsync(byte[] jpegBytes, GameProfile profile, UserConfig config, string recentHistory, bool forceAdvice, string spatialTelemetry = "", CancellationToken ct = default)
+    public async Task<ProviderCallResult> AnalyzeFrameAsync(byte[] jpegBytes, GameProfile profile, UserConfig config, string recentHistory, bool forceAdvice, string spatialTelemetry = "", HudSensorSnapshot? sensorSnapshot = null, CancellationToken ct = default)
     {
         await Task.Delay(delayMs, ct);
         return outcome;
     }
     public Task<(bool Ok, string Message)> TestConnectionAsync(CancellationToken ct = default) => Task.FromResult((true, "ok"));
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+sealed class CallbackStubProvider(ProviderAccount account, Func<HudSensorSnapshot?, ProviderCallResult> onCall) : IAIProvider
+{
+    public ProviderAccount Account { get; } = account;
+    public Task PrewarmAsync(CancellationToken ct = default) => Task.CompletedTask;
+    public Task<ProviderCallResult> AnalyzeFrameAsync(byte[] jpegBytes, GameProfile profile, UserConfig config, string recentHistory, bool forceAdvice, string spatialTelemetry = "", HudSensorSnapshot? sensorSnapshot = null, CancellationToken ct = default) =>
+        Task.FromResult(onCall(sensorSnapshot));
+    public Task<(bool Ok, string Message)> TestConnectionAsync(CancellationToken ct = default) => Task.FromResult((true, "ok"));
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+sealed class CountingSensor(HudSensorSnapshot snapshot) : ITextOnlySensorService
+{
+    public int CallCount { get; private set; }
+    public Task<HudSensorSnapshot> ExtractAsync(byte[] jpegBytes, GameProfile profile, CancellationToken ct = default)
+    {
+        CallCount++;
+        return Task.FromResult(snapshot);
+    }
+    public void Reset() { }
 }
 
 sealed class FakeHttpHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler) : HttpMessageHandler

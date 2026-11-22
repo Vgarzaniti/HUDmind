@@ -80,6 +80,56 @@ public static class CompactWireProtocol
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Strict anti-hallucination prompt exclusively for text-only ("blind") models fed by WinRT OCR + Game Logs.
+    /// Forbids inventing 3D positions and focuses purely on verified HUD numbers, clock, economy &amp; phase.
+    /// </summary>
+    public static string BuildTextOnlySensorPrompt(
+        GameProfile profile,
+        UserConfig config,
+        HudSensorSnapshot sensor,
+        string recentHistory,
+        string visualTimeline,
+        bool forceAdvice)
+    {
+        var lang = (config.VoiceLanguage ?? config.TextLanguage ?? "es").Trim().ToLowerInvariant();
+        bool isEn = lang == "en";
+        var gameLabel = profile.Manifest.GameId.Equals("universal", StringComparison.OrdinalIgnoreCase)
+            ? "the active PC game"
+            : SanitizeInline(profile.Manifest.DisplayName, 48);
+
+        var sb = new StringBuilder(640);
+        if (isEn)
+        {
+            sb.Append("You are a calm eSports coach for ").Append(gameLabel).Append(" speaking on Discord.\n");
+            sb.Append("IMPORTANT: You CANNOT see 3D video. You ONLY receive factual HUD OCR readings and game logs below.\n");
+            sb.Append("RULES: 1) Talk ONLY about macro, clock, score, resources/economy, or phase confirmed by the sensors. NEVER invent 3D ball/enemy positions not in the data.\n");
+            sb.Append("2) If phase is MENU/LOADING/REPLAY/DEAD or data is too sparse -> reply NONE.\n");
+            sb.Append("3) Write 1 clear, natural sentence (10-16 words).\n");
+        }
+        else
+        {
+            sb.Append("Sos un coach humano de eSports para ").Append(gameLabel).Append(" hablando por Discord.\n");
+            sb.Append("IMPORTANTE: NO podés ver el video 3D; recibís ÚNICAMENTE lecturas reales de OCR del HUD y logs oficiales del juego.\n");
+            sb.Append("REGLAS: 1) Hablá SOLO de macro, reloj, marcador, recursos/economía o fase confirmada en los sensores. JAMÁS inventes posiciones 3D, paredes ni rivales que no figuren en los datos.\n");
+            sb.Append("2) Si la fase es MENU/LOADING/REPLAY/DEAD o hay pocos datos útiles -> devolvé NONE.\n");
+            sb.Append("3) Escribí 1 sola oración clara y natural en español argentino (10 a 16 palabras).\n");
+        }
+
+        sb.Append("SENSORES EN VIVO: ").Append(SanitizeInline(sensor.FormatForPrompt(), 360)).Append('\n');
+        if (!string.IsNullOrWhiteSpace(profile.CustomRules))
+            sb.Append("Reglas del jugador: ").Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
+        if (!string.IsNullOrWhiteSpace(visualTimeline))
+            sb.Append("Contexto reciente: ").Append(SanitizeInline(visualTimeline, 260)).Append('\n');
+        if (!string.IsNullOrWhiteSpace(recentHistory))
+            sb.Append("No repitas: ").Append(SanitizeInline(recentHistory, 220)).Append('\n');
+        if (forceAdvice)
+            sb.Append("F10 MANUAL: entregá la mejor lectura basada SOLO en los datos de sensores disponibles.\n");
+
+        sb.Append("Formato ESTRICTO en 1 línea: FASE|resumen de sensores en 6-10 palabras|H/M/L/NONE|consejo claro completo (vacío si NONE)");
+        return sb.ToString();
+    }
+
     private static string SanitizeInline(string raw, int maxLen)
     {
         var clean = string.Join(' ', raw.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()));

@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using HUDMind.Core.Config;
+using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 
 namespace HUDMind.Core.AI;
@@ -29,6 +30,7 @@ public interface IAIProvider : IAsyncDisposable
         string recentHistory,
         bool forceAdvice,
         string spatialTelemetry = "",
+        HudSensorSnapshot? sensorSnapshot = null,
         CancellationToken ct = default);
     Task<(bool Ok, string Message)> TestConnectionAsync(CancellationToken ct = default);
 }
@@ -142,6 +144,7 @@ public sealed class GeminiFastProvider : IAIProvider
         string recentHistory,
         bool forceAdvice,
         string spatialTelemetry = "",
+        HudSensorSnapshot? sensorSnapshot = null,
         CancellationToken ct = default)
     {
         var key = Account.ApiKey.Trim();
@@ -319,6 +322,7 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         string recentHistory,
         bool forceAdvice,
         string spatialTelemetry = "",
+        HudSensorSnapshot? sensorSnapshot = null,
         CancellationToken ct = default)
     {
         var key = Account.ApiKey.Trim();
@@ -472,6 +476,7 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         string recentHistory,
         bool forceAdvice,
         string spatialTelemetry = "",
+        HudSensorSnapshot? sensorSnapshot = null,
         CancellationToken ct = default)
     {
         var baseUrl = Account.ResolvedBaseUrl();
@@ -484,18 +489,33 @@ public sealed class OpenAICompatibleProvider : IAIProvider
             ? baseUrl
             : $"{baseUrl}/chat/completions";
 
-        var isKeyless = Account.Provider is "pollinations" or "airforce" && string.IsNullOrWhiteSpace(Account.ApiKey);
-        var prompt = CompactWireProtocol.BuildRealtimePrompt(
-            profile, config, recentHistory, forceAdvice,
-            visualTimeline: spatialTelemetry);
-
         object payloadObj;
-        if (isKeyless)
+        if (!Account.SupportsVision)
         {
-            return new ProviderCallResult(null, 400, "Proveedor sin visión omitido para evitar consejos alucinados.");
+            if (sensorSnapshot is null || !sensorSnapshot.HasUsefulData)
+                return new ProviderCallResult(CoachResponse.Silent(), null, string.Empty);
+
+            var sensorPrompt = CompactWireProtocol.BuildTextOnlySensorPrompt(
+                profile, config, sensorSnapshot, recentHistory,
+                visualTimeline: spatialTelemetry, forceAdvice: forceAdvice);
+
+            payloadObj = new
+            {
+                model = string.IsNullOrWhiteSpace(Account.Model) ? "openai-fast" : Account.Model,
+                temperature = 0.35,
+                max_tokens = 115,
+                stop = new[] { "\n" },
+                messages = new object[]
+                {
+                    new { role = "user", content = sensorPrompt }
+                }
+            };
         }
         else
         {
+            var prompt = CompactWireProtocol.BuildRealtimePrompt(
+                profile, config, recentHistory, forceAdvice,
+                visualTimeline: spatialTelemetry);
             var b64 = Convert.ToBase64String(jpegBytes);
             payloadObj = new
             {
@@ -614,10 +634,16 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
 
     private readonly List<IAIProvider> _providers;
     private readonly ConcurrentDictionary<string, CircuitState> _circuits = new();
+    private readonly ITextOnlySensorService? _textOnlySensor;
     private readonly double _hedgeDelaySeconds;
     private readonly double _freshnessDeadlineMs;
     private readonly Action<string>? _onLog;
     private int _activeIndex;
+
+    private static readonly HashSet<string> LocalSilentPhases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "MENU", "REPLAY", "LOADING", "DESKTOP", "PAUSE"
+    };
 
     public string ActiveProviderLabel
     {
@@ -634,18 +660,20 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         Func<ProviderAccount, IAIProvider>? factory = null,
         double hedgeDelaySeconds = 1.45,
         double freshnessDeadlineMs = 3400.0,
-        Action<string>? onLog = null)
+        Action<string>? onLog = null,
+        ITextOnlySensorService? textOnlySensor = null)
     {
         _hedgeDelaySeconds = Math.Max(0.05, hedgeDelaySeconds);
         _freshnessDeadlineMs = freshnessDeadlineMs;
         _onLog = onLog;
+        _textOnlySensor = textOnlySensor;
         var create = factory ?? CreateDefaultAdapter;
 
-        // Only route to REAL Vision models (never silent blind text-only hallucination!)
+        // Text-only ("blind") accounts are enabled ONLY when _textOnlySensor (WinRT OCR + Game Logs) is attached!
         _providers = accounts
             .Where(a => a.IsReady() &&
                         !string.Equals(a.Provider, "ollama", StringComparison.OrdinalIgnoreCase) &&
-                        !(a.Provider is "pollinations" or "airforce" && string.IsNullOrWhiteSpace(a.ApiKey)))
+                        (a.SupportsVision || _textOnlySensor is not null))
             .OrderBy(a => a.Priority)
             .Select(create)
             .ToList();
@@ -734,6 +762,9 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
                 return (hedged.Response, hedged.LatencyMs, hedged.Model);
         }
 
+        HudSensorSnapshot? lazySensor = null;
+        bool sensorExtracted = false;
+
         foreach (var (idx, prov) in candidates)
         {
             if (attemptedIds.Contains(prov.Account.Id))
@@ -741,11 +772,35 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
             if (ct.IsCancellationRequested)
                 break;
 
+            // Lazy OCR + Game Log sensors: executed EXCLUSIVELY for blind/text-only models (0ms on Vision!)
+            if (!prov.Account.SupportsVision)
+            {
+                if (_textOnlySensor is null)
+                    continue;
+
+                if (!sensorExtracted)
+                {
+                    sensorExtracted = true;
+                    lazySensor = await _textOnlySensor.ExtractAsync(jpegBytes, profile, frameCts.Token);
+                    if (!forceAdvice && LocalSilentPhases.Contains(lazySensor.Phase))
+                    {
+                        return (CoachResponse.Silent($"[{lazySensor.Phase}] {lazySensor.OcrZonesSummary}"), lazySensor.OcrMs, "ocr-local-filter");
+                    }
+                    if (!forceAdvice && !lazySensor.HasUsefulData)
+                    {
+                        return (CoachResponse.Silent("[SIN-HUD] Sin texto/logs legibles"), lazySensor.OcrMs, "ocr-local-filter");
+                    }
+                }
+            }
+
             var sw = Stopwatch.StartNew();
             ProviderCallResult res;
             try
             {
-                res = await prov.AnalyzeFrameAsync(jpegBytes, profile, config, recentHistory, forceAdvice, spatialTelemetry, frameCts.Token);
+                res = await prov.AnalyzeFrameAsync(
+                    jpegBytes, profile, config, recentHistory, forceAdvice, spatialTelemetry,
+                    sensorSnapshot: prov.Account.SupportsVision ? null : lazySensor,
+                    ct: frameCts.Token);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
@@ -792,7 +847,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
             try
             {
                 var r = await item.prov.AnalyzeFrameAsync(
-                    jpegBytes, profile, config, recentHistory, forceAdvice, spatialTelemetry, raceCts.Token);
+                    jpegBytes, profile, config, recentHistory, forceAdvice, spatialTelemetry, null, raceCts.Token);
                 sw.Stop();
                 return (item.idx, item.prov, r, sw.Elapsed.TotalMilliseconds);
             }

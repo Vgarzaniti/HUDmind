@@ -39,3 +39,13 @@ public interface IOverlayOutputService
 {
     void ShowCallout(string text, UrgencyLevel urgency, string title, double durationSeconds);
 }
+
+/// <summary>
+/// Lazy sensor layer (WinRT OCR + read-only Game Logs/APIs) invoked ONLY for text-only ("blind") AI models.
+/// Vision models never invoke this interface (0ms overhead on Vision hot path).
+/// </summary>
+public interface ITextOnlySensorService
+{
+    Task<HudSensorSnapshot> ExtractAsync(byte[] jpegBytes, GameProfile profile, CancellationToken ct = default);
+    void Reset();
+}

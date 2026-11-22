@@ -58,10 +58,38 @@ public sealed class ProviderAccount
         Enabled && (IsKeylessAllowed || !string.IsNullOrWhiteSpace(ApiKey));
 
     /// <summary>
+    /// True when this provider/model accepts image pixels natively.
+    /// False for text-only ("blind") models that rely on our lazy WinRT OCR + Game Log sensor layer.
+    /// </summary>
+    public bool SupportsVision
+    {
+        get
+        {
+            var prov = Provider.ToLowerInvariant();
+            if (prov is "pollinations" or "airforce" && string.IsNullOrWhiteSpace(ApiKey))
+                return false;
+            if (prov is "gemini" or "claude" or "openai")
+                return true;
+            if (prov == "groq")
+            {
+                var m = Model.ToLowerInvariant();
+                return m.Contains("llama-4") || m.Contains("vision") || m.Contains("scout") || m.Contains("maverick");
+            }
+            if (prov == "openrouter")
+            {
+                var m = Model.ToLowerInvariant();
+                return m.Contains("vision") || m.Contains("gemma-3") || m.Contains("gemini") || m.Contains("gpt-4") || m.Contains("claude") || m.Contains("vl") || m.Contains("llama-4");
+            }
+            return false;
+        }
+    }
+
+    /// <summary>
     /// True only for low-latency paid/free-LPU/Flash vision providers eligible for parallel hedging.
     /// Excludes slow OpenRouter `:free` community queues to avoid wasting daily RPD quota.
     /// </summary>
     public bool IsFastCloudVision =>
+        SupportsVision &&
         Provider is "gemini" or "groq" or "openai" or "claude" or "openrouter" &&
         !string.IsNullOrWhiteSpace(ApiKey) &&
         !(Provider == "openrouter" && Model.EndsWith(":free", StringComparison.OrdinalIgnoreCase));
@@ -221,6 +249,32 @@ public sealed record CapturedFrameData(
     bool IsForced = false,
     string SpatialTelemetry = ""
 );
+
+public sealed record HudSensorSnapshot(
+    string Phase,
+    string OcrZonesSummary,
+    string LogSummary,
+    string DeltaNote,
+    double OcrMs,
+    bool HasUsefulData
+)
+{
+    public static HudSensorSnapshot Empty { get; } = new("UNKNOWN", string.Empty, string.Empty, string.Empty, 0, false);
+
+    public string FormatForPrompt()
+    {
+        var parts = new List<string>(4);
+        if (!string.IsNullOrWhiteSpace(Phase) && Phase != "UNKNOWN")
+            parts.Add($"FASE_DETECTADA={Phase}");
+        if (!string.IsNullOrWhiteSpace(OcrZonesSummary))
+            parts.Add($"HUD_OCR: {OcrZonesSummary}");
+        if (!string.IsNullOrWhiteSpace(LogSummary))
+            parts.Add($"GAME_LOG: {LogSummary}");
+        if (!string.IsNullOrWhiteSpace(DeltaNote))
+            parts.Add($"CAMBIO_RECIENTE: {DeltaNote}");
+        return string.Join(" | ", parts);
+    }
+}
 
 public sealed record CoachRuntimeStats(
     long FramesCaptured,

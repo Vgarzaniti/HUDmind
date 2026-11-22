@@ -206,7 +206,8 @@ public partial class MainWindow : Window
             bool testMode = GetSelectedTag(CmbRunMode) == "test";
             string? forcedId = CmbGameProfile.SelectedItem?.ToString();
 
-            var router = new ProviderFailoverRouter(_accounts, onLog: AppendLog);
+            var textOnlySensor = new TextOnlySensorService();
+            var router = new ProviderFailoverRouter(_accounts, onLog: AppendLog, textOnlySensor: textOnlySensor);
             var windowDetector = new Win32WindowDetector();
             var capture = new FastScreenCapture();
             var voice = new HybridVoiceService(_repo.WorkspaceRoot);
