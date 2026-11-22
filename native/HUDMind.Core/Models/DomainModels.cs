@@ -55,7 +55,7 @@ public sealed class ProviderAccount
     public Dictionary<string, JsonElement>? ExtraFields { get; set; }
 
     public bool IsKeylessAllowed =>
-        (Provider ?? string.Empty).Trim().ToLowerInvariant() is "pollinations" or "airforce" or "ollama";
+        AI.ProviderRegistry.IsKeylessAllowed(Provider);
 
     public bool IsReady() =>
         Enabled && (IsKeylessAllowed || !string.IsNullOrWhiteSpace(ApiKey));
@@ -115,7 +115,7 @@ public sealed class ProviderAccount
     /// </summary>
     public bool IsFastCloudVision =>
         SupportsVision &&
-        (Provider ?? string.Empty).Trim().ToLowerInvariant() is "gemini" or "groq" or "openai" or "claude" or "openrouter" or "xai" &&
+        AI.ProviderRegistry.SupportsFastHedgedVision(Provider) &&
         !string.IsNullOrWhiteSpace(ApiKey) &&
         !((Provider ?? string.Empty).Equals("openrouter", StringComparison.OrdinalIgnoreCase) &&
           Model.EndsWith(":free", StringComparison.OrdinalIgnoreCase));
@@ -135,19 +135,7 @@ public sealed class ProviderAccount
         if (!string.IsNullOrWhiteSpace(BaseUrl))
             return BaseUrl.Trim().TrimEnd('/');
 
-        return Provider.ToLowerInvariant() switch
-        {
-            "openai" => "https://api.openai.com/v1",
-            "claude" => "https://api.anthropic.com/v1",
-            "groq" => "https://api.groq.com/openai/v1",
-            "xai" => "https://api.x.ai/v1",
-            "mistral" => "https://api.mistral.ai/v1",
-            "openrouter" => "https://openrouter.ai/api/v1",
-            "pollinations" => "https://text.pollinations.ai/openai",
-            "airforce" => "https://api.airforce/v1",
-            "ollama" => "http://localhost:11434/v1",
-            _ => string.Empty
-        };
+        return AI.ProviderRegistry.ResolveBaseUrl(Provider);
     }
 }
 
@@ -311,6 +299,41 @@ public sealed class UserConfig
     public string TokenEfficiencyMode { get; set; } = "eco";
 
     /// <summary>
+    /// Synchronizes mutable runtime preferences when a caller provides a separate UserConfig instance.
+    /// </summary>
+    public void CopyRuntimePreferencesFrom(UserConfig source)
+    {
+        if (ReferenceEquals(this, source))
+            return;
+        TextLanguage = source.TextLanguage;
+        VoiceLanguage = source.VoiceLanguage;
+        CoachMode = source.CoachMode;
+        EnableOverlay = source.EnableOverlay;
+        VoiceGender = source.VoiceGender;
+        VoiceStyle = source.VoiceStyle;
+        TtsVolume = source.TtsVolume;
+        TtsRate = source.TtsRate;
+        MicInputMode = source.MicInputMode;
+        PushToTalkKey = source.PushToTalkKey;
+        AudioInputDeviceName = source.AudioInputDeviceName;
+        AudioOutputDeviceName = source.AudioOutputDeviceName;
+        LiveAutoCoachSeconds = source.LiveAutoCoachSeconds;
+        PlayerSkillTier = source.PlayerSkillTier;
+        PlayerRankLabel = source.PlayerRankLabel;
+        CoachStyle = source.CoachStyle;
+        OverlayDurationSeconds = source.OverlayDurationSeconds;
+        OverlayPosition = source.OverlayPosition;
+        OverlayOpacity = source.OverlayOpacity;
+        OverlayScale = source.OverlayScale;
+        OverlayCompact = source.OverlayCompact;
+        CaptureMonitor = source.CaptureMonitor;
+        MinInferenceIntervalSeconds = source.MinInferenceIntervalSeconds;
+        ImageCompressionQuality = source.ImageCompressionQuality;
+        TokenEfficiencyMode = source.TokenEfficiencyMode;
+        SetCommunicationMode(source.CommunicationMode);
+    }
+
+    /// <summary>
     /// Preserves all Python-specific config fields (tts_voice, overlay_theme, etc.) on round-trip save.
     /// </summary>
     [JsonExtensionData]
@@ -375,6 +398,21 @@ public sealed class GameProfile
         var norm = executableName.Trim();
         return Manifest.ProcessNames.Any(p =>
             string.Equals(p.Trim(), norm, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static GameProfile? MatchForegroundProfile(
+        IReadOnlyList<GameProfile> profiles,
+        string? foregroundExecutable,
+        string? forcedGameId = null)
+    {
+        var matched = profiles.FirstOrDefault(p => p.MatchesProcess(foregroundExecutable));
+        if (matched is null &&
+            string.Equals(forcedGameId, "universal", StringComparison.OrdinalIgnoreCase) &&
+            !IsDesktopNonGameProcess(foregroundExecutable))
+        {
+            matched = profiles.FirstOrDefault(p => p.Manifest.GameId == "universal");
+        }
+        return matched;
     }
 }
 

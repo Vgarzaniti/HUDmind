@@ -9,62 +9,12 @@ using HUDMind.Core.Pipeline;
 namespace HUDMind.Core.AI;
 
 /// <summary>
-/// Provider-agnostic contract for any bidirectional real-time Audio+Video AI WebSocket backend
-/// (e.g. Gemini Live, OpenAI Realtime API, xAI Realtime, etc.).
-/// </summary>
-public interface ILiveRealtimeBackend : IAsyncDisposable
-{
-    string ProviderName { get; }
-    string ActiveModelLabel { get; }
-    bool IsConnected { get; }
-
-    string ResolveVoiceName(string? gender);
-
-    Task RunSessionLoopAsync(
-        UserConfig config,
-        GameProfile? profile,
-        Action<byte[]> onPcm24kAudio,
-        Action<string> onPartialTranscript,
-        Action<string> onTurnComplete,
-        Action onInterrupted,
-        Action<string> onLog,
-        Action onConnected,
-        CancellationToken sessionCt);
-
-    Task SendVideoFrameAsync(byte[] jpegBytes, CancellationToken ct);
-    Task SendMicAudio16kAsync(byte[] pcm16k, CancellationToken ct);
-    Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct);
-    Task SendTextTurnAsync(string promptText, CancellationToken ct);
-    ValueTask ResetSessionStateAsync() => ValueTask.CompletedTask;
-}
-
-public static class LiveBackendFactory
-{
-    /// <summary>
-    /// Selects the highest-priority enabled account that supports WebSocket bidirectional Live Audio+Video
-    /// (Gemini Live, OpenAI Realtime, xAI Grok Realtime). Returns null only when no Live-capable account is ready.
-    /// </summary>
-    public static ILiveRealtimeBackend? TryCreateFromAccounts(IEnumerable<ProviderAccount> accounts)
-    {
-        foreach (var acc in accounts.Where(a => a.IsReady()).OrderBy(a => a.Priority))
-        {
-            var prov = (acc.Provider ?? string.Empty).Trim().ToLowerInvariant();
-            if (prov == "gemini" && !string.IsNullOrWhiteSpace(acc.ApiKey))
-                return new LiveBackends.GeminiLiveBackend(acc.ApiKey, acc.Model);
-            if (prov is "openai" or "xai" && !string.IsNullOrWhiteSpace(acc.ApiKey))
-                return new LiveBackends.OpenAIRealtimeBackend(prov, acc.ApiKey, acc.Model);
-        }
-        return null;
-    }
-}
-
-/// <summary>
 /// Provider-agnostic Real-Time Conversational Coach Engine.
 /// Coordinates sharp screen capture, ordered 16kHz live microphone with Acoustic Echo Suppression &amp; barge-in,
 /// 24kHz zero-stutter PCM playback, local WinRT OCR silence gate, multi-game profile hot-reload, and live overlay.
 /// Works identically with any <see cref="ILiveRealtimeBackend"/> implementation.
 /// </summary>
-public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
+public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 {
     private readonly ILiveRealtimeBackend _backend;
     private readonly UserConfig _config;
@@ -121,8 +71,34 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
 
     public bool IsRunning => Volatile.Read(ref _runCts) is { IsCancellationRequested: false };
     public bool IsPaused => _userPaused;
+    public bool SupportsLiveMic => true;
+    public string EngineBadge => ".NET 9 · 0% GPU · LIVE WS";
     public string ActiveVoiceLabel => _backend.ResolveVoiceName(_config.VoiceGender);
     public string ActiveProviderName => _backend.ProviderName;
+    public string ActiveVoiceDisplay => ActiveVoiceLabel;
+    public string ActiveChannelStatus => _config.IsTextOnlyMode
+        ? $"💬 {_backend.ProviderName} · Solo texto"
+        : _config.IsCoachVoiceOnlyMode
+            ? $"🔊 {_backend.ProviderName} · Solo voz ({ActiveVoiceLabel})"
+            : $"🎙 {_backend.ProviderName} · Charla ({ActiveVoiceLabel})";
+
+    public void RefreshPersona(string? reason = null) => RefreshLivePersona(reason);
+
+    public Task<bool> SendUserTextAsync(string userText, CancellationToken ct = default) =>
+        SendUserTextAsync(userText, attachCurrentScreen: true, ct);
+
+    public void UpdateAudioLive(UserConfig config)
+    {
+        _config.CopyRuntimePreferencesFrom(config);
+        SetVolume(_config.TtsVolume);
+        SetAudioDevicesLive(_config.AudioInputDeviceName, _config.AudioOutputDeviceName);
+    }
+
+    public void ApplyLiveSettings(UserConfig config)
+    {
+        UpdateAudioLive(config);
+        RefreshLivePersona($"{_config.PlayerSkillTier} · {_config.CoachStyle}");
+    }
 
     public RealtimeLiveCoachOrchestrator(
         ILiveRealtimeBackend backend,
@@ -159,17 +135,8 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
         _micEnabled = config.IsMicActive;
     }
 
-    private GameProfile? MatchForegroundProfile(string? fg)
-    {
-        var matched = _profiles.FirstOrDefault(p => p.MatchesProcess(fg));
-        if (matched is null &&
-            string.Equals(_forcedGameId, "universal", StringComparison.OrdinalIgnoreCase) &&
-            !GameProfile.IsDesktopNonGameProcess(fg))
-        {
-            matched = _profiles.FirstOrDefault(p => p.Manifest.GameId == "universal");
-        }
-        return matched;
-    }
+    private GameProfile? MatchForegroundProfile(string? fg) =>
+        GameProfile.MatchForegroundProfile(_profiles, fg, _forcedGameId);
 
     public (string GameName, string Digest, int Count) GetMatchSessionDigest(bool isEn = false) =>
         _memory.BuildMatchReviewDigest(isEn: isEn);
@@ -327,7 +294,7 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
             RefreshLivePersona($"canal {_config.CommunicationMode}");
     }
 
-    public async Task<bool> SendUserTextAsync(string userText, bool attachCurrentScreen = true)
+    public async Task<bool> SendUserTextAsync(string userText, bool attachCurrentScreen = true, CancellationToken callerCt = default)
     {
         var msg = (userText ?? string.Empty).Trim();
         if (string.IsNullOrEmpty(msg) || _disposed)
@@ -339,54 +306,62 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
             return false;
         }
 
-        var ct = CurrentRunToken();
-        if (ct.IsCancellationRequested)
+        var runCt = CurrentRunToken();
+        if (runCt.IsCancellationRequested || callerCt.IsCancellationRequested)
             return false;
+
+        CancellationTokenSource? linkedCts = null;
+        try { linkedCts = CancellationTokenSource.CreateLinkedTokenSource(callerCt, runCt); }
+        catch (ObjectDisposedException) { return false; }
 
         int id = Interlocked.Increment(ref _taskSeq);
         var readyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var workTask = Task.Run(async () =>
         {
-            try
+            using (linkedCts)
             {
-                _onLog?.Invoke($"💬 Vos: \"{msg}\"");
-                Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
-                Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
-                Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
-
-                byte[]? fresh = attachCurrentScreen
-                    ? CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _framesSent))
-                    : null;
-
-                await _turnGate.WaitAsync(ct);
+                var ct = linkedCts.Token;
                 try
                 {
-                    if (_disposed || !_backend.IsConnected || ct.IsCancellationRequested)
+                    _onLog?.Invoke($"💬 Vos: \"{msg}\"");
+                    Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
+                    Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
+                    Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
+
+                    byte[]? fresh = attachCurrentScreen
+                        ? CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _framesSent))
+                        : null;
+
+                    await _turnGate.WaitAsync(ct);
+                    try
                     {
-                        readyTcs.TrySetResult(false);
-                        return;
+                        if (_disposed || !_backend.IsConnected || ct.IsCancellationRequested)
+                        {
+                            readyTcs.TrySetResult(false);
+                            return;
+                        }
+                        if (fresh is not null)
+                            await _backend.SendImageAndPromptTurnAsync(fresh, msg, ct);
+                        else
+                            await _backend.SendTextTurnAsync(msg, ct);
+                        readyTcs.TrySetResult(true);
                     }
-                    if (fresh is not null)
-                        await _backend.SendImageAndPromptTurnAsync(fresh, msg, ct);
-                    else
-                        await _backend.SendTextTurnAsync(msg, ct);
-                    readyTcs.TrySetResult(true);
+                    finally
+                    {
+                        try { _turnGate.Release(); } catch (ObjectDisposedException) { }
+                    }
+                }
+                catch (OperationCanceledException) { readyTcs.TrySetResult(false); }
+                catch (ObjectDisposedException) { readyTcs.TrySetResult(false); }
+                catch (Exception ex)
+                {
+                    _onLog?.Invoke($"Error chat Live: {SecretRedactor.Redact(ex.Message)}");
+                    readyTcs.TrySetResult(false);
                 }
                 finally
                 {
-                    try { _turnGate.Release(); } catch (ObjectDisposedException) { }
+                    _inFlightTasks.TryRemove(id, out _);
                 }
-            }
-            catch (OperationCanceledException) { readyTcs.TrySetResult(false); }
-            catch (ObjectDisposedException) { readyTcs.TrySetResult(false); }
-            catch (Exception ex)
-            {
-                _onLog?.Invoke($"Error chat Live: {SecretRedactor.Redact(ex.Message)}");
-                readyTcs.TrySetResult(false);
-            }
-            finally
-            {
-                _inFlightTasks.TryRemove(id, out _);
             }
         });
         _inFlightTasks[id] = workTask;
@@ -743,7 +718,7 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
                         }
                     }
 
-                    double rms = ComputeRms16(pcmChunk);
+                    double rms = AudioPcmUtilities.ComputeRms16(pcmChunk);
                     bool coachAudible = _modelSpeaking || _pcmPlayer.IsPlayingAudio;
 
                     // Acoustic Echo Suppression: ignore speaker bleed while coach speaks, trigger clean barge-in above threshold
@@ -815,19 +790,6 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
         _mic.Stop();
         var ch = Interlocked.Exchange(ref _micSendChannel, null);
         ch?.Writer.TryComplete();
-    }
-
-    private static double ComputeRms16(byte[] pcm)
-    {
-        int samples = pcm.Length / 2;
-        if (samples == 0) return 0;
-        double sumSq = 0;
-        for (int i = 0; i < samples; i++)
-        {
-            short s = (short)(pcm[i * 2] | (pcm[i * 2 + 1] << 8));
-            sumSq += s * (double)s;
-        }
-        return Math.Sqrt(sumSq / samples);
     }
 
     private (int W, int H, int Quality) ResolveTargetResolution() =>

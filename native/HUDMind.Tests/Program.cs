@@ -867,6 +867,69 @@ await RunTest("27. Post-Match session digest + multi-blind failover to Vision + 
         $"Post-match review router must return review text! Got: {review}");
 });
 
+// 28. Extensible ProviderRegistry + Polymorphic ICoachEngine Contract
+await RunTest("28. ProviderRegistry extensibility & polymorphic ICoachEngine contract across Live and Classic", async () =>
+{
+    Assert(ProviderRegistry.AllPresets.Count >= 10 && ProviderRegistry.FindPreset("groq")?.BaseUrl == "https://api.groq.com/openai/v1",
+        "Default presets populated from single registry");
+    var acc = new ProviderAccount { Provider = "custom_plugin_ai", Model = "v1", ApiKey = "k_123456", SupportsVisionOverride = true };
+    ProviderRegistry.RegisterPreset(new ProviderPreset(
+        "custom_plugin_ai", "Custom", "v1", "https://custom.example.com/v1",
+        SupportsLiveWebSocket: true, SupportsFastHedgedVision: true));
+    var customStub = new StubProvider(acc, delayMs: 5, new ProviderCallResult(CoachResponse.Silent()));
+    ProviderRegistry.RegisterHttpAdapter("custom_plugin_ai", _ => customStub);
+    var liveStub = new StubLiveBackend();
+    ProviderRegistry.RegisterLiveBackend("custom_plugin_ai", _ => liveStub);
+
+    Assert(ProviderRegistry.AllPresets.Any(p => p.Id == "custom_plugin_ai"), "RegisterPreset must update AllPresets dynamically for UI bindings!");
+    Assert(acc.ResolvedBaseUrl() == "https://custom.example.com/v1", "ProviderAccount delegates ResolvedBaseUrl to ProviderRegistry");
+    Assert(acc.IsFastCloudVision, "Custom preset with SupportsFastHedgedVision=true must participate in hedged vision racing!");
+    Assert(ReferenceEquals(ProviderRegistry.CreateHttpAdapter(acc), customStub), "Custom HTTP adapter resolved");
+    Assert(ReferenceEquals(LiveBackendFactory.TryCreateFromAccounts([acc]), liveStub), "Custom Live WebSocket backend resolved");
+
+    // Polymorphic ICoachEngine check across both engines (including distinct UserConfig propagation)
+    var cfgLive = new UserConfig { VoiceGender = "male" };
+    ICoachEngine liveEng = new RealtimeLiveCoachOrchestrator(
+        liveStub, cfgLive, [new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "RL" } }],
+        new StubWindowDetector("RocketLeague.exe"), new StubCapture(), new StubStreamingPlayer(), new StubStreamingMic(), new RecordingOverlay(), testMode: true);
+    ICoachEngine classicEng = new CoachOrchestrator(
+        new UserConfig(), [new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "RL" } }],
+        new ProviderFailoverRouter([acc], _ => customStub),
+        new StubWindowDetector("RocketLeague.exe"), new StubCapture(), new RecordingVoice(), new RecordingOverlay(), testMode: true);
+
+    Assert(liveEng.SupportsLiveMic && !classicEng.SupportsLiveMic, "Capabilities exposed polymorphically via ICoachEngine");
+    Assert(liveEng.ActiveVoiceDisplay == "Fenrir" && classicEng.ActiveVoiceDisplay == "recording-test", "ActiveVoiceDisplay accurate");
+    liveEng.ApplyLiveSettings(new UserConfig { VoiceGender = "female", TtsVolume = 0.42 });
+    Assert(cfgLive.VoiceGender == "female" && Math.Abs(cfgLive.TtsVolume - 0.42) < 0.01, "ApplyLiveSettings must propagate distinct UserConfig instance!");
+    Assert(liveEng.EngineBadge.Contains("LIVE") && classicEng.EngineBadge.Contains("HTTP/2"), "Engine badges consistent");
+    await liveEng.DisposeAsync();
+    await classicEng.DisposeAsync();
+});
+
+// 29. Cross-Platform HudPhaseClassifier & AudioPcmUtilities DSP
+await RunTest("29. HudPhaseClassifier (GSI/OCR isolation) & AudioPcmUtilities RMS/Resample", () =>
+{
+    var ocrEmpty = new Dictionary<string, string>();
+    Assert(HudPhaseClassifier.ClassifyPhase(ocrEmpty, "DOTA2_GSI: 0:00 WAIT_FOR_PLAYERS_TO_LOAD") == "LOADING", "Dota load state -> LOADING");
+    Assert(HudPhaseClassifier.ClassifyPhase(ocrEmpty, "DOTA2_GSI: 35:10 POST_GAME") == "MENU", "Dota post game -> MENU");
+    Assert(HudPhaseClassifier.ClassifyPhase(ocrEmpty, "CS2_GSI: de_mirage phase=gameover round=over") == "MENU", "CS2 gameover -> MENU");
+    Assert(HudPhaseClassifier.ClassifyPhase(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["CENTER"] = "JOINING MATCH" }, "") == "LOADING", "JOINING -> LOADING");
+    Assert(HudPhaseClassifier.ClassifyPhase(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["CENTER"] = "MATCH FOUND!" }, "") == "LOADING", "MATCH FOUND -> LOADING");
+
+    var ocrMenu = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["TOP-LEFT"] = "PLAY SETTINGS MAIN MENU" };
+    Assert(HudPhaseClassifier.ClassifyPhase(ocrMenu, "DOTA2_GSI: 0:00 IDLE") == "MENU", "GSI clock must NOT override OCR menu keywords");
+
+    var ocrPlay = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["TOP-CENTER"] = "02:41" };
+    Assert(HudPhaseClassifier.ClassifyPhase(ocrPlay, "") == "PLAY", "OCR timer -> PLAY");
+
+    byte[] pcm16k = MakeSinePcm16(samples: 1600, amplitude: 2000);
+    double rms = AudioPcmUtilities.ComputeRms16(pcm16k);
+    byte[] pcm24k = AudioPcmUtilities.Resample16kTo24k(pcm16k);
+    Assert(Math.Abs(rms - 2000.0) < 5.0 && pcm24k.Length == (1600 * 3 / 2) * 2,
+        $"Audio DSP mismatch: rms={rms:F1}, len={pcm24k.Length}");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

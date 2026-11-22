@@ -197,7 +197,7 @@ public sealed class OpenAIRealtimeBackend : ILiveRealtimeBackend
         if (ws is null || ws.State != WebSocketState.Open || pcm16k.Length < 2) return;
 
         // OpenAI Realtime expects 24kHz PCM16: linear resample 16k -> 24k (1.5x) lock-free inline
-        byte[] pcm24k = Resample16kTo24k(pcm16k);
+        byte[] pcm24k = Pipeline.AudioPcmUtilities.Resample16kTo24k(pcm16k);
         var buf = new ArrayBufferWriter<byte>(pcm24k.Length * 4 / 3 + 96);
         using (var w = new Utf8JsonWriter(buf))
         {
@@ -275,29 +275,6 @@ public sealed class OpenAIRealtimeBackend : ILiveRealtimeBackend
         }
         await SendRawBytesAsync(ws, itemBuf.WrittenMemory, ct);
         await SendRawBytesAsync(ws, Encoding.UTF8.GetBytes("{\"type\":\"response.create\"}"), ct);
-    }
-
-    private static byte[] Resample16kTo24k(byte[] pcm16k)
-    {
-        int inSamples = pcm16k.Length / 2;
-        if (inSamples <= 1) return pcm16k;
-        int outSamples = (inSamples * 3) / 2;
-        var outBuf = new byte[outSamples * 2];
-
-        for (int i = 0; i < outSamples; i++)
-        {
-            double srcPos = i * (2.0 / 3.0);
-            int idx0 = (int)srcPos;
-            int idx1 = Math.Min(idx0 + 1, inSamples - 1);
-            double frac = srcPos - idx0;
-
-            short s0 = (short)(pcm16k[idx0 * 2] | (pcm16k[idx0 * 2 + 1] << 8));
-            short s1 = (short)(pcm16k[idx1 * 2] | (pcm16k[idx1 * 2 + 1] << 8));
-            short interp = (short)Math.Clamp((int)Math.Round(s0 + (s1 - s0) * frac), short.MinValue, short.MaxValue);
-            outBuf[i * 2] = (byte)(interp & 0xFF);
-            outBuf[i * 2 + 1] = (byte)((interp >> 8) & 0xFF);
-        }
-        return outBuf;
     }
 
     private async Task SendRawBytesAsync(ClientWebSocket ws, ReadOnlyMemory<byte> payload, CancellationToken ct)

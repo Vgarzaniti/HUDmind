@@ -11,7 +11,7 @@ namespace HUDMind.Core.Engine;
 /// Event-driven bounded-channel (DropOldest) real-time coach engine with latched zero-wait F10 wakeup,
 /// isolated chat continuity memory, epoch-guarded game switching, and lock-synchronized voice channels.
 /// </summary>
-public sealed class CoachOrchestrator : IAsyncDisposable
+public sealed class CoachOrchestrator : ICoachEngine
 {
     private readonly UserConfig _config;
     private readonly List<GameProfile> _profiles;
@@ -59,6 +59,21 @@ public sealed class CoachOrchestrator : IAsyncDisposable
 
     public bool IsRunning => Volatile.Read(ref _runCts) is { IsCancellationRequested: false };
     public bool IsPaused => _userPaused;
+    public bool SupportsLiveMic => false;
+    public string EngineBadge => ".NET 9 · 0% GPU · HTTP/2 MULTI-IA";
+    public string ActiveChannelStatus => $"Corriendo · {_router.ActiveProviderLabel}";
+    public string ActiveVoiceDisplay => _voice.EngineName;
+
+    public void RefreshPersona(string? reason = null) => WakeNow();
+
+    public void UpdateAudioLive(UserConfig config)
+    {
+        _config.CopyRuntimePreferencesFrom(config);
+        lock (_voiceGate)
+            _voice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
+    }
+
+    public void ApplyLiveSettings(UserConfig config) => UpdateAudioLive(config);
 
     public CoachOrchestrator(
         UserConfig config,
@@ -167,12 +182,6 @@ public sealed class CoachOrchestrator : IAsyncDisposable
     private GameProfile? ResolveForcedOrDefaultProfile() =>
         _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, _forcedGameId, StringComparison.OrdinalIgnoreCase))
         ?? _profiles.FirstOrDefault();
-
-    public void UpdateVoiceLive(string language, double volume, string gender, string style)
-    {
-        lock (_voiceGate)
-            _voice.UpdateSettings(language, volume, gender, style);
-    }
 
     public void SetCommunicationMode(string mode)
     {
@@ -417,13 +426,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                 if (!_testMode)
                 {
                     var fg = _windowDetector.GetForegroundExecutable();
-                    var matched = _profiles.FirstOrDefault(p => p.MatchesProcess(fg));
-                    if (matched is null &&
-                        string.Equals(_forcedGameId, "universal", StringComparison.OrdinalIgnoreCase) &&
-                        !GameProfile.IsDesktopNonGameProcess(fg))
-                    {
-                        matched = _profiles.FirstOrDefault(p => p.Manifest.GameId == "universal");
-                    }
+                    var matched = GameProfile.MatchForegroundProfile(_profiles, fg, _forcedGameId);
                     if (matched is not null && !ReferenceEquals(matched, _activeProfile))
                     {
                         _activeProfile = matched;
