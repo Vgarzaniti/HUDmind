@@ -1,5 +1,5 @@
 {
-  "game_id": "example_valorant",
+  "game_id": "valorant",
   "display_name": "VALORANT",
   "process_names": ["VALORANT-Win64-Shipping.exe"],
   "capture_fps": 1.0,
@@ -7,5 +7,5 @@
   "cooldown_seconds": 10.0,
   "max_resolution": [1280, 720],
   "language": "es",
-  "notes": "Perfil táctico competitivo 5v5 para VALORANT."
+  "notes": "Perfil táctico competitivo 5v5 para VALORANT (economía, habilidades, Spike y rotaciones)."
 }

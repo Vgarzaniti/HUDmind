@@ -23,6 +23,7 @@ namespace HUDMind.Windows;
 public sealed partial class TextOnlySensorService : ITextOnlySensorService
 {
     private readonly OcrEngine? _ocr;
+    private readonly LoopbackGsiService? _gsiService;
     private readonly SemaphoreSlim _ocrGate = new(1, 1);
     private readonly object _stateLock = new();
     private Dictionary<string, string> _prevZones = new(StringComparer.OrdinalIgnoreCase);
@@ -66,8 +67,9 @@ public sealed partial class TextOnlySensorService : ITextOnlySensorService
         "GO!", "YA!", "FREEZETIME", "BUY PHASE", "FASE DE COMPRA", "PREP PHASE", "KICKOFF"
     ];
 
-    public TextOnlySensorService()
+    public TextOnlySensorService(LoopbackGsiService? gsiService = null)
     {
+        _gsiService = gsiService;
         try
         {
             var available = OcrEngine.AvailableRecognizerLanguages;
@@ -199,8 +201,17 @@ public sealed partial class TextOnlySensorService : ITextOnlySensorService
         var hudPriorityText = string.Join(" ", zones
             .Where(kv => kv.Key is not ("MID-LEFT" or "BOT-LEFT"))
             .Select(kv => kv.Value));
-        var hudUpper = NormalizePunct(hudPriorityText + " " + logSummary);
+        var ocrHudUpper = NormalizePunct(hudPriorityText);
+        var logUpper = NormalizePunct(logSummary);
+        var hudUpper = string.Concat(ocrHudUpper, " ", logUpper);
         var allUpper = NormalizePunct(string.Join(" ", zones.Values) + " " + logSummary);
+
+        if (logUpper.Contains("WAIT_FOR_PLAYERS") || logUpper.Contains("DISCONNECT"))
+            return "LOADING";
+        if (logUpper.Contains("PHASE=GAMEOVER") || logUpper.Contains("POST_GAME") ||
+            logUpper.Contains("MENU_MAIN") || logUpper.Contains("HERO_SELECTION") ||
+            logUpper.Contains("STRATEGY_TIME"))
+            return "MENU";
 
         if (ReplayKeywords.Any(k => hudUpper.Contains(k, StringComparison.Ordinal)))
             return "REPLAY";
@@ -209,7 +220,8 @@ public sealed partial class TextOnlySensorService : ITextOnlySensorService
         if (TrainingKeywords.Any(k => hudUpper.Contains(k, StringComparison.Ordinal)))
             return "TRAINING";
 
-        bool hasTimer = TimerRegex().IsMatch(hudUpper);
+        // Match clock timers on screen OCR only (never let DOTA2_GSI clock strings cancel OCR menu detection)
+        bool hasTimer = TimerRegex().IsMatch(ocrHudUpper);
         int menuHits = MenuKeywords.Count(k => allUpper.Contains(k, StringComparison.Ordinal));
         if (menuHits >= 2 && !hasTimer)
             return "MENU";
@@ -258,7 +270,7 @@ public sealed partial class TextOnlySensorService : ITextOnlySensorService
     /// <summary>
     /// Optional read-only official game logs / localhost APIs (zero memory read, 100% Anti-Cheat safe).
     /// </summary>
-    private static async Task<string> ReadGameLogOrLocalApiAsync(GameProfile profile, CancellationToken ct)
+    private async Task<string> ReadGameLogOrLocalApiAsync(GameProfile profile, CancellationToken ct)
     {
         var gid = profile.Manifest.GameId.ToLowerInvariant();
         if (gid == "rocket_league" || profile.MatchesProcess("RocketLeague.exe"))
@@ -269,6 +281,18 @@ public sealed partial class TextOnlySensorService : ITextOnlySensorService
 
         if (gid.Contains("league") || profile.MatchesProcess("League of Legends.exe"))
             return await ReadLeagueLiveClientApiAsync(ct).ConfigureAwait(false);
+
+        if (_gsiService is not null && (gid.Contains("cs2") || profile.MatchesProcess("cs2.exe")))
+        {
+            var gsi = _gsiService.GetRecentSummary("cs2");
+            if (!string.IsNullOrEmpty(gsi)) return gsi;
+        }
+
+        if (_gsiService is not null && (gid.Contains("dota") || profile.MatchesProcess("dota2.exe")))
+        {
+            var gsi = _gsiService.GetRecentSummary("dota2");
+            if (!string.IsNullOrEmpty(gsi)) return gsi;
+        }
 
         return string.Empty;
     }

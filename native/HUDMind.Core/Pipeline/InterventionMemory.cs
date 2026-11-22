@@ -7,14 +7,19 @@ namespace HUDMind.Core.Pipeline;
 
 public sealed partial class InterventionMemory
 {
+    private const int MaxMatchEvents = 120;
+
     private sealed record MemoryEntry(DateTimeOffset TimestampUtc, UrgencyLevel Urgency, string Text, HashSet<string> Keywords);
     private sealed record VisualEvent(DateTimeOffset TimestampUtc, string Phase, string Summary);
     private sealed record ChatExchange(DateTimeOffset TimestampUtc, string UserText, string CoachReply);
+    private sealed record MatchSessionEvent(DateTimeOffset TimestampUtc, string GameId, string DisplayName, string Phase, string Summary, string Advice);
 
     private readonly object _sync = new();
     private readonly LinkedList<MemoryEntry> _entries = new();
     private readonly LinkedList<VisualEvent> _timeline = new();
     private readonly LinkedList<ChatExchange> _chatHistory = new();
+    private readonly List<MatchSessionEvent> _matchEvents = [];
+    private string _lastMatchGameName = string.Empty;
     private readonly int _maxItems;
     private readonly TimeSpan _ttl;
 
@@ -35,13 +40,81 @@ public sealed partial class InterventionMemory
         _ttl = TimeSpan.FromSeconds(Math.Max(10.0, ttlSeconds));
     }
 
-    public void Clear()
+    public void Clear(bool clearMatchLog = false)
     {
         lock (_sync)
         {
             _entries.Clear();
             _timeline.Clear();
             _chatHistory.Clear();
+            if (clearMatchLog)
+            {
+                _matchEvents.Clear();
+                _lastMatchGameName = string.Empty;
+            }
+        }
+    }
+
+    public int MatchEventCount
+    {
+        get { lock (_sync) return _matchEvents.Count; }
+    }
+
+    public string LastMatchGameName
+    {
+        get { lock (_sync) return _lastMatchGameName; }
+    }
+
+    /// <summary>
+    /// Records every coaching advice across the full match (never expires on 75s anti-spam TTL)
+    /// so the player can request an end-of-match coaching digest at any time.
+    /// </summary>
+    public void RecordMatchEvent(
+        string gameId,
+        string displayName,
+        string phase,
+        string summary,
+        string advice,
+        DateTimeOffset? nowUtc = null)
+    {
+        var cleanAdvice = SanitizeOneLine(advice, 120);
+        if (string.IsNullOrWhiteSpace(cleanAdvice))
+            return;
+
+        var ts = nowUtc ?? DateTimeOffset.UtcNow;
+        var cleanGame = string.IsNullOrWhiteSpace(displayName) ? "Videojuego" : SanitizeOneLine(displayName, 48);
+        var cleanPhase = string.IsNullOrWhiteSpace(phase) ? "PLAY" : SanitizeOneLine(phase, 24).ToUpperInvariant();
+        var cleanSummary = SanitizeOneLine(summary, 80);
+
+        lock (_sync)
+        {
+            _lastMatchGameName = cleanGame;
+            _matchEvents.Add(new MatchSessionEvent(ts, gameId ?? string.Empty, cleanGame, cleanPhase, cleanSummary, cleanAdvice));
+            if (_matchEvents.Count > MaxMatchEvents)
+                _matchEvents.RemoveAt(0);
+        }
+    }
+
+    public (string GameName, string Digest, int Count) BuildMatchReviewDigest(int maxEvents = 36, bool isEn = false)
+    {
+        lock (_sync)
+        {
+            if (_matchEvents.Count == 0)
+                return (_lastMatchGameName, string.Empty, 0);
+
+            int total = _matchEvents.Count;
+            var slice = total <= maxEvents ? _matchEvents : _matchEvents.Skip(total - maxEvents).ToList();
+            var sb = new StringBuilder(Math.Min(1800, slice.Count * 55));
+            foreach (var ev in slice)
+            {
+                if (sb.Length >= 1650) break;
+                var localTime = ev.TimestampUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+                sb.Append(localTime).Append(" [").Append(ev.Phase).Append("] ");
+                if (!string.IsNullOrWhiteSpace(ev.Summary))
+                    sb.Append(ev.Summary).Append(" -> ");
+                sb.Append(ev.Advice).Append('\n');
+            }
+            return (_lastMatchGameName, sb.ToString().TrimEnd(), total);
         }
     }
 
@@ -201,8 +274,10 @@ public sealed partial class InterventionMemory
             _chatHistory.RemoveFirst();
     }
 
-    private static string SanitizeOneLine(string raw, int maxLen)
+    private static string SanitizeOneLine(string? raw, int maxLen)
     {
+        if (string.IsNullOrWhiteSpace(raw))
+            return string.Empty;
         var clean = string.Join(' ', raw.Replace('|', '/').Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()));
         return clean.Length <= maxLen ? clean : clean[..maxLen];
     }

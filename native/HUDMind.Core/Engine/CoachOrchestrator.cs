@@ -104,7 +104,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
             _userPaused = false;
             Interlocked.Exchange(ref _forceAnalysisPending, 0);
             _stateMachine.Reset();
-            _memory.Clear();
+            _memory.Clear(clearMatchLog: true);
             SetLastHash(null);
 
             try
@@ -262,6 +262,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                     Interlocked.Increment(ref _interventions);
                     _memory.RecordChatTurn(msg, reply);
                     _memory.RecordObservation("CHAT", msg);
+                    _memory.RecordMatchEvent(profile.Manifest.GameId, profile.Manifest.DisplayName, "CHAT", msg, reply);
 
                     if (_config.EnableOverlay)
                         _overlay.ShowCallout(reply, UrgencyLevel.Medium, profile.Manifest.DisplayName, _config.OverlayDurationSeconds);
@@ -583,6 +584,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                         delivered = true;
                         Interlocked.Increment(ref _interventions);
                         _memory.Record(resp);
+                        _memory.RecordMatchEvent(profile.Manifest.GameId, profile.Manifest.DisplayName, "PLAY", resp.MatchContext, resp.OverlayText);
 
                         if (_config.EnableOverlay)
                             _overlay.ShowCallout(resp.OverlayText, resp.Urgency, profile.Manifest.DisplayName, _config.OverlayDurationSeconds);
@@ -654,6 +656,9 @@ public sealed class CoachOrchestrator : IAsyncDisposable
             _userPaused
         ));
     }
+
+    public (string GameName, string Digest, int Count) GetMatchSessionDigest(bool isEn = false) =>
+        _memory.BuildMatchReviewDigest(isEn: isEn);
 
     public async Task StopAsync()
     {

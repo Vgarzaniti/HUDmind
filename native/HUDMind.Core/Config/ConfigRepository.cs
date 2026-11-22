@@ -218,6 +218,45 @@ public static class HotkeyParser
         normalized = modNames.Count > 0 ? $"{string.Join('+', modNames)}+{keyName}" : keyName;
         return true;
     }
+
+    /// <summary>
+    /// Parses a single hold-to-talk key (supports letters, digits, F1-F24, Space, Alt, Ctrl, Shift, CapsLock, Tab, Mouse4, Mouse5).
+    /// </summary>
+    public static bool TryParsePushToTalkKey(string? raw, out uint virtualKey, out string normalized)
+    {
+        virtualKey = 0;
+        normalized = string.Empty;
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        var t = raw.Trim().ToUpperInvariant();
+        if (t.Contains('+') || t.Any(c => c > 0x7F))
+            return false;
+
+        if (TryParse(t, out uint mods, out uint vk, out var norm) && mods == 0)
+        {
+            virtualKey = vk;
+            normalized = norm;
+            return true;
+        }
+
+        (virtualKey, normalized) = t switch
+        {
+            "CAPSLOCK" or "CAPS" => (0x14u, "CapsLock"),
+            "TAB" => (0x09u, "Tab"),
+            "ALT" or "LALT" => (0xA4u, "Alt"),
+            "RALT" => (0xA5u, "RAlt"),
+            "CTRL" or "LCTRL" or "CONTROL" => (0xA2u, "Ctrl"),
+            "RCTRL" => (0xA3u, "RCtrl"),
+            "SHIFT" or "LSHIFT" => (0xA0u, "Shift"),
+            "RSHIFT" => (0xA1u, "RShift"),
+            "TILDE" or "BACKQUOTE" or "`" => (0xC0u, "Backquote"),
+            "MOUSE4" or "XBUTTON1" or "MB4" => (0x05u, "Mouse4"),
+            "MOUSE5" or "XBUTTON2" or "MB5" => (0x06u, "Mouse5"),
+            _ => (0u, string.Empty)
+        };
+        return virtualKey != 0;
+    }
 }
 
 public sealed partial class ConfigRepository

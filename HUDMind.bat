@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
-if exist ".venv\Scripts\pythonw.exe" (
-    start "" ".venv\Scripts\pythonw.exe" -m src.main --gui
+if exist "dist\native\HUDMind.Native.exe" (
+    start "" "dist\native\HUDMind.Native.exe"
 ) else (
-    python -m src.main --gui
+    dotnet run --project native\HUDMind.App\HUDMind.App.csproj -c Release
 )

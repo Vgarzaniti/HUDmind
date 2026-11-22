@@ -1,0 +1,11 @@
+{
+  "game_id": "dota2",
+  "display_name": "Dota 2",
+  "process_names": ["dota2.exe"],
+  "capture_fps": 1.0,
+  "phash_threshold": 7,
+  "cooldown_seconds": 10.0,
+  "max_resolution": [1280, 720],
+  "language": "es",
+  "notes": "Perfil competitivo para Dota 2 (runas de poder/sabiduría, buyback, BKB/TP, smoke y Valve GSI oficial)."
+}

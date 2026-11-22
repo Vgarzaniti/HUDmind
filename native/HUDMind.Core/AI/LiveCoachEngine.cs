@@ -4,6 +4,7 @@ using System.Threading.Channels;
 using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
+using HUDMind.Core.Pipeline;
 
 namespace HUDMind.Core.AI;
 
@@ -74,12 +75,14 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
     private readonly IStreamingMicCapture _mic;
     private readonly IOverlayOutputService _overlay;
     private readonly ITextOnlySensorService? _localPhaseGate;
+    private readonly Func<bool>? _isPttKeyPressed;
     private readonly bool _testMode;
     private readonly string? _forcedGameId;
     private readonly Action<string>? _onLog;
     private readonly Action<CoachRuntimeStats>? _onStats;
     private readonly Action<bool>? _onPauseChanged;
 
+    private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
     private readonly SemaphoreSlim _turnGate = new(1, 1);
@@ -114,6 +117,7 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
     private long _lastOverlayPartialTick;
     private long _lastAutoNudgeUtcTicks;
     private long _lastMicVoiceUtcTicks;
+    private long _lastPttHeldUtcTicks;
 
     public bool IsRunning => Volatile.Read(ref _runCts) is { IsCancellationRequested: false };
     public bool IsPaused => _userPaused;
@@ -134,7 +138,8 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
         Action<string>? onLog = null,
         Action<CoachRuntimeStats>? onStats = null,
         Action<bool>? onPauseChanged = null,
-        ITextOnlySensorService? localPhaseGate = null)
+        ITextOnlySensorService? localPhaseGate = null,
+        Func<bool>? isPttKeyPressed = null)
     {
         _backend = backend;
         _config = config;
@@ -145,12 +150,41 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
         _mic = mic;
         _overlay = overlay;
         _localPhaseGate = localPhaseGate;
+        _isPttKeyPressed = isPttKeyPressed;
         _testMode = testMode;
         _forcedGameId = forcedGameId;
         _onLog = onLog;
         _onStats = onStats;
         _onPauseChanged = onPauseChanged;
         _micEnabled = config.IsMicActive;
+    }
+
+    private GameProfile? MatchForegroundProfile(string? fg)
+    {
+        var matched = _profiles.FirstOrDefault(p => p.MatchesProcess(fg));
+        if (matched is null &&
+            string.Equals(_forcedGameId, "universal", StringComparison.OrdinalIgnoreCase) &&
+            !GameProfile.IsDesktopNonGameProcess(fg))
+        {
+            matched = _profiles.FirstOrDefault(p => p.Manifest.GameId == "universal");
+        }
+        return matched;
+    }
+
+    public (string GameName, string Digest, int Count) GetMatchSessionDigest(bool isEn = false) =>
+        _memory.BuildMatchReviewDigest(isEn: isEn);
+
+    public void SetAudioDevicesLive(string? inputDeviceName, string? outputDeviceName)
+    {
+        _config.AudioInputDeviceName = inputDeviceName ?? string.Empty;
+        _config.AudioOutputDeviceName = outputDeviceName ?? string.Empty;
+        if (_disposed) return;
+        _pcmPlayer.SetDevice(_config.AudioOutputDeviceName);
+        lock (_micGateLock)
+        {
+            if (_disposed) return;
+            _mic.SetDevice(_config.AudioInputDeviceName);
+        }
     }
 
     public async Task StartAsync()
@@ -160,18 +194,28 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
         {
             if (_disposed || IsRunning) return;
 
+            _pcmPlayer.SetDevice(_config.AudioOutputDeviceName);
             _pcmPlayer.SetVolume(_config.TtsVolume);
+            _mic.SetDevice(_config.AudioInputDeviceName);
             _userPaused = false;
             _micEnabled = _config.IsMicActive;
-            _gameFocused = _testMode;
             _bargeInMuted = false;
             _suppressCurrentTurnAudio = false;
+            _memory.Clear(clearMatchLog: true);
+            Interlocked.Exchange(ref _lastPttHeldUtcTicks, 0);
             lock (_hashLock) _lastSentHash = null;
 
-            _activeProfile = _testMode
-                ? (_profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, _forcedGameId, StringComparison.OrdinalIgnoreCase))
-                   ?? _profiles.FirstOrDefault())
-                : null;
+            if (_testMode)
+            {
+                _activeProfile = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, _forcedGameId, StringComparison.OrdinalIgnoreCase))
+                    ?? _profiles.FirstOrDefault();
+                _gameFocused = true;
+            }
+            else
+            {
+                _activeProfile = MatchForegroundProfile(_windowDetector.GetForegroundExecutable());
+                _gameFocused = _activeProfile is not null;
+            }
 
             var cts = new CancellationTokenSource();
             Volatile.Write(ref _runCts, cts);
@@ -606,12 +650,20 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
 
         if (!string.IsNullOrWhiteSpace(spoken))
         {
+            var prof = _activeProfile;
+            _memory.RecordMatchEvent(
+                prof?.Manifest.GameId ?? string.Empty,
+                prof?.Manifest.DisplayName ?? "HUDMind Live",
+                "LIVE",
+                string.Empty,
+                spoken);
+
             if (_config.EnableOverlay && !_userPaused)
             {
                 _overlay.ShowCallout(
                     spoken,
                     UrgencyLevel.Medium,
-                    _activeProfile?.Manifest.DisplayName ?? "HUDMind Live",
+                    prof?.Manifest.DisplayName ?? "HUDMind Live",
                     _config.OverlayDurationSeconds);
             }
             Interlocked.Increment(ref _interventions);
@@ -669,13 +721,39 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
                     if (_disposed || !_backend.IsConnected || _userPaused || !_micEnabled) return;
                     if (!_testMode && !_gameFocused) return;
 
+                    long nowTicks = DateTimeOffset.UtcNow.UtcTicks;
+                    bool pttMode = _config.IsPushToTalkMode;
+                    bool pttHeld = false;
+                    bool pttInReleaseTail = false;
+                    if (pttMode)
+                    {
+                        pttHeld = _isPttKeyPressed?.Invoke() ?? true;
+                        if (pttHeld)
+                        {
+                            Interlocked.Exchange(ref _lastPttHeldUtcTicks, nowTicks);
+                        }
+                        else
+                        {
+                            // Keep sending ~420ms after PTT release (> 250ms Gemini / 260ms OpenAI server VAD silence window)
+                            // so server VAD detects end-of-utterance cleanly without waiting for more audio!
+                            long prevPtt = Interlocked.Read(ref _lastPttHeldUtcTicks);
+                            if (prevPtt == 0 || (nowTicks - prevPtt) > TimeSpan.FromMilliseconds(420.0).Ticks)
+                                return;
+                            pttInReleaseTail = true;
+                        }
+                    }
+
                     double rms = ComputeRms16(pcmChunk);
                     bool coachAudible = _modelSpeaking || _pcmPlayer.IsPlayingAudio;
 
-                    // Acoustic Echo Suppression: ignore speaker bleed while coach speaks, trigger clean barge-in above 1800 RMS
+                    // Acoustic Echo Suppression: ignore speaker bleed while coach speaks, trigger clean barge-in above threshold
                     if (coachAudible)
                     {
-                        if (rms < 1800.0)
+                        if (pttInReleaseTail)
+                            return; // Do not trigger false echo barge-in on post-release silence tail
+
+                        double bargeThreshold = (pttMode && pttHeld) ? 650.0 : 1800.0;
+                        if (rms < bargeThreshold)
                             return;
 
                         lock (_audioStateLock)
@@ -689,18 +767,28 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
                         }
                     }
 
-                    long nowTicks = DateTimeOffset.UtcNow.UtcTicks;
-                    if (rms >= 320.0)
+                    if (pttMode)
                     {
-                        Interlocked.Exchange(ref _lastMicVoiceUtcTicks, nowTicks);
-                        Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
-                        Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
+                        if (pttHeld)
+                        {
+                            Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
+                            Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
+                        }
                     }
                     else
                     {
-                        long lastMic = Interlocked.Read(ref _lastMicVoiceUtcTicks);
-                        if (lastMic == 0 || (nowTicks - lastMic) > TimeSpan.FromMilliseconds(320.0).Ticks)
-                            return;
+                        if (rms >= 320.0)
+                        {
+                            Interlocked.Exchange(ref _lastMicVoiceUtcTicks, nowTicks);
+                            Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
+                            Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
+                        }
+                        else
+                        {
+                            long lastMic = Interlocked.Read(ref _lastMicVoiceUtcTicks);
+                            if (lastMic == 0 || (nowTicks - lastMic) > TimeSpan.FromMilliseconds(320.0).Ticks)
+                                return;
+                        }
                     }
 
                     micChan.Writer.TryWrite(pcmChunk);
@@ -708,7 +796,9 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
                 err => _onLog?.Invoke(err));
 
             if (ok)
-                _onLog?.Invoke("🎤 Micrófono 16kHz con supresión de eco activo — hablá cuando quieras.");
+                _onLog?.Invoke(_config.IsPushToTalkMode
+                    ? $"🎤 Micrófono 16kHz en Push-to-Talk (mantené '{_config.PushToTalkKey}' para hablar)."
+                    : "🎤 Micrófono 16kHz con supresión de eco activo — hablá cuando quieras.");
             else
                 StopMicAndDrainChannelLocked();
         }
@@ -791,13 +881,7 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
                     if (!_testMode)
                     {
                         var fg = _windowDetector.GetForegroundExecutable();
-                        var matched = _profiles.FirstOrDefault(p => p.MatchesProcess(fg));
-                        if (matched is null &&
-                            string.Equals(_forcedGameId, "universal", StringComparison.OrdinalIgnoreCase) &&
-                            !GameProfile.IsDesktopNonGameProcess(fg))
-                        {
-                            matched = _profiles.FirstOrDefault(p => p.Manifest.GameId == "universal");
-                        }
+                        var matched = MatchForegroundProfile(fg);
 
                         if (matched is not null)
                         {
@@ -813,7 +897,7 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
                                     _overlay.ShowCallout("Coach Live ACTIVO — observando", UrgencyLevel.Low, matched.Manifest.DisplayName, 3.0);
                                 EmitStats();
 
-                                if (prev is not null)
+                                if (prev is not null || !string.Equals(matched.Manifest.GameId, "universal", StringComparison.OrdinalIgnoreCase))
                                 {
                                     RefreshLivePersona(matched.Manifest.DisplayName);
                                     break;

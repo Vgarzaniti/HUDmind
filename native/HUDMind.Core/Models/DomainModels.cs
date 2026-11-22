@@ -198,6 +198,25 @@ public sealed class UserConfig
     [JsonPropertyName("enable_mic")]
     public bool EnableMic { get; set; } = true;
 
+    [JsonPropertyName("mic_input_mode")]
+    public string MicInputMode { get; set; } = "open_mic";
+
+    [JsonPropertyName("push_to_talk_key")]
+    public string PushToTalkKey { get; set; } = "V";
+
+    [JsonPropertyName("audio_input_device")]
+    public string AudioInputDeviceName { get; set; } = string.Empty;
+
+    [JsonPropertyName("audio_output_device")]
+    public string AudioOutputDeviceName { get; set; } = string.Empty;
+
+    [JsonPropertyName("minimize_to_tray")]
+    public bool MinimizeToTray { get; set; }
+
+    [JsonIgnore]
+    public bool IsPushToTalkMode =>
+        string.Equals(MicInputMode, "push_to_talk", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Independent communication channel mode:
     /// "conversation" (mic + coach voice), "coach_voice" (coach speaks only, mic off), "text_only" (silent chat + overlay).
@@ -272,6 +291,12 @@ public sealed class UserConfig
 
     [JsonPropertyName("overlay_opacity")]
     public double OverlayOpacity { get; set; } = 0.90;
+
+    [JsonPropertyName("overlay_scale")]
+    public double OverlayScale { get; set; } = 1.0;
+
+    [JsonPropertyName("overlay_compact")]
+    public bool OverlayCompact { get; set; }
 
     [JsonPropertyName("capture_monitor")]
     public int CaptureMonitor { get; set; } = 1;

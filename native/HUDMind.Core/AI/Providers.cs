@@ -43,6 +43,17 @@ public interface IAIProvider : IAsyncDisposable
         string recentChatHistory = "",
         CancellationToken ct = default) =>
         Task.FromResult(new ProviderCallResult(null, 501, "Chat interactivo no implementado en este adaptador."));
+    Task<ProviderCallResult> AskRawTextAsync(
+        string prompt,
+        UserConfig config,
+        int maxTokens = 320,
+        CancellationToken ct = default) =>
+        AskQuestionAsync(
+            null,
+            prompt,
+            new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "universal", DisplayName = "Post-Match Review" } },
+            config,
+            ct: ct);
     Task<(bool Ok, string Message)> TestConnectionAsync(CancellationToken ct = default);
 }
 
@@ -315,7 +326,7 @@ public sealed class GeminiFastProvider : IAIProvider
         }
     }
 
-    public async Task<ProviderCallResult> AskQuestionAsync(
+    public Task<ProviderCallResult> AskQuestionAsync(
         byte[]? jpegBytes,
         string userQuestion,
         GameProfile profile,
@@ -326,6 +337,24 @@ public sealed class GeminiFastProvider : IAIProvider
         string recentChatHistory = "",
         CancellationToken ct = default)
     {
+        var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(
+            profile, config, userQuestion, recentHistory, visualTimeline, sensorSnapshot, recentChatHistory);
+        return SendGeminiPromptAsync(jpegBytes, prompt, maxTokens: 180, ct);
+    }
+
+    public Task<ProviderCallResult> AskRawTextAsync(
+        string prompt,
+        UserConfig config,
+        int maxTokens = 320,
+        CancellationToken ct = default) =>
+        SendGeminiPromptAsync(null, prompt, maxTokens, ct);
+
+    private async Task<ProviderCallResult> SendGeminiPromptAsync(
+        byte[]? jpegBytes,
+        string prompt,
+        int maxTokens,
+        CancellationToken ct)
+    {
         var key = Account.ApiKey.Trim();
         if (string.IsNullOrEmpty(key))
             return new ProviderCallResult(null, 401, "Falta API key de Gemini.");
@@ -334,8 +363,6 @@ public sealed class GeminiFastProvider : IAIProvider
 
         var safeModel = Uri.EscapeDataString(Account.Model.Trim());
         var url = $"https://generativelanguage.googleapis.com/v1beta/models/{safeModel}:generateContent";
-        var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(
-            profile, config, userQuestion, recentHistory, visualTimeline, sensorSnapshot, recentChatHistory);
         var modelLow = Account.Model.ToLowerInvariant();
         bool isGen3 = modelLow.Contains("gemini-3");
         bool isGen25Flash = modelLow.Contains("2.5") && !modelLow.Contains("pro");
@@ -369,7 +396,7 @@ public sealed class GeminiFastProvider : IAIProvider
             w.WritePropertyName("generationConfig");
             w.WriteStartObject();
             w.WriteNumber("temperature", 0.45);
-            w.WriteNumber("maxOutputTokens", 180);
+            w.WriteNumber("maxOutputTokens", maxTokens);
             if (jpegBytes is { Length: > 0 })
                 w.WriteString("mediaResolution", "MEDIA_RESOLUTION_MEDIUM");
             if (isGen25Flash)
@@ -567,7 +594,7 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         }
     }
 
-    public async Task<ProviderCallResult> AskQuestionAsync(
+    public Task<ProviderCallResult> AskQuestionAsync(
         byte[]? jpegBytes,
         string userQuestion,
         GameProfile profile,
@@ -578,6 +605,24 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         string recentChatHistory = "",
         CancellationToken ct = default)
     {
+        var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(
+            profile, config, userQuestion, recentHistory, visualTimeline, sensorSnapshot, recentChatHistory);
+        return SendClaudePromptAsync(jpegBytes, prompt, maxTokens: 180, ct);
+    }
+
+    public Task<ProviderCallResult> AskRawTextAsync(
+        string prompt,
+        UserConfig config,
+        int maxTokens = 320,
+        CancellationToken ct = default) =>
+        SendClaudePromptAsync(null, prompt, maxTokens, ct);
+
+    private async Task<ProviderCallResult> SendClaudePromptAsync(
+        byte[]? jpegBytes,
+        string prompt,
+        int maxTokens,
+        CancellationToken ct)
+    {
         var key = Account.ApiKey.Trim();
         if (string.IsNullOrEmpty(key))
             return new ProviderCallResult(null, 401, "Falta API key de Anthropic Claude.");
@@ -586,8 +631,6 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         if (!okUrl)
             return new ProviderCallResult(null, 400, errUrl);
 
-        var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(
-            profile, config, userQuestion, recentHistory, visualTimeline, sensorSnapshot, recentChatHistory);
         var partsList = new List<object>();
         if (jpegBytes is { Length: > 0 })
             partsList.Add(new { type = "image", source = new { type = "base64", media_type = "image/jpeg", data = Convert.ToBase64String(jpegBytes) } });
@@ -596,7 +639,7 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         var payload = new
         {
             model = Account.Model,
-            max_tokens = 180,
+            max_tokens = maxTokens,
             temperature = 0.45,
             messages = new[] { new { role = "user", content = partsList.ToArray() } }
         };
@@ -722,7 +765,7 @@ public sealed class OpenAICompatibleProvider : IAIProvider
                m.Contains("/o4", StringComparison.Ordinal);
     }
 
-    private static Dictionary<string, object> BuildChatCompletionPayload(string model, object[] messages, bool isChat)
+    private static Dictionary<string, object> BuildChatCompletionPayload(string model, object[] messages, bool isChat, int maxTokensOverride = 0)
     {
         var dict = new Dictionary<string, object>
         {
@@ -731,12 +774,12 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         };
         if (IsReasoningModel(model))
         {
-            dict["max_completion_tokens"] = isChat ? 520 : 420;
+            dict["max_completion_tokens"] = maxTokensOverride > 0 ? Math.Max(maxTokensOverride, 480) : (isChat ? 520 : 420);
         }
         else
         {
             dict["temperature"] = isChat ? 0.45 : 0.35;
-            dict["max_tokens"] = isChat ? 180 : 120;
+            dict["max_tokens"] = maxTokensOverride > 0 ? maxTokensOverride : (isChat ? 180 : 120);
             if (!isChat)
                 dict["stop"] = new[] { "\n" };
         }
@@ -855,7 +898,7 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         }
     }
 
-    public async Task<ProviderCallResult> AskQuestionAsync(
+    public Task<ProviderCallResult> AskQuestionAsync(
         byte[]? jpegBytes,
         string userQuestion,
         GameProfile profile,
@@ -866,6 +909,26 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         string recentChatHistory = "",
         CancellationToken ct = default)
     {
+        var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(
+            profile, config, userQuestion, recentHistory, visualTimeline,
+            Account.SupportsVision ? null : sensorSnapshot,
+            recentChatHistory);
+        return SendOpenAiPromptAsync(jpegBytes, prompt, maxTokens: 180, ct);
+    }
+
+    public Task<ProviderCallResult> AskRawTextAsync(
+        string prompt,
+        UserConfig config,
+        int maxTokens = 320,
+        CancellationToken ct = default) =>
+        SendOpenAiPromptAsync(null, prompt, maxTokens, ct);
+
+    private async Task<ProviderCallResult> SendOpenAiPromptAsync(
+        byte[]? jpegBytes,
+        string prompt,
+        int maxTokens,
+        CancellationToken ct)
+    {
         var baseUrl = Account.ResolvedBaseUrl();
         bool allowLoopback = Account.Provider.Equals("ollama", StringComparison.OrdinalIgnoreCase);
         var (okUrl, errUrl) = BaseUrlSecurityValidator.Validate(baseUrl, allowLoopback);
@@ -874,11 +937,6 @@ public sealed class OpenAICompatibleProvider : IAIProvider
 
         var endpoint = ResolveChatCompletionsEndpoint(baseUrl);
         string targetModel = string.IsNullOrWhiteSpace(Account.Model) ? "openai-fast" : Account.Model;
-
-        var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(
-            profile, config, userQuestion, recentHistory, visualTimeline,
-            Account.SupportsVision ? null : sensorSnapshot,
-            recentChatHistory);
 
         object messageContent = Account.SupportsVision && jpegBytes is { Length: > 0 }
             ? new object[]
@@ -891,7 +949,8 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         var payloadObj = BuildChatCompletionPayload(
             targetModel,
             [new { role = "user", content = messageContent }],
-            isChat: true);
+            isChat: true,
+            maxTokensOverride: maxTokens);
 
         using var req = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
@@ -1008,9 +1067,10 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         _textOnlySensor = textOnlySensor;
         var create = factory ?? CreateDefaultAdapter;
 
-        // Text-only ("blind") accounts are enabled ONLY when _textOnlySensor (WinRT OCR + Game Logs) is attached!
+        // Include all ready providers so pure-text Chat / Post-Match Review always route cleanly;
+        // AnalyzeFrameAsync individually skips text-only ("blind") providers unless _textOnlySensor is attached.
         _providers = accounts
-            .Where(a => a.IsReady() && (a.SupportsVision || _textOnlySensor is not null))
+            .Where(a => a.IsReady())
             .OrderBy(a => a.Priority)
             .Select(create)
             .ToList();
@@ -1125,11 +1185,14 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
                 {
                     sensorExtracted = true;
                     lazySensor = await _textOnlySensor.ExtractAsync(jpegBytes, profile, frameCts.Token);
+                }
+
+                if (lazySensor is not null)
+                {
                     bool anyVisionAhead = candidates.Any(c => !attemptedIds.Contains(c.prov.Account.Id) && c.prov.Account.SupportsVision);
                     if (!anyVisionAhead && !forceAdvice && LocalSilentPhases.Contains(lazySensor.Phase))
-                    {
                         return (CoachResponse.Silent($"[{lazySensor.Phase}] {lazySensor.OcrZonesSummary}"), lazySensor.OcrMs, "ocr-local-filter");
-                    }
+
                     if (!lazySensor.HasUsefulData)
                     {
                         if (anyVisionAhead)
@@ -1217,6 +1280,53 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
                     sensorSnapshot: prov.Account.SupportsVision ? null : lazySensor,
                     recentChatHistory: recentChatHistory,
                     ct: ct);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                res = new ProviderCallResult(null, 408, "timeout");
+            }
+            sw.Stop();
+
+            if (res.Response is not null && !string.IsNullOrWhiteSpace(res.Response.OverlayText))
+            {
+                RecordSuccess(prov.Account.Id);
+                Volatile.Write(ref _activeIndex, idx);
+                return (res.Response.OverlayText.Trim(), sw.Elapsed.TotalMilliseconds, prov.Account.Model);
+            }
+
+            if (res.ErrorCode is not (422 or 501))
+                ApplyFailureCircuit(prov, res.ErrorCode, res.RetryAfterSeconds);
+        }
+
+        return (null, 0, "all-failed");
+    }
+
+    public async Task<(string? Review, double LatencyMs, string ProviderModel)> GenerateMatchReviewAsync(
+        string gameDisplayName,
+        string sessionDigest,
+        UserConfig config,
+        CancellationToken ct = default)
+    {
+        if (_providers.Count == 0 || string.IsNullOrWhiteSpace(sessionDigest))
+            return (null, 0, "none");
+
+        var prompt = CoachingPersonaBuilder.BuildPostMatchReviewPrompt(gameDisplayName, sessionDigest, config);
+        var now = DateTimeOffset.UtcNow;
+        var candidates = _providers
+            .Select((prov, idx) => (idx, prov))
+            .Where(x => !IsCircuitOpen(x.prov.Account.Id, now))
+            .ToList();
+        if (candidates.Count == 0)
+            candidates.Add((0, _providers[0]));
+
+        foreach (var (idx, prov) in candidates)
+        {
+            if (ct.IsCancellationRequested) break;
+            var sw = Stopwatch.StartNew();
+            ProviderCallResult res;
+            try
+            {
+                res = await prov.AskRawTextAsync(prompt, config, maxTokens: 320, ct);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {

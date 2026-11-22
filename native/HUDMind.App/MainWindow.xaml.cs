@@ -37,16 +37,21 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<string> _logEntries = [];
     private readonly OverlayWindow _overlay = new();
     private readonly Win32GlobalHotkeyManager _hotkeys = new();
+    private readonly LoopbackGsiService _gsiService = new();
     private readonly HybridVoiceService _sharedVoice;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+    private Win32TrayIcon? _trayIcon;
 
     private CoachOrchestrator? _orchestrator;
     private RealtimeLiveCoachOrchestrator? _liveOrchestrator;
+    private string _lastMatchGameName = string.Empty;
+    private string _lastMatchDigest = string.Empty;
     private bool _shutdownComplete;
     private bool _closingInProgress;
     private bool _syncingUi;
     private bool _chatSending;
     private bool _rulesDirty;
+    private bool _onboardingDismissed;
     private string? _lastRulesGameId;
 
     private bool IsAnyEngineRunning =>
@@ -68,7 +73,47 @@ public partial class MainWindow : Window
         _profiles.Insert(0, ConfigRepository.CreateUniversalProfile(_repo.ProfilesDir));
 
         BindInitialUi();
+        Loaded += MainWindow_Loaded;
+        StateChanged += MainWindow_StateChanged;
         Closing += MainWindow_Closing;
+    }
+
+    private void MainWindow_Loaded(object sender, RoutedEventArgs e)
+    {
+        _trayIcon = new Win32TrayIcon(
+            onRestore: () => Dispatcher.BeginInvoke(RestoreFromTray),
+            onTogglePause: () =>
+            {
+                _orchestrator?.TogglePause();
+                _liveOrchestrator?.TogglePause();
+            },
+            onExit: () => Dispatcher.BeginInvoke(Close),
+            isPaused: () => IsAnyEnginePaused,
+            isRunning: () => IsAnyEngineRunning);
+        _trayIcon.Attach(this);
+        if (_config.MinimizeToTray && WindowState == WindowState.Minimized)
+        {
+            Hide();
+            _trayIcon.Show();
+        }
+    }
+
+    private void MainWindow_StateChanged(object? sender, EventArgs e)
+    {
+        if (_config.MinimizeToTray && WindowState == WindowState.Minimized && !_shutdownComplete)
+        {
+            Hide();
+            _trayIcon?.Show(HeaderStatusText.Text);
+        }
+    }
+
+    private void RestoreFromTray()
+    {
+        if (_shutdownComplete) return;
+        Show();
+        WindowState = WindowState.Normal;
+        Activate();
+        _trayIcon?.Hide();
     }
 
     private void BindInitialUi()
@@ -80,6 +125,7 @@ public partial class MainWindow : Window
         if (CmbRulesGame.Items.Count > 0) CmbRulesGame.SelectedIndex = 0;
 
         RefreshMonitorsList();
+        RefreshAudioDevicesList();
 
         _syncingUi = true;
         try
@@ -95,9 +141,17 @@ public partial class MainWindow : Window
             SelectByTag(CmbEngineType, _config.UseLiveConversational ? "live" : "classic");
             SelectByTag(CmbCommMode, _config.CommunicationMode);
             SelectByTag(CmbCommModeSettings, _config.CommunicationMode);
+            SelectByTag(CmbMicInputMode, _config.IsPushToTalkMode ? "push_to_talk" : "open_mic");
+            TxtPttKey.Text = string.IsNullOrWhiteSpace(_config.PushToTalkKey) ? "V" : _config.PushToTalkKey;
+            SelectByTag(CmbMicDevice, _config.AudioInputDeviceName);
+            SelectByTag(CmbSpeakerDevice, _config.AudioOutputDeviceName);
             SelectByContent(CmbLanguage, _config.VoiceLanguage);
             SelectByContent(CmbEfficiency, _config.TokenEfficiencyMode);
             SelectByContent(CmbOverlayPos, _config.OverlayPosition);
+            SldOverlayScale.Value = Math.Clamp(_config.OverlayScale, 0.75, 1.45);
+            LblOverlayScale.Text = $"{(int)Math.Round(SldOverlayScale.Value * 100)}%";
+            SldOverlayOpacity.Value = Math.Clamp(_config.OverlayOpacity, 0.45, 1.0);
+            LblOverlayOpacity.Text = $"{(int)Math.Round(SldOverlayOpacity.Value * 100)}%";
             SldVolume.Value = _config.TtsVolume;
             LblVolumePct.Text = $"{(int)Math.Round(_config.TtsVolume * 100)}%";
         }
@@ -107,14 +161,17 @@ public partial class MainWindow : Window
         }
 
         ChkEnableOverlay.IsChecked = _config.EnableOverlay;
+        ChkOverlayCompact.IsChecked = _config.OverlayCompact;
         ChkEnableHotkeys.IsChecked = _config.EnableHotkeys;
+        ChkMinimizeToTray.IsChecked = _config.MinimizeToTray;
         TxtPauseKey.Text = _config.HotkeyTogglePause;
         TxtAnalyzeKey.Text = _config.HotkeyAnalyzeNow;
         TxtMicKey.Text = _config.HotkeyToggleMic;
         RefreshHotkeyButtonLabels();
 
-        _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
+        ConfigureOverlayFromCurrentConfig();
         RefreshAccountsList();
+        RefreshOnboardingBanner();
         UpdateLatencyCardHeaders(isLive: false);
 
         if (!string.IsNullOrWhiteSpace(_repo.LastLoadWarning))
@@ -131,6 +188,45 @@ public partial class MainWindow : Window
         int screenCount = Math.Max(1, Win32DisplayHelper.GetAllWorkingAreas().Length);
         CmbMonitor.ItemsSource = Enumerable.Range(1, screenCount).ToList();
         CmbMonitor.SelectedItem = Math.Clamp(_config.CaptureMonitor, 1, screenCount);
+    }
+
+    private void RefreshAudioDevicesList()
+    {
+        CmbMicDevice.Items.Clear();
+        CmbMicDevice.Items.Add(new ComboBoxItem { Content = "(Predeterminado de Windows)", Tag = string.Empty });
+        foreach (var dev in Win32AudioDevices.GetInputDeviceNames())
+            CmbMicDevice.Items.Add(new ComboBoxItem { Content = dev, Tag = dev });
+
+        CmbSpeakerDevice.Items.Clear();
+        CmbSpeakerDevice.Items.Add(new ComboBoxItem { Content = "(Predeterminado de Windows)", Tag = string.Empty });
+        foreach (var dev in Win32AudioDevices.GetOutputDeviceNames())
+            CmbSpeakerDevice.Items.Add(new ComboBoxItem { Content = dev, Tag = dev });
+    }
+
+    private void ConfigureOverlayFromCurrentConfig() =>
+        _overlay.Configure(
+            _config.OverlayPosition,
+            _config.OverlayWidth,
+            _config.OverlayOpacity,
+            _config.CaptureMonitor,
+            _config.OverlayScale,
+            _config.OverlayCompact);
+
+    private void RefreshOnboardingBanner()
+    {
+        if (OnboardingBanner is null) return;
+        bool hasUserApiKeyAccount = _accounts.Any(a =>
+            a.Enabled && !a.IsKeylessAllowed && !string.IsNullOrWhiteSpace(a.ApiKey));
+        OnboardingBanner.Visibility = (!hasUserApiKeyAccount && !_onboardingDismissed) ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void RefreshMatchReviewButtonState()
+    {
+        if (BtnMatchReview is null) return;
+        bool hasLiveEvents = _liveOrchestrator?.GetMatchSessionDigest().Count > 0;
+        bool hasClassicEvents = _orchestrator?.GetMatchSessionDigest().Count > 0;
+        bool hasSaved = !string.IsNullOrWhiteSpace(_lastMatchDigest);
+        BtnMatchReview.IsEnabled = (hasLiveEvents || hasClassicEvents || hasSaved) && _accounts.Any(a => a.IsReady());
     }
 
     private void RefreshHotkeyButtonLabels()
@@ -180,6 +276,8 @@ public partial class MainWindow : Window
         for (int i = 0; i < _accounts.Count; i++)
             _accounts[i].Priority = i + 1;
         LstAccounts.ItemsSource = _accounts.Select(a => new AccountRowView { Source = a }).ToList();
+        RefreshOnboardingBanner();
+        RefreshMatchReviewButtonState();
     }
 
     private void AppendLog(string message)
@@ -214,6 +312,8 @@ public partial class MainWindow : Window
                 ? $"Pausado · {stats.ActiveProvider}"
                 : $"Activo · {stats.ActiveProvider}";
             PauseBadge.Visibility = stats.IsPaused ? Visibility.Visible : Visibility.Collapsed;
+            _trayIcon?.UpdateTooltip($"HUDMind · {HeaderStatusText.Text}");
+            RefreshMatchReviewButtonState();
             RefreshHotkeyButtonLabels();
         });
     }
@@ -242,7 +342,9 @@ public partial class MainWindow : Window
         try
         {
             await ShutdownEngineAsync(isAppClosing: true);
+            _gsiService.Dispose();
             _sharedVoice.Dispose();
+            _trayIcon?.Dispose();
             _overlay.ShutdownCleanly();
         }
         finally
@@ -272,13 +374,15 @@ public partial class MainWindow : Window
             bool wantLive = GetSelectedTag(CmbEngineType) == "live";
             var liveBackend = wantLive ? LiveBackendFactory.TryCreateFromAccounts(_accounts) : null;
 
-            _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
+            ConfigureOverlayFromCurrentConfig();
+            if (_gsiService.TryStart())
+                AppendLog($"📡 Receptor Valve GSI oficial activo (127.0.0.1:{LoopbackGsiService.DefaultPort}) para CS2 / Dota 2.");
 
             try
             {
                 if (liveBackend is not null)
                 {
-                    var sensor = new TextOnlySensorService();
+                    var sensor = new TextOnlySensorService(_gsiService);
                     if (!sensor.HasOcrEngine)
                         AppendLog("ℹ️ Windows OCR sin packs de idioma instalados (filtro local de menús por OCR desactivado).");
 
@@ -296,7 +400,8 @@ public partial class MainWindow : Window
                         onLog: AppendLog,
                         onStats: UpdateStatsUi,
                         onPauseChanged: OnPauseChanged,
-                        localPhaseGate: sensor
+                        localPhaseGate: sensor,
+                        isPttKeyPressed: () => Win32KeyStateProbe.IsPushToTalkKeyDown(_config.PushToTalkKey)
                     );
                     await _liveOrchestrator.StartAsync();
                     UpdateLatencyCardHeaders(isLive: true);
@@ -317,7 +422,7 @@ public partial class MainWindow : Window
                         finally { _syncingUi = false; }
                     }
 
-                    var textOnlySensor = new TextOnlySensorService();
+                    var textOnlySensor = new TextOnlySensorService(_gsiService);
                     if (_accounts.Any(a => a.IsReady() && !a.SupportsVision) && !textOnlySensor.HasOcrEngine)
                         AppendLog("⚠ Tu cuenta prioritaria es ciego-texto pero falta el pack OCR de Windows (solo usarán logs si existen).");
 
@@ -348,6 +453,7 @@ public partial class MainWindow : Window
                 SetRunningControlLocks(true);
                 PauseBadge.Visibility = Visibility.Collapsed;
                 RefreshHotkeyButtonLabels();
+                _trayIcon?.UpdateTooltip($"HUDMind · {HeaderStatusText.Text}");
             }
             catch (Exception ex)
             {
@@ -421,9 +527,33 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SnapshotLastMatchSession()
+    {
+        bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+        if (_liveOrchestrator is not null)
+        {
+            var (g, d, count) = _liveOrchestrator.GetMatchSessionDigest(isEn);
+            if (count > 0 && !string.IsNullOrWhiteSpace(d))
+            {
+                _lastMatchGameName = g;
+                _lastMatchDigest = d;
+            }
+        }
+        else if (_orchestrator is not null)
+        {
+            var (g, d, count) = _orchestrator.GetMatchSessionDigest(isEn);
+            if (count > 0 && !string.IsNullOrWhiteSpace(d))
+            {
+                _lastMatchGameName = g;
+                _lastMatchDigest = d;
+            }
+        }
+    }
+
     private async Task ShutdownEngineCoreAsync(bool isAppClosing)
     {
         _hotkeys.Stop();
+        SnapshotLastMatchSession();
         if (_liveOrchestrator is not null)
         {
             await _liveOrchestrator.DisposeAsync();
@@ -440,9 +570,11 @@ public partial class MainWindow : Window
             BtnStartStop.Content = "▶ Iniciar Coach";
             SetRunningControlLocks(false);
             ResetStatsCards();
+            RefreshMatchReviewButtonState();
             PauseBadge.Visibility = Visibility.Collapsed;
             TxtHeaderBadge.Text = ".NET 9 · 0% GPU · $0 COSTO · MULTI-IA";
             HeaderStatusText.Text = "Estado: Detenido";
+            _trayIcon?.UpdateTooltip("HUDMind · Detenido");
         }
     }
 
@@ -790,6 +922,170 @@ public partial class MainWindow : Window
         _liveOrchestrator?.SetVolume(vol);
     }
 
+    private void SldOverlayVisual_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_syncingUi || LblOverlayScale is null || LblOverlayOpacity is null) return;
+        _config.OverlayScale = Math.Round(SldOverlayScale.Value, 2);
+        _config.OverlayOpacity = Math.Round(SldOverlayOpacity.Value, 2);
+        LblOverlayScale.Text = $"{(int)Math.Round(_config.OverlayScale * 100)}%";
+        LblOverlayOpacity.Text = $"{(int)Math.Round(_config.OverlayOpacity * 100)}%";
+        ConfigureOverlayFromCurrentConfig();
+    }
+
+    private void BtnGoAccounts_Click(object sender, RoutedEventArgs e) =>
+        MainTabs.SelectedIndex = 1;
+
+    private void BtnGoSettings_Click(object sender, RoutedEventArgs e) =>
+        MainTabs.SelectedIndex = 3;
+
+    private void BtnDismissOnboarding_Click(object sender, RoutedEventArgs e)
+    {
+        _onboardingDismissed = true;
+        RefreshOnboardingBanner();
+    }
+
+    private async void BtnMatchReview_Click(object sender, RoutedEventArgs e)
+    {
+        SnapshotLastMatchSession();
+        if (string.IsNullOrWhiteSpace(_lastMatchDigest))
+        {
+            AppendLog("ℹ️ Todavía no hay consejos registrados en esta sesión para resumir.");
+            return;
+        }
+        if (!_accounts.Any(a => a.IsReady()))
+        {
+            AppendLog("⚠ Agregá una cuenta IA habilitada para generar el resumen post-partida.");
+            return;
+        }
+
+        BtnMatchReview.IsEnabled = false;
+        try
+        {
+            AppendLog($"📊 Analizando partida reciente ({_lastMatchGameName})...");
+            await using var router = new ProviderFailoverRouter(_accounts, onLog: AppendLog);
+            var (review, ms, model) = await router.GenerateMatchReviewAsync(_lastMatchGameName, _lastMatchDigest, _config);
+            if (string.IsNullOrWhiteSpace(review))
+            {
+                AppendLog($"No se pudo generar el resumen post-partida [{model}].");
+                return;
+            }
+
+            AppendLog($"📊 === RESUMEN POST-PARTIDA ({_lastMatchGameName}, {ms:F0}ms · {model}) ===");
+            foreach (var rawLine in review.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                AppendLog($"   {rawLine.Trim()}");
+
+            if (_config.IsCoachVoiceActive)
+            {
+                string spoken = review.Replace("*", "").Replace("#", "").Trim();
+                if (spoken.Length > 280) spoken = spoken[..280];
+                string lang = _config.VoiceLanguage;
+                double vol = _config.TtsVolume;
+                string gender = _config.VoiceGender;
+                string style = _config.VoiceStyle;
+                _ = Task.Run(() =>
+                {
+                    _sharedVoice.WarmUp(lang, vol, gender, style);
+                    _sharedVoice.UpdateSettings(lang, vol, gender, style);
+                    _sharedVoice.SpeakInstant(spoken);
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Error generando resumen post-partida: {SecretRedactor.Redact(ex.Message, _accounts.Select(a => a.ApiKey))}");
+        }
+        finally
+        {
+            RefreshMatchReviewButtonState();
+        }
+    }
+
+    private async void BtnTestMic_Click(object sender, RoutedEventArgs e)
+    {
+        if (IsAnyEngineRunning)
+        {
+            System.Windows.MessageBox.Show("Detené primero el Coach Live para hacer una prueba aislada de micrófono.", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var selectedMic = GetSelectedTag(CmbMicDevice, string.Empty);
+        BtnTestMic.IsEnabled = false;
+        AppendLog($"🎤 Probando micrófono '{(string.IsNullOrEmpty(selectedMic) ? "Predeterminado" : selectedMic)}' por 1 segundo (hablá ahora)...");
+
+        try
+        {
+            double peakRms = 0;
+            int chunks = 0;
+            string? errSeen = null;
+
+            using (var testMic = new Win32StreamingMicCapture())
+            {
+                testMic.SetDevice(selectedMic);
+                bool started = testMic.TryStart(
+                    chunk =>
+                    {
+                        Interlocked.Increment(ref chunks);
+                        double rms = ComputeChunkRms16(chunk);
+                        double cur = Volatile.Read(ref peakRms);
+                        if (rms > cur) Volatile.Write(ref peakRms, rms);
+                    },
+                    err => errSeen = err);
+
+                if (!started)
+                {
+                    var errText = errSeen ?? "No se pudo abrir el micrófono seleccionado.";
+                    AppendLog($"⚠ {errText}");
+                    System.Windows.MessageBox.Show(errText, "Prueba de Micrófono", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                await Task.Delay(1000);
+                testMic.Stop();
+            }
+
+            string result = peakRms >= 220
+                ? $"✅ Micrófono funcionando perfecto ({chunks} tramas, pico RMS {peakRms:F0})."
+                : $"ℹ️ Micrófono conectado ({chunks} tramas), pero nivel muy bajo (RMS {peakRms:F0}). Probá acercarte o elegir otro dispositivo.";
+            AppendLog(result);
+            System.Windows.MessageBox.Show(result, "Prueba de Micrófono", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        finally
+        {
+            BtnTestMic.IsEnabled = true;
+        }
+    }
+
+    private static double ComputeChunkRms16(byte[] pcm16)
+    {
+        int samples = pcm16.Length / 2;
+        if (samples == 0) return 0;
+        double sumSq = 0;
+        for (int i = 0; i < samples; i++)
+        {
+            short s = (short)(pcm16[i * 2] | (pcm16[i * 2 + 1] << 8));
+            sumSq += s * (double)s;
+        }
+        return Math.Sqrt(sumSq / samples);
+    }
+
+    private void BtnInstallGsi_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var (count, msg) = LoopbackGsiService.InstallValveGsiConfigs();
+            AppendLog($"🎮 GSI Valve: {msg}");
+            if (count > 0)
+                _gsiService.TryStart();
+            System.Windows.MessageBox.Show(msg, "Instalación GSI Oficial", MessageBoxButton.OK, count > 0 ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            var safeErr = $"No se pudo instalar GSI: {SecretRedactor.Redact(ex.Message)}";
+            AppendLog($"⚠ {safeErr}");
+            System.Windows.MessageBox.Show(safeErr, "Instalación GSI Oficial", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     private bool ApplyConfigFromUi(bool validateHotkeys = false)
     {
         if (validateHotkeys)
@@ -809,6 +1105,11 @@ public partial class MainWindow : Window
                 System.Windows.MessageBox.Show($"Tecla Mic inválida: '{TxtMicKey.Text}'. Usá ej: F8, Ctrl+M.", "Atajo inválido", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
+            if (!HotkeyParser.TryParsePushToTalkKey(TxtPttKey.Text, out _, out var pttNorm))
+            {
+                System.Windows.MessageBox.Show($"Tecla Push-to-Talk inválida: '{TxtPttKey.Text}'. Usá ej: V, Alt, CapsLock, Space, Mouse4, Mouse5.", "Push-to-Talk inválido", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
             if (pNorm == aNorm || pNorm == mNorm || aNorm == mNorm)
             {
                 System.Windows.MessageBox.Show("Las 3 teclas rápidas (Pausar, Analizar, Mic) no pueden repetirse.", "Conflicto de atajos", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -817,6 +1118,7 @@ public partial class MainWindow : Window
             TxtPauseKey.Text = pNorm;
             TxtAnalyzeKey.Text = aNorm;
             TxtMicKey.Text = mNorm;
+            TxtPttKey.Text = pttNorm;
         }
 
         _config.CoachMode = GetSelectedTag(CmbCoachMode);
@@ -828,44 +1130,53 @@ public partial class MainWindow : Window
         _config.VoiceStyle = GetSelectedTag(CmbVoiceStyle);
         _config.UseLiveConversational = GetSelectedTag(CmbEngineType) == "live";
         _config.SetCommunicationMode(GetSelectedTag(CmbCommMode));
+        _config.MicInputMode = GetSelectedTag(CmbMicInputMode, "open_mic");
+        if (HotkeyParser.TryParsePushToTalkKey(TxtPttKey.Text, out _, out var pttSafe)) _config.PushToTalkKey = pttSafe;
+        _config.AudioInputDeviceName = GetSelectedTag(CmbMicDevice, string.Empty);
+        _config.AudioOutputDeviceName = GetSelectedTag(CmbSpeakerDevice, string.Empty);
         _config.TextLanguage = (CmbLanguage.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "es";
         _config.VoiceLanguage = _config.TextLanguage;
         _config.TokenEfficiencyMode = (CmbEfficiency.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "eco";
         _config.OverlayPosition = (CmbOverlayPos.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "top-right";
         _config.CaptureMonitor = CmbMonitor.SelectedItem is int m ? m : 1;
         _config.EnableOverlay = ChkEnableOverlay.IsChecked == true;
+        _config.OverlayCompact = ChkOverlayCompact.IsChecked == true;
         _config.EnableHotkeys = ChkEnableHotkeys.IsChecked == true;
+        _config.MinimizeToTray = ChkMinimizeToTray.IsChecked == true;
         if (HotkeyParser.TryParse(TxtPauseKey.Text, out _, out _, out var pSafe)) _config.HotkeyTogglePause = pSafe;
         if (HotkeyParser.TryParse(TxtAnalyzeKey.Text, out _, out _, out var aSafe)) _config.HotkeyAnalyzeNow = aSafe;
         if (HotkeyParser.TryParse(TxtMicKey.Text, out _, out _, out var mSafe)) _config.HotkeyToggleMic = mSafe;
+        _config.OverlayScale = Math.Round(SldOverlayScale.Value, 2);
+        _config.OverlayOpacity = Math.Round(SldOverlayOpacity.Value, 2);
         _config.TtsVolume = Math.Round(SldVolume.Value, 2);
         return true;
     }
 
     private void BtnSaveConfig_Click(object sender, RoutedEventArgs e)
     {
-        RefreshMonitorsList();
         if (!ApplyConfigFromUi(validateHotkeys: true))
             return;
 
+        RefreshMonitorsList();
         _repo.SaveUserConfig(_config);
-        _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
+        ConfigureOverlayFromCurrentConfig();
         if (!_config.EnableOverlay)
             _overlay.HideImmediately();
 
         _sharedVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
         _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
         _liveOrchestrator?.SetVolume(_config.TtsVolume);
+        _liveOrchestrator?.SetAudioDevicesLive(_config.AudioInputDeviceName, _config.AudioOutputDeviceName);
         _liveOrchestrator?.RefreshLivePersona($"{_config.PlayerSkillTier} · {_config.CoachStyle}");
         RefreshHotkeyButtonLabels();
         RegisterActiveHotkeys();
-        AppendLog($"Preferencias guardadas y aplicadas en vivo (Nivel: {_config.PlayerSkillTier}, Estilo: {_config.CoachStyle}).");
+        AppendLog($"Preferencias guardadas y aplicadas en vivo (Nivel: {_config.PlayerSkillTier}, Mic: {(_config.IsPushToTalkMode ? $"PTT {_config.PushToTalkKey}" : "Abierto")}).");
     }
 
     private void BtnPreviewOverlay_Click(object sender, RoutedEventArgs e)
     {
         if (!ApplyConfigFromUi()) return;
-        _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
+        ConfigureOverlayFromCurrentConfig();
         if (_config.EnableOverlay)
             _overlay.ShowCallout("Rotá segundo palo, tenés 18 de boost.", UrgencyLevel.High, "Rocket League", 4.0);
 
@@ -888,8 +1199,8 @@ public partial class MainWindow : Window
         });
     }
 
-    private static string GetSelectedTag(System.Windows.Controls.ComboBox cb) =>
-        (cb.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "auto";
+    private static string GetSelectedTag(System.Windows.Controls.ComboBox cb, string fallback = "auto") =>
+        (cb.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? fallback;
 
     private static void SelectByTag(System.Windows.Controls.ComboBox cb, string tag)
     {

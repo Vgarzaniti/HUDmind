@@ -721,6 +721,152 @@ await RunTest("24. HotkeyParser strict rules + universal custom_rules persistenc
     return Task.CompletedTask;
 });
 
+// 25. Live Startup Pre-Detection + Desktop-to-First-Game Hot-Reload
+await RunTest("25. RealtimeLiveCoachOrchestrator pre-detects active game on startup and hot-reloads from desktop", async () =>
+{
+    var rlProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League", ProcessNames = ["RocketLeague.exe"] } };
+    var valProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "valorant", DisplayName = "Valorant", ProcessNames = ["VALORANT-Win64-Shipping.exe"] } };
+
+    // A) Game already focused at StartAsync -> Session 1 immediately receives Rocket League profile!
+    var stub1 = new StubLiveBackend();
+    var cfg1 = new UserConfig { LiveAutoCoachSeconds = 0 };
+    cfg1.SetCommunicationMode("coach_voice");
+    await using (var live1 = new RealtimeLiveCoachOrchestrator(
+        stub1, cfg1, [rlProf, valProf], new MutableWindowDetector("RocketLeague.exe"),
+        new StubCapture(), new StubStreamingPlayer(), new StubStreamingMic(), new RecordingOverlay(), testMode: false))
+    {
+        await live1.StartAsync();
+        for (int i = 0; i < 40 && !stub1.IsConnected; i++) await Task.Delay(25);
+        Assert(stub1.IsConnected && stub1.LastProfile?.Manifest.GameId == "rocket_league",
+            $"Session 1 must start directly with foreground game profile! Got: {stub1.LastProfile?.Manifest.GameId ?? "null"}");
+        await live1.StopAsync();
+    }
+
+    // B) Started on desktop -> launching Valorant later triggers immediate persona hot-reload!
+    var stub2 = new StubLiveBackend();
+    var winDet = new MutableWindowDetector("explorer.exe");
+    var cfg2 = new UserConfig { LiveAutoCoachSeconds = 0 };
+    cfg2.SetCommunicationMode("coach_voice");
+    await using (var live2 = new RealtimeLiveCoachOrchestrator(
+        stub2, cfg2, [rlProf, valProf], winDet,
+        new StubCapture(), new StubStreamingPlayer(), new StubStreamingMic(), new RecordingOverlay(), testMode: false))
+    {
+        await live2.StartAsync();
+        for (int i = 0; i < 40 && !stub2.IsConnected; i++) await Task.Delay(25);
+        int sessionsOnDesktop = stub2.SessionCount;
+        Assert(stub2.LastProfile is null, "Desktop start should begin with null profile");
+
+        winDet.CurrentExe = "VALORANT-Win64-Shipping.exe";
+        for (int i = 0; i < 60 && stub2.LastProfile?.Manifest.GameId != "valorant"; i++)
+            await Task.Delay(50);
+        Assert(stub2.SessionCount > sessionsOnDesktop && stub2.LastProfile?.Manifest.GameId == "valorant",
+            "Opening first game from desktop must trigger Live persona reload!");
+        await live2.StopAsync();
+    }
+});
+
+// 26. Push-to-Talk Gate + Single-Key PTT Validation + Device Propagation
+await RunTest("26. Push-to-Talk gates loud mic when key released, forwards when held & parses PTT keys", async () =>
+{
+    Assert(HotkeyParser.TryParsePushToTalkKey("v", out uint vkV, out var nV) && vkV == 'V' && nV == "V", "V parsed");
+    Assert(HotkeyParser.TryParsePushToTalkKey("capslock", out uint vkCap, out var nCap) && vkCap == 0x14 && nCap == "CapsLock", "CapsLock parsed");
+    Assert(HotkeyParser.TryParsePushToTalkKey("Mouse4", out uint vkM4, out var nM4) && vkM4 == 0x05 && nM4 == "Mouse4", "Mouse4 parsed");
+    Assert(!HotkeyParser.TryParsePushToTalkKey("Ctrl+V", out _, out _), "Modifier combo rejected for PTT hold");
+    Assert(!HotkeyParser.TryParsePushToTalkKey("Ñ", out _, out _), "Non-ASCII rejected for PTT");
+
+    bool keyHeld = false;
+    var stubBackend = new StubLiveBackend();
+    var stubMic = new StubStreamingMic();
+    var stubPlayer = new StubStreamingPlayer();
+    var cfg = new UserConfig
+    {
+        LiveAutoCoachSeconds = 0,
+        MicInputMode = "push_to_talk",
+        PushToTalkKey = "V",
+        AudioInputDeviceName = "Mic Headset",
+        AudioOutputDeviceName = "Headphones"
+    };
+    cfg.SetCommunicationMode("conversation");
+
+    await using var live = new RealtimeLiveCoachOrchestrator(
+        stubBackend, cfg,
+        [new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "RL" } }],
+        new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), stubPlayer, stubMic, new RecordingOverlay(),
+        testMode: true,
+        isPttKeyPressed: () => keyHeld);
+
+    await live.StartAsync();
+    for (int i = 0; i < 40 && !stubMic.IsCapturing; i++) await Task.Delay(25);
+    Assert(stubMic.LastDeviceName == "Mic Headset" && stubPlayer.LastDeviceName == "Headphones",
+        "Audio input/output device names must propagate on StartAsync");
+
+    byte[] loud = MakeSinePcm16(samples: 1600, amplitude: 3200);
+    stubMic.PushChunk(loud);
+    await Task.Delay(40);
+    Assert(stubBackend.SentMicChunks == 0, "PTT released must drop even loud mic chunks!");
+
+    keyHeld = true;
+    byte[] soft = MakeSinePcm16(samples: 1600, amplitude: 150);
+    stubMic.PushChunk(soft);
+    for (int i = 0; i < 40 && stubBackend.SentMicChunks == 0; i++) await Task.Delay(20);
+    Assert(stubBackend.SentMicChunks >= 1, "Holding PTT key must transmit even soft speech (RMS < 320)!");
+
+    // Releasing PTT must still forward ~420ms silence tail so Gemini/OpenAI server VAD closes the turn immediately!
+    int beforeRelease = stubBackend.SentMicChunks;
+    keyHeld = false;
+    await Task.Delay(260);
+    stubMic.PushChunk(soft);
+    for (int i = 0; i < 40 && stubBackend.SentMicChunks == beforeRelease; i++) await Task.Delay(15);
+    Assert(stubBackend.SentMicChunks > beforeRelease, "PTT post-release tail (~260ms) must pass chunks to trigger server VAD!");
+    await live.StopAsync();
+});
+
+// 27. Post-Match Session Log Null-Safety + Multi-Blind Failover + Match Review Routing
+await RunTest("27. Post-Match session digest + multi-blind failover to Vision + null-safe memory", async () =>
+{
+    var mem = new InterventionMemory(maxItems: 5, ttlSeconds: 10.0);
+    var t0 = DateTimeOffset.UtcNow;
+    mem.RecordMatchEvent("rocket_league", "Rocket League", "PLAY", null!, "Rotá segundo palo con pads", t0);
+    mem.RecordMatchEvent("rocket_league", "Rocket League", "PLAY", "double commit", "Dejá ir al compañero adelante", t0.AddMinutes(3));
+    mem.RecordChatTurn("pregunta", null!, t0);
+    mem.Record(new CoachResponse(true, UrgencyLevel.Medium, "Rotá segundo palo", "Rotá segundo palo"), t0);
+
+    // After 2 minutes, anti-spam cache expires cleanly while match digest keeps all events!
+    var compactAfter2Min = mem.FormatCompactHistory(t0.AddMinutes(2));
+    var (gName, digest, count) = mem.BuildMatchReviewDigest();
+    Assert(string.IsNullOrEmpty(compactAfter2Min), "Anti-spam TTL must expire after 2m");
+    Assert(count == 2 && gName == "Rocket League" && digest.Contains("Rotá segundo palo") && digest.Contains("compañero"),
+        $"Match session log must persist across match! count={count}, digest={digest}");
+
+    var blind1 = new ProviderAccount { Provider = "groq", Model = "llama-3.3", ApiKey = "gsk_test", Priority = 1 };
+    var blind2 = new ProviderAccount { Provider = "openrouter", Model = "deepseek/deepseek-r1:free", ApiKey = "sk-or-test", Priority = 2 };
+    var visionBackup = new ProviderAccount { Provider = "groq", Model = "meta-llama/llama-4-scout-17b-16e-instruct", ApiKey = "gsk_test2", Priority = 3 };
+    int multiBlindCalls = 0;
+    var emptySensor = new CountingSensor(HudSensorSnapshot.Empty);
+    var stubVision = new StubProvider(visionBackup, delayMs: 5,
+        new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Medium, "Cubrí segundo palo", "Cubrí segundo palo")));
+    await using (var multiRouter = new ProviderFailoverRouter(
+        [blind1, blind2, visionBackup],
+        acc => acc.SupportsVision
+            ? stubVision
+            : new CallbackStubProvider(acc, _ => { multiBlindCalls++; return new ProviderCallResult(CoachResponse.Silent()); }),
+        textOnlySensor: emptySensor))
+    {
+        var prof = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "RL" } };
+        var (r, _, winModel) = await multiRouter.AnalyzeFrameAsync([1, 2, 3], prof, new UserConfig(), "", false);
+        Assert(r is { ShouldIntervene: true } && multiBlindCalls == 0 && winModel == visionBackup.Model,
+            $"2+ blind models with empty OCR must skip all blind calls and reach Vision backup (blindCalls={multiBlindCalls}, win={winModel})");
+    }
+
+    var stubProv = new StubProvider(blind1, delayMs: 5,
+        new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Medium, "1) Top errores: rotar sin boost...", "ok")));
+    await using var router = new ProviderFailoverRouter([blind1], _ => stubProv);
+    var (review, _, usedModel) = await router.GenerateMatchReviewAsync(gName, digest, new UserConfig { PlayerSkillTier = "intermediate" });
+    Assert(review is not null && review.Contains("Top errores") && usedModel == "llama-3.3",
+        $"Post-match review router must return review text! Got: {review}");
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -828,8 +974,10 @@ sealed class RecordingOverlay : IOverlayOutputService
 sealed class StubStreamingPlayer : IStreamingPcmPlayer
 {
     public bool IsPlayingAudio { get; set; }
+    public string? LastDeviceName { get; private set; }
     public int EnqueuedCount { get; private set; }
     public int InterruptCount { get; private set; }
+    public void SetDevice(string? deviceName) => LastDeviceName = deviceName;
     public void SetVolume(double volume) { }
     public void EnqueuePcm24k(byte[] pcmBytes) => EnqueuedCount++;
     public void FlushBuffered() { }
@@ -841,6 +989,8 @@ sealed class StubStreamingMic : IStreamingMicCapture
 {
     private Action<byte[]>? _cb;
     public bool IsCapturing { get; private set; }
+    public string? LastDeviceName { get; private set; }
+    public void SetDevice(string? deviceName) => LastDeviceName = deviceName;
     public bool TryStart(Action<byte[]> onPcm16kChunk, Action<string>? onError = null)
     {
         _cb = onPcm16kChunk;

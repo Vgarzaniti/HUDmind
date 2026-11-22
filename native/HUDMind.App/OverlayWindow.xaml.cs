@@ -111,7 +111,13 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         }
     }
 
-    public void Configure(string position, int width, double opacity, int monitorIndex = 1)
+    public void Configure(
+        string position,
+        int width,
+        double opacity,
+        int monitorIndex = 1,
+        double scale = 1.0,
+        bool compact = false)
     {
         if (_closed) return;
         Dispatcher.BeginInvoke(() =>
@@ -119,8 +125,17 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             if (_closed) return;
             _position = string.IsNullOrWhiteSpace(position) ? "top-right" : position.ToLowerInvariant();
             _monitorIndex = Math.Max(1, monitorIndex);
-            Width = Math.Clamp(width, 280, 680);
+            double s = Math.Clamp(scale, 0.75, 1.45);
+            double baseW = compact ? Math.Max(300, width * 0.85) : width;
+            Width = Math.Clamp(baseW * s, 260, 760);
             _targetOpacity = Math.Clamp(opacity, 0.35, 1.0);
+
+            CardBorder.Padding = compact ? new Thickness(10, 6, 10, 6) : new Thickness(12, 10, 12, 10);
+            TitleBlock.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+            TitleBlock.FontSize = 11.0 * s;
+            MessageBlock.FontSize = (compact ? 13.5 : 14.5) * s;
+            MessageBlock.Margin = compact ? new Thickness(0) : new Thickness(0, 3, 0, 0);
+
             if (IsVisible)
             {
                 BeginAnimation(OpacityProperty, null);

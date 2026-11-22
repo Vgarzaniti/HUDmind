@@ -1,4 +1,4 @@
-name: CI — Quality Gate (ISO/IEEE)
+name: CI — HUDMind Native (.NET 9 Quality Gate)
 
 on:
   push:
@@ -7,36 +7,6 @@ on:
     branches: [main]
 
 jobs:
-  quality-and-tests:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.13"]
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install dependencies and QA tools
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest pytest-asyncio ruff mypy
-
-      - name: Lint and security check (Ruff + Bandit rules)
-        run: ruff check src tests
-
-      - name: Strict static type checking (Mypy)
-        run: mypy src tests
-
-      - name: Unit & Integration test suite (Pytest)
-        run: pytest
-
   native-dotnet9-tests:
     runs-on: ubuntu-latest
     steps:
@@ -48,7 +18,7 @@ jobs:
         with:
           dotnet-version: "9.0.x"
 
-      - name: Build & Run .NET 9 Core Tests
+      - name: Build & Run .NET 9 Core Test Suite
         run: |
           dotnet build native/HUDMind.Tests/HUDMind.Tests.csproj -c Release
           dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build

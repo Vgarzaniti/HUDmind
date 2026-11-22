@@ -1,5 +1,5 @@
 {
-  "game_id": "example_cs2",
+  "game_id": "cs2",
   "display_name": "Counter-Strike 2",
   "process_names": ["cs2.exe"],
   "capture_fps": 1.0,
@@ -7,5 +7,5 @@
   "cooldown_seconds": 10.0,
   "max_resolution": [1280, 720],
   "language": "es",
-  "notes": "Perfil táctico competitivo 5v5 para Counter-Strike 2 (Premier / Faceit / Competitivo)."
+  "notes": "Perfil táctico competitivo 5v5 para Counter-Strike 2 (Premier / Faceit / Competitivo, con soporte Valve GSI oficial)."
 }

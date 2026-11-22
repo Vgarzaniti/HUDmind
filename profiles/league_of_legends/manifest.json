@@ -1,0 +1,11 @@
+{
+  "game_id": "league_of_legends",
+  "display_name": "League of Legends",
+  "process_names": ["League of Legends.exe"],
+  "capture_fps": 1.0,
+  "phash_threshold": 7,
+  "cooldown_seconds": 10.0,
+  "max_resolution": [1280, 720],
+  "language": "es",
+  "notes": "Perfil macro/micro para League of Legends (oleadas, recall, wards, Dragón/Barón y API oficial Riot 127.0.0.1:2999)."
+}

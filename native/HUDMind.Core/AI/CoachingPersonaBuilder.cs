@@ -127,4 +127,34 @@ public static class CoachingPersonaBuilder
 
         return sysText;
     }
+
+    public static string BuildPostMatchReviewPrompt(string gameDisplayName, string sessionDigest, UserConfig config)
+    {
+        bool isEn = IsEnglish(config, preferTextLang: true);
+        var cleanGame = string.IsNullOrWhiteSpace(gameDisplayName)
+            ? (isEn ? "the last match" : "la última partida")
+            : SanitizeField(gameDisplayName, 48);
+        var calibration = BuildCompactRankDirective(config);
+        var cleanLines = (sessionDigest ?? string.Empty)
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => SanitizeField(l, 160))
+            .Where(l => !string.IsNullOrEmpty(l));
+        var safeDigest = string.Join('\n', cleanLines);
+        if (safeDigest.Length > 1650)
+            safeDigest = safeDigest[..1650];
+
+        return isEn
+            ? $"You just coached {cleanGame}. {calibration}\n" +
+              $"Chronological log of match interventions:\n{safeDigest}\n\n" +
+              "Give a crisp, motivating post-match review in English (under 110 words) with exact structure:\n" +
+              "1) Top 3 repeated habits/mistakes seen in this match.\n" +
+              "2) 1 clear strength to keep.\n" +
+              "3) 1 concrete 5-minute drill for the next match/training."
+            : $"Acabás de coachear {cleanGame}. {calibration}\n" +
+              $"Registro cronológico de correcciones de esta partida:\n{safeDigest}\n\n" +
+              "Hacé una devolución post-partida clara, motivadora y al grano en español argentino (máximo 110 palabras) con esta estructura:\n" +
+              "1) Top 3 hábitos o errores repetidos en esta partida.\n" +
+              "2) 1 acierto concreto para mantener.\n" +
+              "3) 1 ejercicio práctico de 5 minutos para la próxima partida.";
+    }
 }

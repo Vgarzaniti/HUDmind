@@ -168,3 +168,18 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
 
     public void Dispose() => Stop();
 }
+
+/// <summary>
+/// Anti-cheat safe non-hook key state reader (no WH_KEYBOARD_LL hooks) for Push-to-Talk hold detection.
+/// </summary>
+public static class Win32KeyStateProbe
+{
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
+    public static bool IsVirtualKeyDown(uint virtualKey) =>
+        virtualKey != 0 && (GetAsyncKeyState((int)virtualKey) & 0x8000) != 0;
+
+    public static bool IsPushToTalkKeyDown(string? keyName) =>
+        HotkeyParser.TryParsePushToTalkKey(keyName, out uint vk, out _) && IsVirtualKeyDown(vk);
+}

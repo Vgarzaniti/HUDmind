@@ -56,6 +56,7 @@ public interface ITextOnlySensorService
 public interface IStreamingPcmPlayer : IDisposable
 {
     bool IsPlayingAudio { get; }
+    void SetDevice(string? deviceName) { }
     void SetVolume(double volume);
     void EnqueuePcm24k(byte[] pcmBytes);
     void FlushBuffered();
@@ -68,6 +69,7 @@ public interface IStreamingPcmPlayer : IDisposable
 public interface IStreamingMicCapture : IDisposable
 {
     bool IsCapturing { get; }
+    void SetDevice(string? deviceName) { }
     bool TryStart(Action<byte[]> onPcm16kChunk, Action<string>? onError = null);
     void Stop();
 }
