@@ -92,10 +92,16 @@ public sealed class CoachOrchestrator : IAsyncDisposable
         _runCts = new CancellationTokenSource();
         var ct = _runCts.Token;
 
-        if (_config.EnableVoice)
+        if (_config.IsCoachVoiceActive)
             _voice.WarmUp(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
 
         await _router.PrewarmAsync(ct);
+
+        string commLabel = _config.IsTextOnlyMode
+            ? "Solo texto (silencioso)"
+            : _config.IsCoachVoiceOnlyMode
+                ? $"Solo voz coach ({_voice.EngineName})"
+                : $"Charla/Voz ({_voice.EngineName})";
 
         if (_testMode)
         {
@@ -105,14 +111,14 @@ public sealed class CoachOrchestrator : IAsyncDisposable
 
             if (_activeProfile is not null)
             {
-                _onLog?.Invoke($"[TEST-MODE] Perfil activo: {_activeProfile.Manifest.DisplayName} | Voz: {_voice.EngineName}");
+                _onLog?.Invoke($"[TEST-MODE] Perfil activo: {_activeProfile.Manifest.DisplayName} | Comunicación: {commLabel}");
                 if (_config.EnableOverlay)
                     _overlay.ShowCallout("Coach Nativo .NET 9 ACTIVO — observando", UrgencyLevel.Low, _activeProfile.Manifest.DisplayName, 3.5);
             }
         }
         else
         {
-            _onLog?.Invoke($"[AUTO-DETECT] Esperando juego registrado ({_profiles.Count} perfiles) | Voz: {_voice.EngineName}");
+            _onLog?.Invoke($"[AUTO-DETECT] Esperando juego registrado ({_profiles.Count} perfiles) | Comunicación: {commLabel}");
         }
 
         _producerTask = Task.Run(() => ProducerLoopAsync(ct), ct);
@@ -122,6 +128,100 @@ public sealed class CoachOrchestrator : IAsyncDisposable
 
     public void UpdateVoiceLive(string language, double volume, string gender, string style) =>
         _voice.UpdateSettings(language, volume, gender, style);
+
+    public void SetCommunicationMode(string mode)
+    {
+        _config.SetCommunicationMode(mode);
+        if (_config.IsTextOnlyMode)
+        {
+            _voice.StopSpeaking();
+            _onLog?.Invoke("💬 Modo SOLO TEXTO activo (silencioso: solo chat y overlay).");
+        }
+        else
+        {
+            _voice.WarmUp(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
+            if (_config.IsCoachVoiceOnlyMode)
+                _onLog?.Invoke("🔊 Modo SOLO VOZ DEL COACH activo (micrófono apagado).");
+            else
+                _onLog?.Invoke("🎙 Modo CHARLA seleccionado (en motor Multi-IA clásico: usá chat escrito + voz del coach, o elegí motor Live para mic 16kHz).");
+        }
+        EmitStats();
+    }
+
+    public async Task SendUserTextAsync(string userText, CancellationToken ct = default)
+    {
+        var msg = (userText ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(msg))
+            return;
+
+        if (!IsRunning)
+        {
+            _onLog?.Invoke("Iniciá el Coach primero para enviar mensajes.");
+            return;
+        }
+
+        var profile = _activeProfile ?? _profiles.FirstOrDefault(p =>
+            string.Equals(p.Manifest.GameId, _forcedGameId, StringComparison.OrdinalIgnoreCase))
+            ?? _profiles.FirstOrDefault();
+        if (profile is null)
+            return;
+
+        _onLog?.Invoke($"💬 Vos: \"{msg}\"");
+        var linkedCt = _runCts is not null
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct, _runCts.Token)
+            : CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+        using (linkedCt)
+        {
+            try
+            {
+                var (w, h, q) = ResolveTargetResolution();
+                var region = _testMode ? null : _windowDetector.GetForegroundClientRect();
+                var (frame, _) = _capture.CaptureIfChanged(
+                    _config.CaptureMonitor, region, w, h, q,
+                    frameId: 0, lastAcceptedHash: null, phashThreshold: 0, isForced: true);
+
+                var (reply, aiMs, model) = await _router.AskQuestionAsync(
+                    frame?.JpegBytes,
+                    msg,
+                    profile,
+                    _config,
+                    _memory.FormatCompactHistory(),
+                    _memory.FormatVisualTimeline(),
+                    linkedCt.Token);
+
+                if (string.IsNullOrWhiteSpace(reply))
+                {
+                    _onLog?.Invoke($"Sin respuesta del coach [{model}].");
+                    return;
+                }
+
+                _lastAiMs = aiMs;
+                Interlocked.Increment(ref _interventions);
+                _memory.Record(new CoachResponse(true, UrgencyLevel.Medium, reply, reply, "[CHAT]"));
+
+                if (_config.EnableOverlay)
+                    _overlay.ShowCallout(reply, UrgencyLevel.Medium, profile.Manifest.DisplayName, _config.OverlayDurationSeconds);
+
+                double voiceMs = 0;
+                if (_config.IsCoachVoiceActive)
+                    voiceMs = _voice.SpeakInstant(reply);
+                _lastVoiceMs = voiceMs;
+
+                string icon = _config.IsCoachVoiceActive ? "🔊" : "💬";
+                _onLog?.Invoke($"{icon} Coach ({aiMs:F0}ms) [{model}]: \"{reply}\"");
+                EmitStats();
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutdown
+            }
+            catch (Exception ex)
+            {
+                _onLog?.Invoke($"Error en chat con coach: {ex.Message}");
+            }
+        }
+    }
 
     public void TogglePause()
     {
@@ -405,7 +505,7 @@ public sealed class CoachOrchestrator : IAsyncDisposable
                             _overlay.ShowCallout(resp.OverlayText, resp.Urgency, profile.Manifest.DisplayName, _config.OverlayDurationSeconds);
 
                         double voiceMs = 0;
-                        if (_config.EnableVoice && !string.IsNullOrWhiteSpace(resp.VoiceLine))
+                        if (_config.IsCoachVoiceActive && !string.IsNullOrWhiteSpace(resp.VoiceLine))
                             voiceMs = _voice.SpeakInstant(resp.VoiceLine);
 
                         _lastVoiceMs = voiceMs;

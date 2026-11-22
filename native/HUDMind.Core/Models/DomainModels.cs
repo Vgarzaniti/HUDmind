@@ -164,6 +164,54 @@ public sealed class UserConfig
     [JsonPropertyName("enable_mic")]
     public bool EnableMic { get; set; } = true;
 
+    /// <summary>
+    /// Independent communication channel mode:
+    /// "conversation" (mic + coach voice), "coach_voice" (coach speaks only, mic off), "text_only" (silent chat + overlay).
+    /// </summary>
+    [JsonPropertyName("communication_mode")]
+    public string CommunicationMode { get; set; } = "conversation";
+
+    [JsonIgnore]
+    public bool IsConversationMode =>
+        string.Equals(CommunicationMode, "conversation", StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsCoachVoiceOnlyMode =>
+        string.Equals(CommunicationMode, "coach_voice", StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsTextOnlyMode =>
+        string.Equals(CommunicationMode, "text_only", StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsCoachVoiceActive => !IsTextOnlyMode && EnableVoice;
+
+    [JsonIgnore]
+    public bool IsMicActive => IsConversationMode && EnableMic;
+
+    public void SetCommunicationMode(string? mode)
+    {
+        var norm = (mode ?? "conversation").Trim().ToLowerInvariant();
+        switch (norm)
+        {
+            case "text_only":
+                CommunicationMode = "text_only";
+                EnableVoice = false;
+                EnableMic = false;
+                break;
+            case "coach_voice":
+                CommunicationMode = "coach_voice";
+                EnableVoice = true;
+                EnableMic = false;
+                break;
+            default:
+                CommunicationMode = "conversation";
+                EnableVoice = true;
+                EnableMic = true;
+                break;
+        }
+    }
+
     [JsonPropertyName("live_auto_coach_seconds")]
     public double LiveAutoCoachSeconds { get; set; } = 12.0;
 

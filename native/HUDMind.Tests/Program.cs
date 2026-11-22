@@ -396,6 +396,44 @@ await RunTest("15. CoachingPersonaBuilder calibrates beginner vs pro coaching de
     return Task.CompletedTask;
 });
 
+// 16. Separated communication modes: Charla (mic+voice), Solo voz del coach (voice only), Solo texto (silent chat+overlay)
+await RunTest("16. Communication modes cleanly separate Charla, Solo voz del coach, and Solo texto (+ interactive chat)", async () =>
+{
+    var cfg = new UserConfig { PlayerSkillTier = "intermediate", PlayerRankLabel = "Platino 2" };
+    cfg.SetCommunicationMode("conversation");
+    Assert(cfg.IsConversationMode && cfg.IsMicActive && cfg.IsCoachVoiceActive && !cfg.IsTextOnlyMode, "conversation must enable mic + coach voice");
+
+    cfg.SetCommunicationMode("coach_voice");
+    Assert(cfg.IsCoachVoiceOnlyMode && !cfg.IsMicActive && cfg.IsCoachVoiceActive && !cfg.IsTextOnlyMode, "coach_voice must disable mic and keep coach voice");
+
+    cfg.SetCommunicationMode("text_only");
+    Assert(cfg.IsTextOnlyMode && !cfg.IsMicActive && !cfg.IsCoachVoiceActive, "text_only must disable both mic and coach voice");
+
+    var prof = ConfigRepository.CreateUniversalProfile(".");
+    var chatPrompt = CompactWireProtocol.BuildInteractiveChatPrompt(prof, cfg, "¿Cómo defiendo este saque?");
+    Assert(chatPrompt.Contains("Platino 2") && chatPrompt.Contains("¿Cómo defiendo este saque?"), "Chat prompt must include rank and user message");
+
+    var acc = new ProviderAccount { Id = "chat-p1", Provider = "groq", Model = "llama-4-scout", ApiKey = "gsk_test1234567890" };
+    var chatReply = new CoachResponse(true, UrgencyLevel.Medium, "Rotá segundo palo y guardá 30 de boost.", "Rotá segundo palo y guardá 30 de boost.", "[CHAT]");
+    var router = new ProviderFailoverRouter([acc], a => new StubProvider(a, 5, new ProviderCallResult(chatReply)));
+    var voice = new RecordingVoice();
+    var overlay = new RecordingOverlay();
+    await using var orch = new CoachOrchestrator(
+        cfg, [prof], router, new StubWindowDetector("game.exe"), new StubCapture(), voice, overlay,
+        testMode: true, forcedGameId: "universal");
+
+    await orch.StartAsync();
+    await orch.SendUserTextAsync("¿Cómo defiendo este saque?");
+    Assert(overlay.Shown.Any(s => s.Contains("Rotá segundo palo")), "text_only chat must deliver reply to overlay");
+    Assert(voice.Spoken.Count == 0, $"text_only must produce 0 voice calls, got {voice.Spoken.Count}");
+
+    // Switch LIVE to coach_voice (only coach speaks, mic off) and verify voice activates cleanly
+    orch.SetCommunicationMode("coach_voice");
+    await orch.SendUserTextAsync("¿Y si viene por arriba?");
+    Assert(voice.Spoken.Count == 1 && voice.Spoken[0].Contains("Rotá segundo palo"), "coach_voice must speak reply");
+    await orch.StopAsync();
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -404,6 +442,11 @@ sealed class StubProvider(ProviderAccount account, int delayMs, ProviderCallResu
     public ProviderAccount Account { get; } = account;
     public Task PrewarmAsync(CancellationToken ct = default) => Task.CompletedTask;
     public async Task<ProviderCallResult> AnalyzeFrameAsync(byte[] jpegBytes, GameProfile profile, UserConfig config, string recentHistory, bool forceAdvice, string spatialTelemetry = "", HudSensorSnapshot? sensorSnapshot = null, CancellationToken ct = default)
+    {
+        await Task.Delay(delayMs, ct);
+        return outcome;
+    }
+    public async Task<ProviderCallResult> AskQuestionAsync(byte[]? jpegBytes, string userQuestion, GameProfile profile, UserConfig config, string recentHistory = "", string visualTimeline = "", HudSensorSnapshot? sensorSnapshot = null, CancellationToken ct = default)
     {
         await Task.Delay(delayMs, ct);
         return outcome;

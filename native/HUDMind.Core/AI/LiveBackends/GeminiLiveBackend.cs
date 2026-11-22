@@ -280,6 +280,36 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
         await SendRawBytesAsync(ws, buf.WrittenMemory, ct);
     }
 
+    public async Task SendTextTurnAsync(string promptText, CancellationToken ct)
+    {
+        var ws = _ws;
+        if (ws is null || ws.State != WebSocketState.Open) return;
+
+        var buf = new ArrayBufferWriter<byte>(512);
+        using (var w = new Utf8JsonWriter(buf))
+        {
+            w.WriteStartObject();
+            w.WritePropertyName("clientContent");
+            w.WriteStartObject();
+            w.WritePropertyName("turns");
+            w.WriteStartArray();
+            w.WriteStartObject();
+            w.WriteString("role", "user");
+            w.WritePropertyName("parts");
+            w.WriteStartArray();
+            w.WriteStartObject();
+            w.WriteString("text", promptText);
+            w.WriteEndObject();
+            w.WriteEndArray();
+            w.WriteEndObject();
+            w.WriteEndArray();
+            w.WriteBoolean("turnComplete", true);
+            w.WriteEndObject();
+            w.WriteEndObject();
+        }
+        await SendRawBytesAsync(ws, buf.WrittenMemory, ct);
+    }
+
     private async Task SendRawBytesAsync(ClientWebSocket ws, ReadOnlyMemory<byte> payload, CancellationToken ct)
     {
         await _sendLock.WaitAsync(ct);

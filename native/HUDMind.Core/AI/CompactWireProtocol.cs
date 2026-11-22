@@ -132,6 +132,53 @@ public static class CompactWireProtocol
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Builds a direct, natural conversational prompt when the player writes a text message/question to the coach
+    /// (works across ANY AI provider, with live screen vision or OCR/log sensors).
+    /// </summary>
+    public static string BuildInteractiveChatPrompt(
+        GameProfile profile,
+        UserConfig config,
+        string userQuestion,
+        string recentHistory = "",
+        string visualTimeline = "",
+        HudSensorSnapshot? sensorSnapshot = null)
+    {
+        var lang = (config.TextLanguage ?? config.VoiceLanguage ?? "es").Trim().ToLowerInvariant();
+        bool isEn = lang == "en";
+        var gameLabel = profile.Manifest.GameId.Equals("universal", StringComparison.OrdinalIgnoreCase)
+            ? "the video game currently on screen"
+            : SanitizeInline(profile.Manifest.DisplayName, 48);
+
+        var sb = new StringBuilder(680);
+        if (isEn)
+        {
+            sb.Append("You are a calm, sharp human eSports coach watching ").Append(gameLabel).Append(" live.\n");
+            sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
+            sb.Append("Reply directly to the player's text message below in 1-2 short, clear, actionable sentences grounded ONLY in what is visible (never invent unseen details). Plain text only, no markdown or pipes.\n");
+        }
+        else
+        {
+            sb.Append("Sos un coach humano de eSports mirando ").Append(gameLabel).Append(" en vivo.\n");
+            sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
+            sb.Append("Respondé directamente al mensaje escrito del jugador en 1 o 2 oraciones cortas, claras y naturales en español, basándote SOLO en lo que realmente ves o sabés del juego (jamás inventes datos). Solo texto plano, sin formato markdown ni barras '|'.\n");
+        }
+
+        if (sensorSnapshot is not null && sensorSnapshot.HasUsefulData)
+            sb.Append("Sensores HUD/Logs: ").Append(SanitizeInline(sensorSnapshot.FormatForPrompt(), 320)).Append('\n');
+        if (!string.IsNullOrWhiteSpace(profile.CustomRules))
+            sb.Append("Reglas del jugador: ").Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
+        if (!string.IsNullOrWhiteSpace(visualTimeline))
+            sb.Append("Contexto reciente: ").Append(SanitizeInline(visualTimeline, 240)).Append('\n');
+        if (!string.IsNullOrWhiteSpace(recentHistory))
+            sb.Append("Consejos previos: ").Append(SanitizeInline(recentHistory, 180)).Append('\n');
+
+        sb.Append(isEn ? "Player message: " : "Mensaje del jugador: ")
+          .Append(SanitizeInline(userQuestion, 320));
+
+        return sb.ToString();
+    }
+
     private static string SanitizeInline(string raw, int maxLen)
     {
         var clean = string.Join(' ', raw.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()));

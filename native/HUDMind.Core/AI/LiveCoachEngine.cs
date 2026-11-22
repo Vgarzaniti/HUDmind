@@ -31,6 +31,7 @@ public interface ILiveRealtimeBackend : IAsyncDisposable
     Task SendVideoFrameAsync(byte[] jpegBytes, CancellationToken ct);
     Task SendMicAudio16kAsync(byte[] pcm16k, CancellationToken ct);
     Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct);
+    Task SendTextTurnAsync(string promptText, CancellationToken ct);
 }
 
 public static class LiveBackendFactory
@@ -129,7 +130,7 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
         _onLog = onLog;
         _onStats = onStats;
         _onPauseChanged = onPauseChanged;
-        _micEnabled = config.EnableMic;
+        _micEnabled = config.IsMicActive;
     }
 
     public Task StartAsync()
@@ -179,6 +180,66 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
         }
     }
 
+    public void SetCommunicationMode(string mode)
+    {
+        _config.SetCommunicationMode(mode);
+        _micEnabled = _config.IsMicActive;
+
+        if (_config.IsTextOnlyMode)
+        {
+            _mic.Stop();
+            _pcmPlayer.InterruptAndClear();
+            _modelSpeaking = false;
+            _onLog?.Invoke("💬 Modo SOLO TEXTO activo (micrófono y voz silenciados; usá el chat escrito y overlay).");
+        }
+        else if (_config.IsCoachVoiceOnlyMode)
+        {
+            _mic.Stop();
+            _onLog?.Invoke("🔊 Modo SOLO VOZ DEL COACH activo (micrófono apagado; solo te habla el coach).");
+        }
+        else
+        {
+            _onLog?.Invoke("🎙 Modo CHARLA activo (micrófono en vivo + voz del coach).");
+            if (_backend.IsConnected && !_userPaused)
+                StartMicIfEnabled();
+        }
+        EmitStats();
+    }
+
+    public async Task SendUserTextAsync(string userText, bool attachCurrentScreen = true)
+    {
+        var msg = (userText ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(msg))
+            return;
+
+        if (!_backend.IsConnected)
+        {
+            _onLog?.Invoke("Esperando conexión Live WebSocket para enviar tu mensaje...");
+            return;
+        }
+
+        if (_userPaused)
+        {
+            _userPaused = false;
+            _onPauseChanged?.Invoke(false);
+            if (_micEnabled) StartMicIfEnabled();
+        }
+
+        _onLog?.Invoke($"💬 Vos: \"{msg}\"");
+        var ct = _runCts?.Token ?? CancellationToken.None;
+        _lastTurnRequestTick = Stopwatch.GetTimestamp();
+        _waitingFirstAudio = true;
+
+        byte[]? fresh = attachCurrentScreen
+            ? CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _framesSent))
+            : null;
+
+        if (fresh is not null)
+            await _backend.SendImageAndPromptTurnAsync(fresh, msg, ct);
+        else
+            await _backend.SendTextTurnAsync(msg, ct);
+    }
+
     public void TogglePause()
     {
         _userPaused = !_userPaused;
@@ -199,7 +260,9 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
             WakeNow();
             _onLog?.Invoke("Coach Live REANUDADO.");
             if (_config.EnableOverlay)
-                _overlay.ShowCallout("Coach Live ACTIVO — escuchando y mirando", UrgencyLevel.Low, title, 2.5);
+                _overlay.ShowCallout(
+                    _config.IsTextOnlyMode ? "Coach Live ACTIVO — solo texto" : _micEnabled ? "Coach Live ACTIVO — charla en vivo" : "Coach Live ACTIVO — solo voz del coach",
+                    UrgencyLevel.Low, title, 2.5);
         }
         EmitStats();
     }
@@ -263,11 +326,21 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
                     onConnected: () =>
                     {
                         var voiceName = _backend.ResolveVoiceName(_config.VoiceGender);
-                        _onLog?.Invoke($"🎙 LIVE LISTO [{_backend.ActiveModelLabel}] · Voz {voiceName} · Hablale por mic o tocá {_config.HotkeyAnalyzeNow}!");
+                        string modeDesc = _config.IsTextOnlyMode
+                            ? "💬 SOLO TEXTO (silencioso — escribí abajo o tocá F10)"
+                            : _config.IsCoachVoiceOnlyMode
+                                ? $"🔊 SOLO VOZ COACH ({voiceName} · mic apagado)"
+                                : $"🎙 CHARLA ({voiceName} · hablale por mic o escribí)";
+
+                        _onLog?.Invoke($"LIVE LISTO [{_backend.ActiveModelLabel}] · {modeDesc}");
                         if (_config.EnableOverlay)
                         {
                             _overlay.ShowCallout(
-                                _micEnabled ? $"Coach Live ({voiceName}) listo — hablale directo" : $"Coach Live ({voiceName}) observando",
+                                _config.IsTextOnlyMode
+                                    ? "Coach Live en modo SOLO TEXTO (silencioso)"
+                                    : _micEnabled
+                                        ? $"Coach Live ({voiceName}) listo — hablale directo"
+                                        : $"Coach Live ({voiceName}) — solo voz del coach",
                                 UrgencyLevel.Low,
                                 _activeProfile?.Manifest.DisplayName ?? "HUDMind Live",
                                 3.0);
@@ -310,7 +383,7 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
 
     private void HandleIncomingAudioChunk(byte[] pcm24k)
     {
-        if (!_config.EnableVoice || _userPaused || pcm24k.Length == 0) return;
+        if (!_config.IsCoachVoiceActive || _userPaused || pcm24k.Length == 0) return;
         if (_waitingFirstAudio)
         {
             _waitingFirstAudio = false;
@@ -322,6 +395,11 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
 
     private void HandlePartialTranscript(string currentLine)
     {
+        if (_waitingFirstAudio && _config.IsTextOnlyMode && !string.IsNullOrWhiteSpace(currentLine))
+        {
+            _waitingFirstAudio = false;
+            _lastTtfaMs = Stopwatch.GetElapsedTime(_lastTurnRequestTick).TotalMilliseconds;
+        }
         if (_config.EnableOverlay && currentLine.Length >= 5)
         {
             _overlay.ShowCallout(
@@ -339,7 +417,8 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(spoken))
         {
             Interlocked.Increment(ref _interventions);
-            _onLog?.Invoke($"🎙 Coach ({_lastTtfaMs:F0}ms TTFA): \"{spoken}\"");
+            string icon = _config.IsTextOnlyMode ? "💬" : (_config.IsCoachVoiceOnlyMode ? "🔊" : "🎙");
+            _onLog?.Invoke($"{icon} Coach ({_lastTtfaMs:F0}ms): \"{spoken}\"");
             EmitStats();
         }
     }
@@ -512,6 +591,12 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
 
     private void EmitStats()
     {
+        string modeTag = _config.IsTextOnlyMode
+            ? "Solo texto"
+            : _config.IsCoachVoiceOnlyMode
+                ? $"Solo voz ({_backend.ResolveVoiceName(_config.VoiceGender)})"
+                : $"Charla ({_backend.ResolveVoiceName(_config.VoiceGender)})";
+
         _onStats?.Invoke(new CoachRuntimeStats(
             Interlocked.Read(ref _framesSent),
             0,
@@ -519,8 +604,8 @@ public sealed class RealtimeLiveCoachOrchestrator : IAsyncDisposable
             Interlocked.Read(ref _interventions),
             _lastCaptureMs,
             _lastTtfaMs,
-            _lastTtfaMs > 0 ? 5.0 : 0.0,
-            $"LIVE · {_backend.ActiveModelLabel} ({_backend.ResolveVoiceName(_config.VoiceGender)})",
+            _config.IsTextOnlyMode ? 0.0 : (_lastTtfaMs > 0 ? 5.0 : 0.0),
+            $"LIVE · {_backend.ActiveModelLabel} · {modeTag}",
             _activeProfile?.Manifest.DisplayName ?? "Universal",
             _userPaused
         ));

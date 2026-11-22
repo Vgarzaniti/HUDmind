@@ -176,7 +176,21 @@ public sealed partial class ConfigRepository
                 if (info.Length <= MaxConfigFileBytes)
                 {
                     var json = File.ReadAllText(UserConfigPath, Encoding.UTF8);
-                    return JsonSerializer.Deserialize<UserConfig>(json, JsonOpts) ?? new UserConfig();
+                    var cfg = JsonSerializer.Deserialize<UserConfig>(json, JsonOpts) ?? new UserConfig();
+                    if (!json.Contains("\"communication_mode\"", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!cfg.EnableVoice)
+                            cfg.SetCommunicationMode("text_only");
+                        else if (!cfg.EnableMic)
+                            cfg.SetCommunicationMode("coach_voice");
+                        else
+                            cfg.SetCommunicationMode("conversation");
+                    }
+                    else
+                    {
+                        cfg.SetCommunicationMode(cfg.CommunicationMode);
+                    }
+                    return cfg;
                 }
             }
         }

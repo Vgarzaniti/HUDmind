@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Forms;
+using System.Windows.Input;
 using HUDMind.Core.AI;
 using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
@@ -89,7 +90,8 @@ public partial class MainWindow : Window
             SelectByTag(CmbQuickGender, _config.VoiceGender);
             SelectByTag(CmbVoiceStyle, _config.VoiceStyle);
             SelectByTag(CmbEngineType, _config.UseLiveConversational ? "live" : "classic");
-            ChkLiveMic.IsChecked = _config.EnableMic;
+            SelectByTag(CmbCommMode, _config.CommunicationMode);
+            SelectByTag(CmbCommModeSettings, _config.CommunicationMode);
             SelectByContent(CmbLanguage, _config.VoiceLanguage);
             SelectByContent(CmbEfficiency, _config.TokenEfficiencyMode);
             SelectByContent(CmbOverlayPos, _config.OverlayPosition);
@@ -99,7 +101,6 @@ public partial class MainWindow : Window
             _syncingVoiceUi = false;
         }
 
-        ChkEnableVoice.IsChecked = _config.EnableVoice;
         ChkEnableOverlay.IsChecked = _config.EnableOverlay;
         ChkEnableHotkeys.IsChecked = _config.EnableHotkeys;
         TxtPauseKey.Text = _config.HotkeyTogglePause;
@@ -245,7 +246,11 @@ public partial class MainWindow : Window
                         localPhaseGate: new TextOnlySensorService()
                     );
                     await _liveOrchestrator.StartAsync();
-                    HeaderStatusText.Text = $"🎙 LIVE Conversacional · Voz {_liveOrchestrator.ActiveVoiceLabel}";
+                    HeaderStatusText.Text = _config.IsTextOnlyMode
+                        ? "💬 LIVE · Solo texto (silencioso)"
+                        : _config.IsCoachVoiceOnlyMode
+                            ? $"🔊 LIVE · Solo voz coach ({_liveOrchestrator.ActiveVoiceLabel})"
+                            : $"🎙 LIVE · Charla ({_liveOrchestrator.ActiveVoiceLabel})";
                 }
                 else
                 {
@@ -276,6 +281,8 @@ public partial class MainWindow : Window
                 BtnStartStop.Content = "⏹ Detener Coach";
                 BtnAnalyzeNow.IsEnabled = true;
                 BtnPause.IsEnabled = true;
+                TxtChatInput.IsEnabled = true;
+                BtnSendChat.IsEnabled = true;
                 PauseBadge.Visibility = Visibility.Collapsed;
                 RefreshHotkeyButtonLabels();
             }
@@ -350,6 +357,8 @@ public partial class MainWindow : Window
             BtnStartStop.Content = "▶ Iniciar Coach";
             BtnAnalyzeNow.IsEnabled = false;
             BtnPause.IsEnabled = false;
+            TxtChatInput.IsEnabled = false;
+            BtnSendChat.IsEnabled = false;
             PauseBadge.Visibility = Visibility.Collapsed;
             HeaderStatusText.Text = "Estado: Detenido";
         }
@@ -367,12 +376,86 @@ public partial class MainWindow : Window
         _liveOrchestrator?.TogglePause();
     }
 
-    private void ChkLiveMic_Changed(object sender, RoutedEventArgs e)
+    private void CmbCommMode_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_syncingVoiceUi) return;
-        bool on = ChkLiveMic.IsChecked == true;
-        _config.EnableMic = on;
-        _liveOrchestrator?.SetMicEnabled(on);
+        if (_syncingVoiceUi || CmbCommModeSettings is null) return;
+        ApplyCommunicationModeFromUi(GetSelectedTag(CmbCommMode), fromQuickBar: true);
+    }
+
+    private void CmbCommModeSettings_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingVoiceUi || CmbCommMode is null) return;
+        ApplyCommunicationModeFromUi(GetSelectedTag(CmbCommModeSettings), fromQuickBar: false);
+    }
+
+    private void ApplyCommunicationModeFromUi(string mode, bool fromQuickBar)
+    {
+        _config.SetCommunicationMode(mode);
+        _syncingVoiceUi = true;
+        try
+        {
+            if (fromQuickBar)
+                SelectByTag(CmbCommModeSettings, _config.CommunicationMode);
+            else
+                SelectByTag(CmbCommMode, _config.CommunicationMode);
+        }
+        finally
+        {
+            _syncingVoiceUi = false;
+        }
+
+        _repo.SaveUserConfig(_config);
+        _liveOrchestrator?.SetCommunicationMode(_config.CommunicationMode);
+        _orchestrator?.SetCommunicationMode(_config.CommunicationMode);
+
+        if (!IsAnyEngineRunning)
+        {
+            string desc = _config.IsTextOnlyMode
+                ? "💬 Solo texto (sin voz ni micrófono)"
+                : _config.IsCoachVoiceOnlyMode
+                    ? "🔊 Solo voz del coach (micrófono apagado)"
+                    : "🎙 Charla (micrófono + voz del coach)";
+            AppendLog($"Modo de comunicación configurado: {desc}.");
+        }
+    }
+
+    private void TxtChatInput_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            _ = SendChatInputAsync();
+        }
+    }
+
+    private void BtnSendChat_Click(object sender, RoutedEventArgs e) =>
+        _ = SendChatInputAsync();
+
+    private async Task SendChatInputAsync()
+    {
+        var text = (TxtChatInput.Text ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(text) || !IsAnyEngineRunning)
+            return;
+
+        TxtChatInput.Clear();
+        BtnSendChat.IsEnabled = false;
+        try
+        {
+            if (_liveOrchestrator is { IsRunning: true })
+                await _liveOrchestrator.SendUserTextAsync(text, attachCurrentScreen: true);
+            else if (_orchestrator is { IsRunning: true })
+                await _orchestrator.SendUserTextAsync(text);
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Error enviando chat: {ex.Message}");
+        }
+        finally
+        {
+            BtnSendChat.IsEnabled = IsAnyEngineRunning;
+            if (IsAnyEngineRunning)
+                TxtChatInput.Focus();
+        }
     }
 
     private void BtnClearLogs_Click(object sender, RoutedEventArgs e) =>
@@ -563,13 +646,12 @@ public partial class MainWindow : Window
         _config.VoiceGender = GetSelectedTag(CmbVoiceGender);
         _config.VoiceStyle = GetSelectedTag(CmbVoiceStyle);
         _config.UseLiveConversational = GetSelectedTag(CmbEngineType) == "live";
-        _config.EnableMic = ChkLiveMic.IsChecked == true;
+        _config.SetCommunicationMode(GetSelectedTag(CmbCommMode));
         _config.TextLanguage = (CmbLanguage.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "es";
         _config.VoiceLanguage = _config.TextLanguage;
         _config.TokenEfficiencyMode = (CmbEfficiency.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "eco";
         _config.OverlayPosition = (CmbOverlayPos.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "top-right";
         _config.CaptureMonitor = CmbMonitor.SelectedItem is int m ? m : 1;
-        _config.EnableVoice = ChkEnableVoice.IsChecked == true;
         _config.EnableOverlay = ChkEnableOverlay.IsChecked == true;
         _config.EnableHotkeys = ChkEnableHotkeys.IsChecked == true;
         _config.HotkeyTogglePause = string.IsNullOrWhiteSpace(TxtPauseKey.Text) ? "F9" : TxtPauseKey.Text.Trim();
@@ -596,7 +678,7 @@ public partial class MainWindow : Window
         ApplyConfigFromUi();
         _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
         _overlay.ShowCallout("Rotá segundo palo, tenés 18 de boost.", UrgencyLevel.High, "Rocket League", 4.0);
-        if (_config.EnableVoice)
+        if (_config.IsCoachVoiceActive)
         {
             string lang = _config.VoiceLanguage;
             string gender = _config.VoiceGender;
