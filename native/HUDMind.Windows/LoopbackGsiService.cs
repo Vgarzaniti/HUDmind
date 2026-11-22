@@ -547,7 +547,7 @@ public sealed partial class LoopbackGsiService : IDisposable
         }
     }
 
-    private static bool IsSafeLocalDirectoryPath(string? rawPath, out string fullLocalPath)
+    internal static bool IsSafeLocalDirectoryPath(string? rawPath, out string fullLocalPath)
     {
         fullLocalPath = string.Empty;
         if (string.IsNullOrWhiteSpace(rawPath))

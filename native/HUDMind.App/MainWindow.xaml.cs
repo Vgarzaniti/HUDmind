@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -21,6 +22,9 @@ public sealed class AccountRowView
     public string Label => Source.Label;
     public string Provider => Source.Provider;
     public string Model => Source.Model;
+    public string VisionDisplay => Source.SupportsVisionOverride.HasValue
+        ? (Source.SupportsVisionOverride.Value ? "Visión*" : "OCR/Logs*")
+        : (Source.SupportsVision ? "Visión" : "OCR/Logs");
     public string MaskedKeyDisplay => Source.MaskedKey();
     public string EnabledDisplay => Source.Enabled ? "Sí" : "No";
 }
@@ -151,6 +155,7 @@ public partial class MainWindow : Window
         ChkOverlayCompact.IsChecked = _config.OverlayCompact;
         ChkEnableHotkeys.IsChecked = _config.EnableHotkeys;
         ChkMinimizeToTray.IsChecked = _config.MinimizeToTray;
+        ChkEnableAudioCues.IsChecked = _config.EnableAudioCues;
         TxtPauseKey.Text = _config.HotkeyTogglePause;
         TxtAnalyzeKey.Text = _config.HotkeyAnalyzeNow;
         TxtMicKey.Text = _config.HotkeyToggleMic;
@@ -297,6 +302,8 @@ public partial class MainWindow : Window
     private void OnPauseChanged(bool paused)
     {
         if (_shutdownComplete) return;
+        if (_config.EnableAudioCues && !_config.IsTextOnlyMode)
+            Win32AudioCue.Play(paused ? AudioCueKind.SoftOff : AudioCueKind.SoftOn);
         Dispatcher.BeginInvoke(() =>
         {
             if (_shutdownComplete || !_coordinator.IsRunning) return;
@@ -418,6 +425,8 @@ public partial class MainWindow : Window
             if (_shutdownComplete || !_coordinator.IsRunning) return;
             string nextMode = _config.IsMicActive ? "coach_voice" : "conversation";
             ApplyCommunicationModeFromUi(nextMode);
+            if (_config.EnableAudioCues && !_config.IsTextOnlyMode)
+                Win32AudioCue.Play(_config.IsMicActive ? AudioCueKind.SoftOn : AudioCueKind.SoftOff);
             if (_config.EnableOverlay)
             {
                 _overlay.ShowCallout(
@@ -537,6 +546,13 @@ public partial class MainWindow : Window
         {
             TxtNewLabel.Text = preset.DefaultLabel;
             TxtNewModel.Text = preset.DefaultModel;
+            if (TxtNewBaseUrl is not null)
+            {
+                TxtNewBaseUrl.Clear();
+                TxtNewBaseUrl.ToolTip = $"Opcional (default: {preset.BaseUrl}). Dejar vacío = usar URL oficial.";
+            }
+            if (CmbNewVisionOverride is not null)
+                CmbNewVisionOverride.SelectedIndex = 0;
         }
     }
 
@@ -550,6 +566,25 @@ public partial class MainWindow : Window
             return;
         }
 
+        var customBaseUrl = (TxtNewBaseUrl.Text ?? string.Empty).Trim();
+        if (!string.IsNullOrEmpty(customBaseUrl))
+        {
+            bool allowLoopback = string.Equals(prov, "ollama", StringComparison.OrdinalIgnoreCase);
+            var (okUrl, errUrl) = BaseUrlSecurityValidator.Validate(customBaseUrl, allowLoopback);
+            if (!okUrl)
+            {
+                System.Windows.MessageBox.Show(errUrl, "BaseUrl inválida", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+        }
+
+        bool? visionOverride = GetSelectedTag(CmbNewVisionOverride) switch
+        {
+            "vision" => true,
+            "text" => false,
+            _ => null
+        };
+
         var apiKey = PwdNewApiKey.Password.Trim();
         var acc = new ProviderAccount
         {
@@ -557,6 +592,8 @@ public partial class MainWindow : Window
             Provider = prov,
             Model = model,
             ApiKey = apiKey,
+            BaseUrl = customBaseUrl,
+            SupportsVisionOverride = visionOverride,
             Priority = 1,
             Enabled = true
         };
@@ -567,9 +604,11 @@ public partial class MainWindow : Window
         }
         _accounts.Insert(0, acc);
         PwdNewApiKey.Clear();
+        TxtNewBaseUrl.Clear();
+        CmbNewVisionOverride.SelectedIndex = 0;
         RefreshAccountsList();
         _repo.SaveAccounts(_accounts);
-        AppendLog($"Cuenta agregada en prioridad #1: {acc.Label} [{acc.Provider}:{acc.Model}]");
+        AppendLog($"Cuenta agregada en prioridad #1: {acc.Label} [{acc.Provider}:{acc.Model} · {(acc.SupportsVision ? "Visión" : "OCR/Logs")}]");
     }
 
     private void BtnMoveUp_Click(object sender, RoutedEventArgs e) => MoveSelectedAccount(-1);
@@ -706,6 +745,66 @@ public partial class MainWindow : Window
         }
     }
 
+    private void BtnCreateProfile_Click(object sender, RoutedEventArgs e)
+    {
+        var rawId = (TxtNewProfId.Text ?? string.Empty).Trim();
+        var rawName = (TxtNewProfName.Text ?? string.Empty).Trim();
+        var exeList = (TxtNewProfExe.Text ?? string.Empty)
+            .Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (_rulesDirty)
+        {
+            var ans = System.Windows.MessageBox.Show(
+                $"Tenés cambios sin guardar en '{_lastRulesGameId}'. ¿Descartarlos para editar el nuevo perfil?",
+                "HUDMind · Reglas sin guardar",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (ans != MessageBoxResult.Yes)
+                return;
+        }
+
+        try
+        {
+            var created = _repo.CreateNewGameProfile(rawId, rawName, exeList);
+            if (_profiles.Any(p => string.Equals(p.Manifest.GameId, created.Manifest.GameId, StringComparison.OrdinalIgnoreCase)))
+            {
+                System.Windows.MessageBox.Show($"Ya existe un perfil con ID '{created.Manifest.GameId}'.", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            _profiles.Add(created);
+            var prevActiveGame = CmbGameProfile.SelectedItem?.ToString();
+            var ids = _profiles.Select(p => p.Manifest.GameId).ToList();
+
+            _syncingUi = true;
+            try
+            {
+                CmbGameProfile.ItemsSource = ids;
+                CmbGameProfile.SelectedItem = prevActiveGame ?? ids.FirstOrDefault();
+
+                _rulesDirty = false;
+                CmbRulesGame.ItemsSource = ids;
+                CmbRulesGame.SelectedItem = created.Manifest.GameId;
+                _lastRulesGameId = created.Manifest.GameId;
+                TxtCustomRules.Text = created.CustomRules;
+            }
+            finally
+            {
+                _syncingUi = false;
+            }
+
+            UpdateRulesCounterUi();
+            TxtNewProfId.Clear();
+            TxtNewProfName.Clear();
+            TxtNewProfExe.Clear();
+            AppendLog($"Perfil de juego creado en profiles/{created.Manifest.GameId}: {created.Manifest.DisplayName}");
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(SecretRedactor.Redact(ex.Message), "No se pudo crear el perfil", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     private void CmbQuickGender_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncingUi || CmbVoiceGender is null) return;
@@ -804,6 +903,16 @@ public partial class MainWindow : Window
             foreach (var rawLine in review.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
                 AppendLog($"   {rawLine.Trim()}");
 
+            try
+            {
+                var savedPath = _repo.SavePostMatchReview(gameName, model, review);
+                AppendLog($"💾 Resumen guardado: {savedPath}");
+            }
+            catch (Exception saveEx)
+            {
+                AppendLog($"⚠ No se pudo guardar resumen en disco: {SecretRedactor.Redact(saveEx.Message)}");
+            }
+
             if (_config.IsCoachVoiceActive)
             {
                 string spoken = review.Replace("*", "").Replace("#", "").Trim();
@@ -827,6 +936,26 @@ public partial class MainWindow : Window
         finally
         {
             RefreshMatchReviewButtonState();
+        }
+    }
+
+    private void BtnOpenReviews_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var logsDir = Path.GetDirectoryName(_repo.ReviewsDir);
+            if ((!string.IsNullOrEmpty(logsDir) && Directory.Exists(logsDir) && (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) != 0) ||
+                (Directory.Exists(_repo.ReviewsDir) && (File.GetAttributes(_repo.ReviewsDir) & FileAttributes.ReparsePoint) != 0))
+            {
+                AppendLog("⚠ Seguridad: carpeta logs/reviews es un enlace simbólico no permitido.");
+                return;
+            }
+            Directory.CreateDirectory(_repo.ReviewsDir);
+            Process.Start(new ProcessStartInfo(_repo.ReviewsDir) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"No se pudo abrir carpeta de resúmenes: {SecretRedactor.Redact(ex.Message)}");
         }
     }
 
@@ -927,6 +1056,7 @@ public partial class MainWindow : Window
         _config.OverlayCompact = ChkOverlayCompact.IsChecked == true;
         _config.EnableHotkeys = ChkEnableHotkeys.IsChecked == true;
         _config.MinimizeToTray = ChkMinimizeToTray.IsChecked == true;
+        _config.EnableAudioCues = ChkEnableAudioCues.IsChecked == true;
         if (HotkeyParser.TryParse(TxtPauseKey.Text, out _, out _, out var pSafe)) _config.HotkeyTogglePause = pSafe;
         if (HotkeyParser.TryParse(TxtAnalyzeKey.Text, out _, out _, out var aSafe)) _config.HotkeyAnalyzeNow = aSafe;
         if (HotkeyParser.TryParse(TxtMicKey.Text, out _, out _, out var mSafe)) _config.HotkeyToggleMic = mSafe;

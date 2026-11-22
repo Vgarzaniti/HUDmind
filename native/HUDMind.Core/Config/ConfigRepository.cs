@@ -278,6 +278,7 @@ public sealed partial class ConfigRepository
     public string WorkspaceRoot { get; }
     public string ConfigDir => Path.Combine(WorkspaceRoot, "config");
     public string ProfilesDir => Path.Combine(WorkspaceRoot, "profiles");
+    public string ReviewsDir => Path.Combine(WorkspaceRoot, "logs", "reviews");
     public string AccountsPath => Path.Combine(ConfigDir, "accounts.json");
     public string UserConfigPath => Path.Combine(ConfigDir, "user_config.json");
     public string? LastLoadWarning { get; private set; }
@@ -545,6 +546,117 @@ public sealed partial class ConfigRepository
         Directory.CreateDirectory(fullProfileDir);
         AtomicWrite(fullTarget, trimmed);
         profile.CustomRules = trimmed;
+    }
+
+    /// <summary>
+    /// Creates a new custom game profile folder safely (with strict ID + executable sanitization and CWE-22 guard).
+    /// </summary>
+    public GameProfile CreateNewGameProfile(
+        string gameId,
+        string displayName,
+        IEnumerable<string> processNames,
+        string notes = "",
+        string systemPrompt = "")
+    {
+        var id = (gameId ?? string.Empty).Trim().ToLowerInvariant();
+        if (!SafeGameIdRegex().IsMatch(id) || string.Equals(id, "universal", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("El ID de juego debe usar solo minúsculas, números, '_' o '-' (y no 'universal').", nameof(gameId));
+
+        var cleanName = string.IsNullOrWhiteSpace(displayName) ? id : displayName.Trim();
+        if (cleanName.Length > 64) cleanName = cleanName[..64];
+
+        var validProcs = processNames
+            .Select(p => (p ?? string.Empty).Trim())
+            .Where(p => p.Length is >= 2 and <= 80 &&
+                        !p.Contains('/') && !p.Contains('\\') && !p.Contains("..", StringComparison.Ordinal) &&
+                        p.All(c => !char.IsControl(c)))
+            .Select(p => p.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? p : $"{p}.exe")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (validProcs.Count == 0)
+            throw new ArgumentException("Ingresá al menos un nombre de ejecutable válido (ej: MiJuego.exe).", nameof(processNames));
+
+        var fullProfilesRoot = Path.GetFullPath(ProfilesDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var fullTargetDir = Path.GetFullPath(Path.Combine(fullProfilesRoot, id));
+        if (!fullTargetDir.StartsWith(fullProfilesRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("Ruta de perfil fuera del directorio permitido (CWE-22).");
+
+        if (Directory.Exists(fullTargetDir))
+            throw new InvalidOperationException($"Ya existe un perfil con ID '{id}'.");
+
+        if (Directory.Exists(fullProfilesRoot) && (File.GetAttributes(fullProfilesRoot) & FileAttributes.ReparsePoint) != 0)
+            throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en profiles.");
+
+        Directory.CreateDirectory(fullTargetDir);
+
+        var manifest = new GameManifest
+        {
+            GameId = id,
+            DisplayName = cleanName,
+            ProcessNames = validProcs,
+            CaptureFps = 1.5,
+            PhashThreshold = 7,
+            CooldownSeconds = 8.0,
+            MaxResolution = [1280, 720],
+            Language = "es",
+            Notes = string.IsNullOrWhiteSpace(notes)
+                ? $"Perfil táctico personalizado para {cleanName}."
+                : notes.Trim()[..Math.Min(notes.Trim().Length, 240)]
+        };
+
+        AtomicWrite(Path.Combine(fullTargetDir, "manifest.json"), JsonSerializer.Serialize(manifest, JsonOpts));
+
+        var bodyPrompt = string.IsNullOrWhiteSpace(systemPrompt)
+            ? $"# Rol: Coach Táctico de {cleanName}\n\nAnalizá solo lo visible en pantalla en {cleanName}. Da consejos breves (7-12 palabras), claros y sin alucinaciones.\n"
+            : systemPrompt.Trim();
+        AtomicWrite(Path.Combine(fullTargetDir, "system_prompt.md"), bodyPrompt);
+
+        return new GameProfile
+        {
+            Manifest = manifest,
+            DirectoryPath = fullTargetDir,
+            TacticalSummary = ExtractCompactTacticalSummary(Path.Combine(fullTargetDir, "system_prompt.md"), manifest.Notes)
+        };
+    }
+
+    /// <summary>
+    /// Persists a post-match coaching review cleanly as timestamped Markdown under `logs/reviews/`.
+    /// </summary>
+    public string SavePostMatchReview(string gameDisplayName, string modelName, string reviewText, DateTimeOffset? nowLocal = null)
+    {
+        var ts = nowLocal ?? DateTimeOffset.Now;
+        var logsDir = Path.GetFullPath(Path.Combine(WorkspaceRoot, "logs"));
+        var reviewsFull = Path.GetFullPath(ReviewsDir);
+
+        if (Directory.Exists(logsDir) && (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) != 0)
+            throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en logs.");
+        if (Directory.Exists(reviewsFull) && (File.GetAttributes(reviewsFull) & FileAttributes.ReparsePoint) != 0)
+            throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en logs/reviews.");
+
+        Directory.CreateDirectory(reviewsFull);
+
+        var rawGame = string.IsNullOrWhiteSpace(gameDisplayName) ? "partida" : gameDisplayName.Trim();
+        var slug = new string(rawGame.ToLowerInvariant()
+            .Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')
+            .ToArray()).Trim('_');
+        if (string.IsNullOrEmpty(slug)) slug = "partida";
+        if (slug.Length > 36) slug = slug[..36];
+
+        var fileName = $"{ts:yyyyMMdd_HHmmss}_{slug}.md";
+        var destPath = Path.GetFullPath(Path.Combine(reviewsFull, fileName));
+        if (!destPath.StartsWith(reviewsFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("Ruta de resumen inválida (CWE-22).");
+
+        var safeModel = SecretRedactor.Redact(string.IsNullOrWhiteSpace(modelName) ? "AI" : modelName);
+        var safeBody = SecretRedactor.Redact((reviewText ?? string.Empty).Trim());
+        var md = $"# Resumen Post-Partida — {rawGame}\n\n" +
+                 $"- **Fecha:** {ts:yyyy-MM-dd HH:mm:ss}\n" +
+                 $"- **Modelo IA:** `{safeModel}`\n\n" +
+                 $"{safeBody}\n";
+
+        AtomicWrite(destPath, md);
+        return destPath;
     }
 
     private static string ReadBoundedText(string path, int maxChars)

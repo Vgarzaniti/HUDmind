@@ -930,6 +930,75 @@ await RunTest("29. HudPhaseClassifier (GSI/OCR isolation) & AudioPcmUtilities RM
     return Task.CompletedTask;
 });
 
+// 30. ConfigRepository.CreateNewGameProfile Validation, Persistence & CWE-22 Rejection
+await RunTest("30. ConfigRepository.CreateNewGameProfile validates IDs, blocks CWE-22, appends .exe & persists", () =>
+{
+    var tmp = Path.Combine(Path.GetTempPath(), $"hudmind_t30_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(Path.Combine(tmp, "profiles"));
+    try
+    {
+        var repo = new ConfigRepository(tmp);
+
+        bool threwUniversal = false;
+        try { repo.CreateNewGameProfile("universal", "Univ", ["game.exe"]); } catch (ArgumentException) { threwUniversal = true; }
+        Assert(threwUniversal, "Must reject 'universal' reserved gameId");
+
+        bool threwTraversal = false;
+        try { repo.CreateNewGameProfile("../evil", "Evil", ["evil.exe"]); } catch (ArgumentException) { threwTraversal = true; }
+        Assert(threwTraversal, "Must reject path traversal gameId");
+
+        var created = repo.CreateNewGameProfile("apex_legends", "Apex Legends", ["r5apex", "r5apex_dx12.exe"]);
+        Assert(created.Manifest.ProcessNames.SequenceEqual(["r5apex.exe", "r5apex_dx12.exe"], StringComparer.OrdinalIgnoreCase),
+            $"Normalized process names unexpected: {string.Join(',', created.Manifest.ProcessNames)}");
+        Assert(created.MatchesProcess("r5apex.exe"), "Normalized .exe must match foreground process");
+
+        var reloaded = repo.LoadProfiles();
+        Assert(reloaded.Any(p => p.Manifest.GameId == "apex_legends" && p.Manifest.DisplayName == "Apex Legends"),
+            "Newly created profile must persist and load via LoadProfiles()");
+    }
+    finally
+    {
+        if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
+    }
+    return Task.CompletedTask;
+});
+
+// 31. ConfigRepository.SavePostMatchReview Persistence, Redaction & UserConfig.EnableAudioCues Round-Trip
+await RunTest("31. ConfigRepository.SavePostMatchReview persists timestamped markdown, redacts secrets & UserConfig audio cues round-trip", () =>
+{
+    var tmp = Path.Combine(Path.GetTempPath(), $"hudmind_t31_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(Path.Combine(tmp, "profiles"));
+    try
+    {
+        var repo = new ConfigRepository(tmp);
+        var fixedTime = new DateTimeOffset(2026, 11, 22, 14, 30, 5, TimeSpan.Zero);
+        var path = repo.SavePostMatchReview(
+            "Rocket League!",
+            "groq:llama-4-scout",
+            "1) Top errores: backpost. Clave filtrada gsk_secret_token_value_12345.",
+            fixedTime);
+
+        Assert(path.EndsWith("20261122_143005_rocket_league.md", StringComparison.Ordinal) && File.Exists(path),
+            $"Unexpected review path: {path}");
+        var md = File.ReadAllText(path);
+        Assert(md.Contains("Rocket League!") && md.Contains("groq:llama-4-scout") && !md.Contains("gsk_secret_token_value_12345"),
+            $"Saved markdown must include header and redact API keys! Got: {md}");
+
+        var cfg = new UserConfig { EnableAudioCues = false };
+        repo.SaveUserConfig(cfg);
+        var loadedCfg = repo.LoadUserConfig();
+        var copiedCfg = new UserConfig();
+        copiedCfg.CopyRuntimePreferencesFrom(loadedCfg);
+        Assert(!loadedCfg.EnableAudioCues && !copiedCfg.EnableAudioCues,
+            "EnableAudioCues=false must round-trip via JSON and CopyRuntimePreferencesFrom");
+    }
+    finally
+    {
+        if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
+    }
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

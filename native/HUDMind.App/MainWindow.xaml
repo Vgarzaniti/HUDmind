@@ -178,6 +178,7 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Text="💬 Chat:" Foreground="#38BDF8" FontWeight="SemiBold" VerticalAlignment="Center" Margin="2,0,8,0" />
                             <TextBox x:Name="TxtChatInput"
@@ -198,8 +199,14 @@
                                     Grid.Column="3"
                                     Content="📊 Resumen Partida"
                                     IsEnabled="False"
-                                    ToolTip="Analiza tus errores repetidos de la última sesión y te da 1 ejercicio práctico para la próxima partida"
+                                    Margin="0,0,8,0"
+                                    ToolTip="Analiza tus errores repetidos de la última sesión, guarda un Markdown en logs/reviews y te da 1 ejercicio práctico"
                                     Click="BtnMatchReview_Click" />
+                            <Button x:Name="BtnOpenReviews"
+                                    Grid.Column="4"
+                                    Content="📂 Resúmenes"
+                                    ToolTip="Abre la carpeta logs/reviews donde se guardan tus resúmenes post-partida"
+                                    Click="BtnOpenReviews_Click" />
                         </Grid>
                     </Border>
                 </Grid>
@@ -230,12 +237,13 @@
                     <ListView x:Name="LstAccounts" Grid.Row="1" Background="#0F172A" Foreground="#F1F5F9" BorderBrush="#1E293B" Margin="0,0,0,10">
                         <ListView.View>
                             <GridView>
-                                <GridViewColumn Header="#" Width="40" DisplayMemberBinding="{Binding Priority}" />
-                                <GridViewColumn Header="Alias" Width="220" DisplayMemberBinding="{Binding Label}" />
-                                <GridViewColumn Header="Proveedor" Width="105" DisplayMemberBinding="{Binding Provider}" />
-                                <GridViewColumn Header="Modelo" Width="230" DisplayMemberBinding="{Binding Model}" />
-                                <GridViewColumn Header="API Key" Width="135" DisplayMemberBinding="{Binding MaskedKeyDisplay}" />
-                                <GridViewColumn Header="Activo" Width="65" DisplayMemberBinding="{Binding EnabledDisplay}" />
+                                <GridViewColumn Header="#" Width="36" DisplayMemberBinding="{Binding Priority}" />
+                                <GridViewColumn Header="Alias" Width="185" DisplayMemberBinding="{Binding Label}" />
+                                <GridViewColumn Header="Proveedor" Width="95" DisplayMemberBinding="{Binding Provider}" />
+                                <GridViewColumn Header="Modelo" Width="205" DisplayMemberBinding="{Binding Model}" />
+                                <GridViewColumn Header="Visión" Width="95" DisplayMemberBinding="{Binding VisionDisplay}" />
+                                <GridViewColumn Header="API Key" Width="120" DisplayMemberBinding="{Binding MaskedKeyDisplay}" />
+                                <GridViewColumn Header="Activo" Width="55" DisplayMemberBinding="{Binding EnabledDisplay}" />
                             </GridView>
                         </ListView.View>
                     </ListView>
@@ -243,18 +251,46 @@
                     <!-- Stream-Safe Quick Add Form (PasswordBox hides API key on OBS/Discord!) -->
                     <Border Grid.Row="2" Background="#0F172A" CornerRadius="8" Padding="10" Margin="0,0,0,8" BorderBrush="#1E293B" BorderThickness="1">
                         <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="120" />
-                                <ColumnDefinition Width="170" />
-                                <ColumnDefinition Width="210" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <ComboBox x:Name="CmbNewProvider" Grid.Column="0" Margin="0,0,6,0" SelectionChanged="CmbNewProvider_SelectionChanged" />
-                            <TextBox x:Name="TxtNewLabel" Grid.Column="1" Margin="0,0,6,0" Text="Groq LPU Gratis (~0.4s)" />
-                            <TextBox x:Name="TxtNewModel" Grid.Column="2" Margin="0,0,6,0" Text="meta-llama/llama-4-scout-17b-16e-instruct" />
-                            <PasswordBox x:Name="PwdNewApiKey" Grid.Column="3" Margin="0,0,6,0" ToolTip="Pegá tu API Key (oculta para seguridad en OBS/Discord)" />
-                            <Button Grid.Column="4" Content="+ Agregar #1" Background="#059669" BorderBrush="#10B981" Click="BtnAddAccount_Click" />
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid Grid.Row="0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="120" />
+                                    <ColumnDefinition Width="170" />
+                                    <ColumnDefinition Width="210" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <ComboBox x:Name="CmbNewProvider" Grid.Column="0" Margin="0,0,6,0" SelectionChanged="CmbNewProvider_SelectionChanged" />
+                                <TextBox x:Name="TxtNewLabel" Grid.Column="1" Margin="0,0,6,0" Text="Groq LPU Gratis (~0.4s)" />
+                                <TextBox x:Name="TxtNewModel" Grid.Column="2" Margin="0,0,6,0" Text="meta-llama/llama-4-scout-17b-16e-instruct" />
+                                <PasswordBox x:Name="PwdNewApiKey" Grid.Column="3" Margin="0,0,6,0" ToolTip="Pegá tu API Key (oculta para seguridad en OBS/Discord)" />
+                                <Button Grid.Column="4" Content="+ Agregar #1" Background="#059669" BorderBrush="#10B981" Click="BtnAddAccount_Click" />
+                            </Grid>
+                            <Grid Grid.Row="1" Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="185" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="BaseUrl (opcional):" Foreground="#94A3B8" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                <TextBox x:Name="TxtNewBaseUrl"
+                                         Grid.Column="1"
+                                         Margin="0,0,12,0"
+                                         ToolTip="Opcional: endpoint HTTPS custom (o http://localhost:11434/v1 en Ollama). Dejar vacío usa la URL oficial del proveedor." />
+                                <TextBlock Grid.Column="2" Text="Modo Visión:" Foreground="#94A3B8" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                <ComboBox x:Name="CmbNewVisionOverride"
+                                          Grid.Column="3"
+                                          SelectedIndex="0"
+                                          ToolTip="Automático deduce por nombre de modelo; Solo Texto activa modo ciego con WinRT OCR + Logs locales.">
+                                    <ComboBoxItem Content="Automático" Tag="auto" />
+                                    <ComboBoxItem Content="Con Visión (Imagen)" Tag="vision" />
+                                    <ComboBoxItem Content="Solo Texto (OCR+Logs)" Tag="text" />
+                                </ComboBox>
+                            </Grid>
                         </Grid>
                     </Border>
 
@@ -273,6 +309,7 @@
                 <Grid Margin="12">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
@@ -281,8 +318,30 @@
                         <ComboBox x:Name="CmbRulesGame" Width="220" SelectionChanged="CmbRulesGame_SelectionChanged" />
                         <TextBlock x:Name="LblRulesCount" Text="0 / 600 caracteres (envío íntegro en tiempo real)" Foreground="#94A3B8" VerticalAlignment="Center" Margin="14,0,0,0" />
                     </StackPanel>
+                    <Border Grid.Row="1" Background="#0F172A" CornerRadius="8" Padding="8" Margin="0,0,0,8" BorderBrush="#1E293B" BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="125" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="160" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="+ Nuevo Perfil" Foreground="#38BDF8" FontWeight="SemiBold" VerticalAlignment="Center" Margin="2,0,10,0" />
+                            <TextBlock Grid.Column="1" Text="ID:" Foreground="#94A3B8" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <TextBox x:Name="TxtNewProfId" Grid.Column="2" Margin="0,0,10,0" ToolTip="ID corto en minúsculas y guion bajo (ej: apex_legends)" />
+                            <TextBlock Grid.Column="3" Text="Nombre:" Foreground="#94A3B8" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <TextBox x:Name="TxtNewProfName" Grid.Column="4" Margin="0,0,10,0" ToolTip="Nombre visible del juego (ej: Apex Legends)" />
+                            <TextBlock Grid.Column="5" Text="EXE(s):" Foreground="#94A3B8" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <TextBox x:Name="TxtNewProfExe" Grid.Column="6" Margin="0,0,8,0" ToolTip="Proceso(s) requeridos separados por coma (ej: r5apex.exe, r5apex_dx12.exe)" />
+                            <Button x:Name="BtnCreateProfile" Grid.Column="7" Content="➕ Crear Perfil" Background="#059669" BorderBrush="#10B981" Click="BtnCreateProfile_Click" />
+                        </Grid>
+                    </Border>
                     <TextBox x:Name="TxtCustomRules"
-                             Grid.Row="1"
+                             Grid.Row="2"
                              MaxLength="600"
                              AcceptsReturn="True"
                              TextWrapping="Wrap"
@@ -290,7 +349,7 @@
                              FontFamily="Consolas"
                              FontSize="12.5"
                              TextChanged="TxtCustomRules_TextChanged" />
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
                         <Button Content="💾 Guardar Reglas" Background="#0284C7" BorderBrush="#38BDF8" Click="BtnSaveRules_Click" />
                     </StackPanel>
                 </Grid>
@@ -304,7 +363,8 @@
                         <CheckBox x:Name="ChkEnableOverlay" Content="Overlay Click-Through (0% GPU)" Foreground="#F1F5F9" Margin="0,0,18,6" />
                         <CheckBox x:Name="ChkOverlayCompact" Content="Overlay Compacto (estilo pill)" Foreground="#F1F5F9" Margin="0,0,18,6" />
                         <CheckBox x:Name="ChkEnableHotkeys" Content="Teclas Globales (Win32)" Foreground="#F1F5F9" Margin="0,0,18,6" />
-                        <CheckBox x:Name="ChkMinimizeToTray" Content="Minimizar a Bandeja del Sistema" Foreground="#38BDF8" Margin="0,0,0,6" />
+                        <CheckBox x:Name="ChkMinimizeToTray" Content="Minimizar a Bandeja del Sistema" Foreground="#38BDF8" Margin="0,0,18,6" />
+                        <CheckBox x:Name="ChkEnableAudioCues" Content="Tonos sutiles (Pausa/Mic/PTT)" Foreground="#F1F5F9" Margin="0,0,0,6" ToolTip="Emite un tono suave de confirmación al pausar, alternar micrófono o pulsar Push-to-Talk (silenciado en modo Solo Texto)." />
                     </WrapPanel>
 
                     <Grid Margin="0,0,0,10">

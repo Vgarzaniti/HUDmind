@@ -1,104 +1,81 @@
-# Arquitectura Técnica — HUDMind (v0.5.0 — ISO/IEC/IEEE 42010)
+# Arquitectura Técnica — HUDMind Native v1.1.0 (ISO/IEC/IEEE 42010)
 
-Este documento describe la arquitectura **Event-Driven**, los patrones de diseño, el enrutador multi-proveedor IA, el modelo de concurrencia y los registros de decisión arquitectónica (ADRs) de **HUDMind**.
+Este documento describe la arquitectura modular de **HUDMind Native** sobre **.NET 9**, su separación estricta entre lógica pura, capa Win32 y UI WPF, sus motores polimórficos y sus Registros de Decisión de Arquitectura (ADRs).
 
 ---
 
 ## 1. Principios de Diseño
 
-1. **Impacto imperceptible en FPS del juego:** Proceso en prioridad Windows `BELOW_NORMAL`, compuerta pre-captura que omite `BitBlt` durante cooldowns o pérdida de foco, captura `MSS` zero-copy desde `raw.raw`, y compresión `JPEG` baseline en **~2.4 ms** (pipeline completo en **~13.7 ms** a 1360×768).
-2. **Frescura sobre completitud (*Drop-Oldest*):** Las colas asíncronas (`maxsize=1`) descartan frames y audios obsoletos cerrando inmediatamente sus buffers `PIL.Image`.
-3. **Economía extrema de tokens:**
-   - **Gemini 2.5 Flash:** *Context Caching* + `ThinkingConfig(thinking_budget=0)` (ahorra 300–1,500 tokens ocultos de razonamiento por frame) + `_CoachWireSchema` compacto (-95 tokens/frame).
-   - **OpenAI / Claude / Groq / OpenRouter / Ollama:** Prefijo estático unificado en `system` (`> 1,024` tokens) con `cache_control: {"type": "ephemeral"}` en Claude y compactación automática de markdown (-18% tokens).
-   - **Modo `eco` (`896×504`):** Respeta la frontera vertical de tile `<= 512px` (reduciendo tiles `512×512` de 4 a 2) y activa `"detail": "low"` (85 tokens fijos) en proveedores compatibles.
-4. **Alta disponibilidad por rotación de cuota (*Multi-Provider Failover*):** Si una cuenta agota tokens (`HTTP 429/402`) o falla, `ProviderFailoverRouter` conmuta en el mismo frame a la siguiente cuenta configurada (incluyendo motores locales gratuitos sin login como **Ollama**).
+1. **Separación de Responsabilidades y Portabilidad (`Core` vs `Windows` vs `App`):**
+   - `HUDMind.Core` (`net9.0`, 100% multiplataforma): modelos, configuración atómica, seguridad SSRF/CWE-22/redacción, protocolo compacto, memoria anti-repetición, registro extensible de proveedores, failover router y ambos orquestadores (`CoachOrchestrator` y `RealtimeLiveCoachOrchestrator`).
+   - `HUDMind.Windows` (`net9.0-windows10.0.19041.0`): captura GDI `StretchBlt`, detección de proceso/ventana cliente, WinRT OCR, Valve GSI TCP, Riot TLS client, tailers de logs, Win32 hotkeys/PTT, audio WinMM streaming y tonos `PlaySoundW`.
+   - `HUDMind.App` (`net9.0-windows10.0.19041.0` WPF): `MainWindow`, `OverlayWindow`, `Win32TrayIcon` y `CoachEngineCoordinator`.
+2. **0% GPU y Anticheat-Safe por construcción:**
+   - Renderizado WPF forzado por CPU (`RenderMode.SoftwareOnly`).
+   - Captura sin hooks invasivos ni inyección de procesos; detección por `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` cacheada por `(HWND, PID)` y PTT mediante consulta directa `GetAsyncKeyState`.
+3. **Frescura sobre completitud:**
+   - Colas acotadas *Drop-Oldest*, *Freshness Deadline* en consejos automáticos, supresión local de pantallas de menú/carga/replay y memoria semántica anti-repetición.
 
 ---
 
-## 2. Diagrama de Flujo de Datos (ASCII)
+## 2. Diagrama de Flujo y Capas
 
 ```text
 +-----------------------------------------------------------------------------------+
-|                   HUDMindGUI (src/ui/gui.py + user_store.py)                      |
-|  - Gestión Multi-Cuenta IA (config/accounts.json, 0o600, gitignored)              |
-|  - Idioma Dual (Texto ES/EN | Voz ES/EN), Estilo Overlay + Preview Click-Through  |
-|  - Lanza Coach en subproceso aislado (o modo "Iniciar y Cerrar GUI" = 0 MB RAM)   |
+|                        HUDMind.App (WPF · RenderMode.SoftwareOnly)                |
+|  MainWindow (4 pestañas)  |  OverlayWindow (WS_EX_TRANSPARENT)  |  Win32TrayIcon  |
 +-----------------------------------------+-----------------------------------------+
                                           |
-                        +-----------------v---------------------+
-                        |   GameProfileLoader (Process Watcher) |
-                        |  psutil + pywin32 ((HWND, PID) cache) |
-                        +-----------------+---------------------+
-                                          |
-+------------------------+     +----------v--------------+     +-----------------------------+
-|    CaptureStrategy     |     |     ScreenObserver      |     |   Chain of Responsibility   |
-| (MSS raw.raw /         +---->|  Pre-Capture Gate       +---->|     (CPU Pre-AI Filter)     |
-|  VideoMock / DXCam)    |     |  + Queue(maxsize=1,     |     | 1. FocusFilter (O(1))       |
-+------------------------+     |    Drop-Oldest + close) |     | 2. CooldownFilter (O(1))    |
-                               +-------------------------+     | 3. PerceptualHash (BOX 32)  |
-+------------------------+                  ^                  | 4. ImageOptimizer (JPEG/WebP|
-|  GlobalHotkeyManager   |                  |                  |    720p o Eco 896x504)      |
-|  Win32 RegisterHotKey  +------------------+                  +--------------+--------------+
-|  F9 Pause | F10 Force  |                                                    |
-+------------------------+                                       [Compressed Bytes + Memory]
-                                                                              v
-+--------------------------------------------------------------------------------------------+
-|                      ProviderFailoverRouter (src/ai/providers.py)                          |
-|  Prioridad #1 -> #2 -> #N (Rotación instantánea en HTTP 429 / 402 / 401 / 403 / 5xx)       |
-|  +------------------------+  +---------------------------+  +---------------------------+  |
-|  | GeminiProviderAdapter  |  | OpenAICompatibleProvider  |  | AnthropicClaudeProvider   |  |
-|  | (Context Cache +       |  | (ChatGPT, Groq,           |  | (Ephemeral System Cache + |  |
-|  |  thinking_budget=0 +   |  |  OpenRouter :free,        |  |  Base64 Vision)           |  |
-|  |  _CoachWireSchema)     |  |  Pollinations, Ollama)    |  +---------------------------+  |
-+--+------------------------+--+---------------------------+---------------------------------+
-                                              |
-                                       [CoachResponse]
-                                              v
-                     +-------------------------------------------------+
-                     | InterventionStateMachine + InterventionMemory   |
-                     | (IDLE -> ANALYZING -> DELIVERING -> COOLDOWN)   |
-                     | (Rolling deque maxlen=3, TTL=90s anti-repeat)   |
-                     +-----------+-------------------------+-----------+
-                                 |                         |
-                 +---------------+                         +---------------+
-                 v                                                         v
-   +---------------------------+                             +---------------------------+
-   |   TransparentOverlay      |                             |       VoiceService        |
-   |  Tkinter + Win32 64-bit   |                             |  TTSEngine Strategy       |
-   |  WS_EX_TRANSPARENT        |                             |  (EdgeTTS / Pyttsx3 /     |
-   |  5 Themes, DPI Aware v2   |                             |   Piper) + pygame.mixer   |
-   +---------------------------+                             +---------------------------+
+                                          v
++-----------------------------------------------------------------------------------+
+|                    CoachEngineCoordinator (Services/CoachEngineCoordinator.cs)    |
+|  - Selecciona polimórficamente ICoachEngine (Live WebSocket o Clásico HTTP/2)      |
+|  - Administra LoopbackGsiService (:47315), Win32GlobalHotkeyManager y PTT/Cues     |
++-----------------------+-----------------------------------+-----------------------+
+                        |                                   |
+        [Live WebSocket ICoachEngine]         [Clásico Turnos ICoachEngine]
+                        v                                   v
++---------------------------------------+   +---------------------------------------+
+| RealtimeLiveCoachOrchestrator (Core)  |   | CoachOrchestrator (Core)              |
+| - GeminiLiveBackend / OpenAIRealtime  |   | - Capture Channel (Bounded DropOldest)|
+| - Mic PCM 16kHz + VAD + PTT + BargeIn |   | - ProviderFailoverRouter + Hedged     |
+| - Video frames periódicos + F10/Chat  |   | - HybridVoiceService (Neural/OneCore) |
++-------------------+-------------------+   +-------------------+-------------------+
+                    |                                           |
+                    +---------------------+---------------------+
+                                          v
++-----------------------------------------------------------------------------------+
+|                         HUDMind.Windows (Sensores & Captura)                      |
+|  FastScreenCapture (StretchBlt+dHash) | Win32WindowDetector | TextOnlySensorService|
+|  ValveGsiTelemetrySensor | LeagueLiveClientSensor | RocketLeague/ValorantLogSensor |
++-----------------------------------------------------------------------------------+
 ```
 
 ---
 
 ## 3. Patrones de Diseño Aplicados
 
-1. **Strategy Pattern:**
-   - **Captura (`src/capture/base.py`, `src/capture/mss_capture.py`):** `MSSCaptureStrategy`, `VideoMockCaptureStrategy`, `DXCamCaptureStrategy`.
-   - **Proveedores IA (`src/ai/providers.py`):** `BaseAIProvider` con adaptadores `GeminiProviderAdapter`, `OpenAICompatibleProvider` (OpenAI, Groq, OpenRouter, Pollinations, Ollama, LM Studio) y `AnthropicClaudeProvider`.
-   - **Perfiles de Juego (`src/profiles/loader.py`):** Cartuchos declarativos en `profiles/<game_id>/` (`example_cs2`, `example_valorant`).
-   - **Síntesis de Voz (`src/output/tts.py`):** `EdgeTTSEngine`, `Pyttsx3TTSEngine`, `PiperTTSEngine`.
-2. **Observer / Pub-Sub Asíncrono con Compuerta Pre-Captura (`src/capture/observer.py`):**
-   - Evalúa `should_capture()` antes de llamar a `capture_frame()` (evitando `BitBlt` en cooldown o fuera de foco) y publica en colas `maxsize=1` con política *Drop-Oldest* y cierre seguro de `PIL.Image`.
-3. **Chain of Responsibility (`src/pipeline/filters.py`):**
-   - Orden optimizado por costo computacional: `FocusFilter (O(1))` → `CooldownFilter (O(1))` → `PerceptualHashFilter (BOX 32×32)` → `ImageOptimizer (resize directo + JPEG/WebP)`.
-4. **State Machine + Rolling Anti-Repetition Memory (`src/pipeline/schemas.py`):**
-   - `InterventionStateMachine` thread-safe gobierna las transiciones y `InterventionMemory` (`maxlen=3`, `ttl=90s`) evita consejos repetidos.
+1. **Strategy / Polimorfismo (`ICoachEngine`, `IAIProvider`, `ILiveRealtimeBackend`, `IGameTelemetrySensor`):**
+   - `ICoachEngine` unifica ciclo de vida, pausa, análisis forzado `F10`, chat de texto, cambios en vivo y resumen de partida entre el motor Live WebSocket y el motor Clásico por turnos.
+   - `IGameTelemetrySensor` desacopla los sensores locales (`ValveGsiTelemetrySensor`, `LeagueLiveClientSensor`, `RocketLeagueLogSensor`, `ValorantLogSensor`), con jerarquía compartida `TailLogSensorBase` para tailing seguro UTF-8/UTF-16 LE.
+2. **Extensible Registry (`ProviderRegistry`):**
+   - Centraliza presets (`groq`, `gemini`, `openai`, `xai`, `claude`, `openrouter`, `mistral`, `pollinations`, `airforce`, `ollama`), URLs por defecto, capacidades (`SupportsLiveWebSocket`, `SupportsFastHedgedVision`, `IsKeylessAllowed`) y factorías de adaptadores HTTP/Live en un solo punto.
+3. **Failover + Speculative Hedging (`ProviderFailoverRouter`):**
+   - Si una cuenta falla o limita cuota (`429`/`402`/`5xx`), rota automáticamente. En proveedores con `SupportsFastHedgedVision`, dispara una carrera especulativa si el primario supera el umbral de latencia, evitando errores no observados y descartando respuestas tardías si expiró la frescura automática.
+4. **Sensores Perezosos Ciego-Texto (`TextOnlySensorService` + `HudPhaseClassifier`):**
+   - Cuando la cuenta activa soporta visión, el costo OCR es `0 ms`. Solo ante cuentas solo-texto (`SupportsVision == false`) o evaluación de compuerta local en Live ejecuta WinRT OCR por zonas + sensores de juego para describir la partida sin enviar píxeles.
 
 ---
 
 ## 4. Modelo de Concurrencia
 
-| Componente | Modelo de Ejecución | Justificación |
+| Subsistema | Primitiva / Hilo | Garantía Principal |
 | :--- | :--- | :--- |
-| Orquestador, Observer, Failover Router | `asyncio` (hilo principal) | I/O de red no bloqueante (`google-genai aio` y `aiohttp` con `DummyCookieJar`). |
-| Captura `mss`, `pHash`, compresión Pillow | `asyncio.to_thread` | Evita bloquear el *event loop* en operaciones CPU/GDI síncronas. |
-| Overlay `Tkinter` + Win32 | Hilo dedicado (`daemon=True`) | Aislado en `_run_tk_session()` + `gc.collect()` en el propio hilo Tk para evitar `Tcl_AsyncDelete`. |
-| Hotkeys Globales `F9` / `F10` | Hilo dedicado (`win32-hotkey-thread`) | Bloquea en `GetMessageW` (0% CPU) con `RegisterHotKey` y despacha a `asyncio` vía `call_soon_threadsafe`. |
-| Síntesis y Audio TTS | `asyncio` + `asyncio.to_thread` | Protegido con `_MIXER_LOCK` global, inicialización COM (`CoInitialize`) en `pyttsx3` y `music.unload()`. |
-| Panel de Configuración (`HUDMindGUI`) | Proceso principal o lanzamiento desacoplado | Lanza el coach en un subproceso con `CREATE_NEW_PROCESS_GROUP` y parada limpia vía `CTRL_BREAK_EVENT`. |
+| UI Principal & Overlay WPF | Hilo UI (`Dispatcher`) | Actualizaciones no bloqueantes vía `Dispatcher.BeginInvoke`; layout click-through sin robar foco al juego. |
+| Captura & Pipeline HTTP | `Channel<CapturedFrameData>` + `Task` async | Política `BoundedChannelFullMode.DropOldest` con capacidad `1`; `F10` despierta inmediatamente. |
+| Audio Live (Mic + Speaker) | Threads WinMM / Cola PCM (`Win32StreamingMicCapture` & `Win32StreamingPcmPlayer`) | Captura 16kHz y reproducción 24kHz en memoria; supresión de eco e interrupción instantánea (*barge-in*). |
+| Hotkeys Globales | Hilo dedicado Win32 (`GetMessage`) | `RegisterHotKey` + `PostThreadMessage(WM_QUIT)` en cierre ordenado; `0%` CPU en espera. |
+| Receptor GSI CS2/Dota2 | `TcpListener` loopback + `SemaphoreSlim(4)` | Máximo 4 sockets simultáneos con `CancellationTokenSource` acotado y limpieza en `Stop()`. |
 
 ---
 
@@ -106,14 +83,10 @@ Este documento describe la arquitectura **Event-Driven**, los patrones de diseñ
 
 | ADR | Decisión | Alternativa Descartada | Justificación |
 | :--- | :--- | :--- | :--- |
-| **ADR-001** | `Context Caching` en Gemini + `ThinkingConfig(thinking_budget=0)` + `_CoachWireSchema` | RAG vectorial local o thinking por defecto | Elimina 300–1,500 tokens ocultos de razonamiento por frame, ahorra ~95 tokens de esquema y reduce la latencia a sub-segundo. |
-| **ADR-002** | `asyncio.Queue(maxsize=1)` con *Drop-Oldest* + compuerta `should_capture` | Cola FIFO o captura continua en cooldown | Evita *backpressure* y elimina ~75–85% de llamadas `BitBlt` a GPU/DWM durante períodos de enfriamiento. |
-| **ADR-003** | `Tkinter` + Win32 `WS_EX_TRANSPARENT` + Per-Monitor DPI Awareness v2 | `PyQt6` / Electron | Cero dependencias pesadas, 5 temas visuales y *click-through* verificado en Windows 64-bit. |
-| **ADR-004** | `pHash` `BOX 32×32` + JPEG baseline (~2.4 ms) + modo `eco` `896×504` | WebP `method=4` (~287 ms) o `960×540` (>512px) | `896×504` no cruza la frontera vertical de tile de `512px` (mitad de tiles de visión) y JPEG reduce la carga CPU 18×. |
-| **ADR-005** | `SecretStr` + `SecretRedactingFilter` multi-patrón + `base_url` anti-SSRF/HTTPS | Strings planos y URLs sin validar | Cumple ISO/IEC 27001 y OWASP (CWE-319, CWE-532, CWE-598, CWE-918), redactando incluso objetos `Exception`. |
-| **ADR-006** | `ProviderFailoverRouter` multi-cuenta con Prefix/Ephemeral Caching | Cliente único acoplado a un solo proveedor | Permite apilar cuentas gratuitas/pagas y rotar en el mismo frame ante `HTTP 429/402`, con soporte offline sin login vía `Ollama`. |
-| **ADR-007** | Win32 `RegisterHotKey` (`F9`/`F10`) sin hooks globales | Librería `keyboard` (`WH_KEYBOARD_LL`) | Los hooks de bajo nivel son marcados por motores anti-cheat competitivos (Vanguard/FACEIT); `RegisterHotKey` es 100% seguro. |
-| **ADR-008** | `HUDMindGUI` en `tkinter/ttk` con imports diferidos y subproceso desacoplado | GUI pesada corriendo en el mismo loop que el overlay | Abre en ~52 MB RSS y permite cerrar la GUI al iniciar partida (**0 MB RAM extra** mientras jugás). |
-| **ADR-009** | Recorte dinámico del área útil de la ventana del juego (`GetClientRect` + `ClientToScreen`) y caché LRU (`32` frases) en `EdgeTTSEngine` | Capturar monitor entero con bordes de Windows y re-sintetizar MP3 repetidos por red | Elimina barras de título y escritorios adyacentes en modo ventana y reduce a `0 ms` / `0 KB` de red las frases tácticas frecuentes. |
-| **ADR-010** | Reglas personalizadas por juego (`custom_rules.md`) con semáforo de impacto en tokens y creador de perfiles en GUI | Editar manualmente archivos Markdown del sistema base | Mantiene intacta la base oficial (`base_knowledge_base`) y alerta al usuario cuando sus reglas superan `200`/`500` tokens extra. |
-| **ADR-011** | `TelemetryStore` (`config/telemetry.json`) + `CircularGauge` (`0-100%`) en `tk.Canvas` con inferencia heurística `<0.05 ms` | Librerías pesadas de gráficos (`matplotlib`/`plotly`) o llamadas extra a la IA para puntuar la partida | Cero costo en tokens de IA y 0 MB de dependencias externas; calcula en tiempo real los 5 ejes de estilo de juego, el rendimiento `0-100%` y el gasto/ahorro por modelo. |
+| **ADR-001** | Migración de Python a **.NET 9 Nativo sin NuGet externos** | Empaquetado Python (`PyInstaller`) o dependencias pesadas | Elimina overhead de intérprete, reduce uso de RAM/arranque, compila a binario único (`HUDMind.Native.exe`) y elimina riesgo de cadena de suministro NuGet. |
+| **ADR-002** | `RenderMode.SoftwareOnly` + GDI `StretchBlt` hacia `Bitmap` único reutilizable | WPF Hardware D3D o capturas DXGI pesadas | Deja el **100% de la GPU libre** para el videojuego y evita asignaciones GC repetidas por frame. |
+| **ADR-003** | División estricta `HUDMind.Core` (`net9.0`) vs `HUDMind.Windows` (`net9.0-windows`) | Proyecto monolítico acoplado a WinForms/WPF | Permite correr la suite `HUDMind.Tests` tanto en Linux (`ubuntu-latest`) como en Windows en CI/CD. |
+| **ADR-004** | `ProviderRegistry` + adaptadores desacoplados con `BaseUrlSecurityValidator` | `switch` dispersos por UI y router | Permite sumar nuevos proveedores o endpoints privados HTTPS en runtime sin duplicar validaciones SSRF. |
+| **ADR-005** | Activación perezosa de WinRT OCR y sensores solo en cuentas sin visión o gate Live | Ejecutar OCR en cada frame sin importar el modelo | Ahorra ~50-150 ms de CPU cuando el modelo activo ya ve la pantalla, manteniendo coaching funcional incluso en LLMs solo-texto gratuitos. |
+| **ADR-006** | Protocolo `FASE\|QUE_VEO\|URG\|CONSEJO` + `HudPhaseClassifier` | Respuestas verbosas sin estructura | Minimiza tokens de salida (`<= 160`), facilita parseo instantáneo sin fallos de JSON parcial y filtra menús/replays de forma determinista. |
+| **ADR-007** | Confirmación sonora vía WAV embebido *pinned* (`Win32AudioCue` + `PlaySoundW`) | Síntesis TTS o archivos WAV externos en disco | Latencia de disparo en microsegundos, cero I/O de disco y silencio garantizado cuando `text_only` o `EnableAudioCues=false`. |

@@ -64,6 +64,7 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                     if (!sensor.HasOcrEngine)
                         onLog("ℹ️ Windows OCR sin packs de idioma instalados (filtro local de menús por OCR desactivado).");
 
+                    int prevPttHeld = 0;
                     engine = new RealtimeLiveCoachOrchestrator(
                         liveBackend,
                         config,
@@ -79,7 +80,14 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                         onStats: onStats,
                         onPauseChanged: onPauseChanged,
                         localPhaseGate: sensor,
-                        isPttKeyPressed: () => Win32KeyStateProbe.IsPushToTalkKeyDown(config.PushToTalkKey)
+                        isPttKeyPressed: () =>
+                        {
+                            bool held = Win32KeyStateProbe.IsPushToTalkKeyDown(config.PushToTalkKey);
+                            int prev = Interlocked.Exchange(ref prevPttHeld, held ? 1 : 0);
+                            if (held && prev == 0 && config.IsPushToTalkMode && config.EnableAudioCues && !config.IsTextOnlyMode)
+                                Win32AudioCue.Play(AudioCueKind.SoftOn);
+                            return held;
+                        }
                     );
                 }
                 catch

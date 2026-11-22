@@ -298,6 +298,9 @@ public sealed class UserConfig
     [JsonPropertyName("token_efficiency_mode")]
     public string TokenEfficiencyMode { get; set; } = "eco";
 
+    [JsonPropertyName("enable_audio_cues")]
+    public bool EnableAudioCues { get; set; } = true;
+
     /// <summary>
     /// Synchronizes mutable runtime preferences when a caller provides a separate UserConfig instance.
     /// </summary>
@@ -330,6 +333,7 @@ public sealed class UserConfig
         MinInferenceIntervalSeconds = source.MinInferenceIntervalSeconds;
         ImageCompressionQuality = source.ImageCompressionQuality;
         TokenEfficiencyMode = source.TokenEfficiencyMode;
+        EnableAudioCues = source.EnableAudioCues;
         SetCommunicationMode(source.CommunicationMode);
     }
 

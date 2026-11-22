@@ -9,5 +9,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\HUDMind.Core\HUDMind.Core.csproj" />
+    <InternalsVisibleTo Include="HUDMind.Windows.Tests" />
   </ItemGroup>
 </Project>

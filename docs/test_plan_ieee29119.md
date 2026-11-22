@@ -1,72 +1,48 @@
-# Plan y Reporte de Pruebas de Software — ISO/IEC/IEEE 29119 / IEEE 829
+# Plan y Reporte de Pruebas de Software — ISO/IEC/IEEE 29119
 
-**Proyecto:** HUDMind v0.5.0  
-**Entorno de Ejecución Verificado:** Windows 11 (x64) · Python 3.13.0 · `.venv` aislado  
-**Herramientas QA (IEEE 730):** `pytest 9.2`, `pytest-asyncio 1.5`, `mypy 2.4`, `ruff 0.17`
+**Proyecto:** HUDMind Native v1.1.0 (`.NET 9`)  
+**Suites Automatizadas:** `native/HUDMind.Tests` (31 casos `net9.0` multiplataforma) + `native/HUDMind.Windows.Tests` (6 casos `net9.0-windows10.0.19041.0`)  
+**Integración Continua:** [`.github/workflows/ci.yml`](file:///c:/Users/Hogar/Desktop/CouchIA/.github/workflows/ci.yml) (`native-dotnet9-tests` en `ubuntu-latest` + `native-windows-build` en `windows-latest`)
 
 ---
 
-## 1. Estrategia de Verificación y Niveles de Prueba
+## 1. Estrategia y Niveles de Prueba
 
-1. **Análisis Estático y Seguridad (IEEE 730 / ISO 25010 Mantenibilidad y Seguridad):**
-   - `ruff check src tests`: reglas `E`, `W`, `F`, `I`, `B`, `UP`, `SIM`, `S` (Bandit security checks).
-   - `mypy src tests`: tipado estricto en los **31 archivos fuente y de prueba**.
-2. **Pruebas Unitarias (`tests/`):**
-   - `tests/test_schemas_and_settings.py`: `CoachResponse`, `InterventionStateMachine` thread-safe, `SecretRedactingFilter` multi-proveedor (incluyendo objetos `Exception` y actualización dinámica de filtros) y `RuntimeMetrics`.
-   - `tests/test_profiles_and_filters.py`: Validación CWE-22 en perfiles, compactación markdown, persistencia de `custom_rules.md`, creación de perfiles desde wizard (`create_profile_skeleton`), cadena `Focus -> Cooldown -> pHash -> ImageOptimizer` y modo `eco` (`896×504` `<= 512px` tile boundary).
-   - `tests/test_observer_and_capture.py`: `VideoMockCaptureStrategy`, política *Drop-Oldest*, `pause`/`resume` con `asyncio.Event`, compuerta pre-captura `should_capture` y recorte dinámico por `region_provider`.
-   - `tests/test_gemini_client.py`: Context Caching, fallback automático por mínimo de tokens, recuperación inline `HTTP 404` y Circuit Breaker ante `HTTP 401/403`.
-   - `tests/test_providers_and_store.py`: `ProviderFailoverRouter` (rotación silenciosa en `HTTP 429` y pool gratuito automático `build_auto_free_fallback_accounts`), `TelemetryStore` (partidas del día/históricas, círculos `0-100` de estilo y gasto/ahorro por modelo), extracción JSON no-greedy, protección anti-SSRF/HTTPS en `base_url`, envío de `x-goog-api-key` por header y persistencia atómica `0o600`.
-   - `tests/test_tts_and_memory.py`: Fallback `EdgeTTSEngine -> Pyttsx3TTSEngine`, caché LRU en RAM de `EdgeTTSEngine`, cola *Drop-Oldest* de `VoiceService`, `InterventionMemory` (TTL y `maxlen`), `GlobalHotkeyManager` y `parse_hotkey_string` (teclas configurables y modificadores `Ctrl`/`Alt`/`Shift`), carga de los 5 perfiles (`example_cs2`, `example_valorant`, `aoe2_de`, `rocket_league`, `rob_run`) y `--training-mode`.
-3. **Pruebas de Integración End-to-End:**
-   - `tests/test_integration_orchestrator.py`: `GameCopilotOrchestrator` completo en `--dry-run` y con cliente IA mockeado validando cooldown, memoria anti-repetición e interrupción manual `F10`.
+1. **Suite Multiplataforma de Lógica y Seguridad (`HUDMind.Tests` — 31 pruebas):**
+   - Cubre protocolo compacto, hashing perceptual (`dHash` 64-bit), memoria anti-repetición y aislamiento de chat, redacción de secretos, validación SSRF/HTTPS/CWE-22, failover router, *Hedged Vision*, *Freshness Deadline*, adaptadores Gemini/Anthropic/OpenAI-compatible, Live backends (Gemini Live / OpenAI / xAI Realtime), Push-to-Talk, resúmenes post-partida, extensibilidad de `ProviderRegistry`, contrato polimórfico `ICoachEngine`, `HudPhaseClassifier`, DSP PCM y creación persistente de perfiles/resúmenes.
+2. **Suite Nativa Windows / Win32 / Sensores / Audio (`HUDMind.Windows.Tests` — 6 pruebas):**
+   - Cubre enumeración/resolución `Win32AudioDevices` (`winmm.dll`), receptor TCP loopback HTTP `LoopbackGsiService` (CS2 + Dota 2 + limpieza al volver a menú + rechazo HTTP `413`/`400` chunked + cierre acotado con cliente colgado + validación anti-UNC/reparse), `TailLogSensorBase` (UTF-8, UTF-16 LE, cutoff de antigüedad y scope por juego), `LeagueLiveClientSensor` (pinning X.509/SAN/Riot Games/vigencia), y prueba integrada de `Win32DisplayHelper`, `Win32KeyStateProbe`, `Win32WindowDetector`, `FastScreenCapture` y `Win32AudioCue`.
 
 ---
 
 ## 2. Matriz de Trazabilidad de Requisitos (RTM — ISO/IEC/IEEE 29148 ↔ 29119)
 
-| Requisito | Descripción Resumida | Caso(s) de Prueba | Estado |
-| :--- | :--- | :--- | :--- |
-| **REQ-FUNC-01 / 02** | Detección `.exe`, carga multi-perfil y compactación | `test_profile_loader_loads_example_and_blocks_traversal`, `test_multi_game_profiles_load_both_cs2_and_valorant` | PASS |
-| **REQ-FUNC-03** | Estrategias intercambiables de captura | `test_video_mock_directory_sequence` + `--health-check` | PASS |
-| **REQ-FUNC-04** | Pub/Sub *Drop-Oldest* + compuerta pre-captura | `test_screen_observer_drop_oldest_and_pause`, `test_screen_observer_pre_capture_gate_skips_grab_during_cooldown` | PASS |
-| **REQ-FUNC-05** | Chain of Responsibility Pre-IA + modo `eco` `896×504` | `test_filter_chain_focus_phash_cooldown_and_resize` | PASS |
-| **REQ-FUNC-06** | Context Caching + fallback inline automático | `test_context_cache_success_and_clean_close`, `test_context_cache_min_tokens_automatic_fallback` | PASS |
-| **REQ-FUNC-07** | Structured Outputs + State Machine thread-safe | `test_coach_response_actionable_logic`, `test_state_machine_full_lifecycle` | PASS |
-| **REQ-FUNC-08** | Overlay transparente *click-through* + 5 temas | `--health-check` (`Win32 WS_EX_TRANSPARENT verificado=True`) + smoke test GUI | PASS |
-| **REQ-FUNC-09** | Motor TTS asíncrono con fallback offline y *Drop-Oldest* | `test_edge_tts_falls_back_to_offline_engine_on_network_error`, `test_voice_service_drop_oldest_never_queues_stale_lines` | PASS |
-| **REQ-FUNC-10** | Modos CLI (`--test-mode`, `--dry-run`, `--health-check`, `--gui`) | `test_orchestrator_dry_run_end_to_end` | PASS |
-| **REQ-FUNC-11 / 12** | Hotkeys `F9`/`F10` + Memoria anti-repetición | `test_hotkey_manager_dispatches_callbacks_and_respects_disabled`, `test_intervention_memory_maxlen_ttl_and_prompt_formatting`, `test_orchestrator_mocked_ai_intervention_cooldown_and_f10_on_demand` | PASS |
-| **REQ-FUNC-13 / 14** | Multi-Proveedor IA con rotación en `HTTP 429` + Store GUI | `test_failover_router_rotates_on_quota_429_to_second_account`, `test_user_store_saves_and_reloads_accounts_and_preferences` | PASS |
-| **REQ-FUNC-15** | Idiomas independientes de texto y voz (`es`/`en`) | `test_extract_json_handles_markdown_fences_and_language_directive`, `test_failover_router_rotates_on_quota_429_to_second_account` | PASS |
-| **REQ-FUNC-16 / 17** | 5 perfiles multi-género, `--training-mode`, `custom_rules.md` y wizard de perfiles | `test_multi_game_profiles_load_both_cs2_and_valorant`, `test_custom_rules_persistence_and_new_profile_skeleton` | PASS |
-| **REQ-FUNC-18** | Telemetría de Uso/Gasto IA por Modelo + Gráficos Circulares `0-100%` | `test_telemetry_store_tracks_matches_playstyle_gauges_and_model_costs`, `test_auto_free_fallback_appends_keyless_providers_and_rotates_silently` | PASS |
-| **REQ-NFR-01 / 02** | Latencia CPU `< 60 ms`, ahorro de tokens y RAM | Benchmarks reales Windows 11 (`13.74 ms/frame` JPEG, GUI `52.2 MB` RSS) | PASS |
-| **REQ-NFR-03 / 04** | Recuperación `HTTP 404`, Circuit Breaker y cierre limpio | `test_cache_expiration_404_recovers_inline_and_circuit_breaker` | PASS |
-| **REQ-SEC-01 / 02** | Cabecera `x-goog-api-key` y redacción multi-proveedor en logs | `test_gemini_test_connection_uses_header_and_never_exposes_key_in_url`, `test_secret_redacting_filter_iso27001`, `test_settings_placeholder_key_rejected` | PASS |
-| **REQ-SEC-03 / 05** | Prevención Path Traversal (CWE-22) y SSRF/HTTPS (CWE-918/319) | `test_manifest_security_and_bounds_validation`, `test_provider_account_ssrf_and_https_validation` | PASS |
+| Requisito | Descripción Resumida | Casos de Prueba Verificados |
+| :--- | :--- | :--- |
+| **REQ-FUNC-01 / 02** | Perfiles, reglas custom, creador CWE-22 y `.exe` | `HUDMind.Tests` (`06`, `24`, `30`), `HUDMind.Windows.Tests` (`W6`) |
+| **REQ-FUNC-03** | Captura GDI `StretchBlt` + pHash | `HUDMind.Tests` (`02`), `HUDMind.Windows.Tests` (`W6`) |
+| **REQ-FUNC-04** | Modos `conversation`, `coach_voice` y `text_only` | `HUDMind.Tests` (`16`, `23`) |
+| **REQ-FUNC-05** | Protocolo `FASE\|QUE_VEO\|URG\|CONSEJO` y supresión menú/replay | `HUDMind.Tests` (`01`, `13`, `29`) |
+| **REQ-FUNC-06** | `ProviderRegistry`, failover `429/422`, *Hedged Vision* y *Freshness* | `HUDMind.Tests` (`07`, `08`, `09`, `10`, `11`, `20`, `21`, `28`) |
+| **REQ-FUNC-07** | Sensores pasivos GSI TCP, Riot Live TLS, logs UE/Valorant y OCR | `HUDMind.Tests` (`13`), `HUDMind.Windows.Tests` (`W2`, `W3`, `W4`, `W5`) |
+| **REQ-FUNC-08 / 11** | Persona por rango/tier, memoria anti-repetición y resumen post-partida | `HUDMind.Tests` (`03`, `15`, `18`, `19`, `27`, `31`) |
+| **REQ-FUNC-09 / 10** | Live WebSocket, PTT, hotkeys, audio WinMM y tonos sutiles | `HUDMind.Tests` (`12`, `14`, `22`, `23`, `24`, `25`, `26`, `29`, `31`), `HUDMind.Windows.Tests` (`W1`, `W6`) |
+| **REQ-SEC-01..05** | Redacción, SSRF, CWE-22, UNC, HTTP bounds y TLS loopback pinning | `HUDMind.Tests` (`04`, `05`, `06`, `17`, `24`, `30`, `31`), `HUDMind.Windows.Tests` (`W2`, `W3`, `W5`) |
 
 ---
 
-## 3. Resultados Reales de Ejecución y Benchmarks en Windows 11
-
-| Gate / Prueba | Resultado | Métrica Verificada |
-| :--- | :---: | :--- |
-| `ruff check src tests` | **PASS** | **0 errores** (incluyendo reglas de seguridad Bandit `S`) |
-| `mypy src tests` | **PASS** | **0 errores** en **31 archivos** analizados |
-| `pytest` | **PASS** | **31/31 pruebas aprobadas** |
-| Overlay Windows 11 (`--health-check`) | **PASS** | `WS_EX_TRANSPARENT \| WS_EX_LAYERED` verificado con `GetWindowLongW` |
-| Pipeline CPU (`pHash + 720p + JPEG`, 1360×768) | **PASS** | **13.74 ms/frame** · pico RAM Python `97 KB` · payload `25.6 KB` |
-| Pipeline CPU (`pHash + 720p + JPEG`, 1920×1080) | **PASS** | **19.85 ms/frame** · pico RAM Python `96 KB` · payload `25.6 KB` |
-| Huella RAM GUI (`HUDMindGUI` con lazy imports) | **PASS** | **52.2 MB RSS** abierta · **0 MB** en modo *"Iniciar y Cerrar GUI"* |
-
----
-
-## 4. Comandos de Reproducción
+## 3. Comandos de Ejecución Local y CI
 
 ```powershell
-.\.venv\Scripts\ruff.exe check src tests
-.\.venv\Scripts\mypy.exe src tests
-.\.venv\Scripts\pytest.exe
-.\.venv\Scripts\hudmind.exe --health-check
+# 1. Compilar toda la solución (0 warnings, 0 errors esperado)
+dotnet build native/HUDMind.sln -c Release
+
+# 2. Ejecutar suite multiplataforma Core (31 pruebas)
+dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build
+
+# 3. Ejecutar suite nativa Windows / Win32 / Sensores / Audio (6 pruebas)
+dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
+
+# 4. Publicar binario single-file win-x64 (dependiente de runtime .NET 9 Desktop)
+dotnet publish native/HUDMind.App/HUDMind.App.csproj -c Release -r win-x64 --no-self-contained -p:PublishSingleFile=true -p:DebugType=None -o dist/native
 ```
