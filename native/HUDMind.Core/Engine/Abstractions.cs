@@ -49,3 +49,23 @@ public interface ITextOnlySensorService
     Task<HudSensorSnapshot> ExtractAsync(byte[] jpegBytes, GameProfile profile, CancellationToken ct = default);
     void Reset();
 }
+
+/// <summary>
+/// Streaming 24kHz 16-bit mono PCM audio player for Gemini Live Native-Audio (&lt;10ms latency, 0% GPU).
+/// </summary>
+public interface IStreamingPcmPlayer : IDisposable
+{
+    void SetVolume(double volume);
+    void EnqueuePcm24k(byte[] pcmBytes);
+    void InterruptAndClear();
+}
+
+/// <summary>
+/// Streaming 16kHz 16-bit mono PCM microphone capture for live two-way voice conversation.
+/// </summary>
+public interface IStreamingMicCapture : IDisposable
+{
+    bool IsCapturing { get; }
+    bool TryStart(Action<byte[]> onPcm16kChunk, Action<string>? onError = null);
+    void Stop();
+}

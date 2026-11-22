@@ -39,9 +39,16 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
 
     private CoachOrchestrator? _orchestrator;
+    private GeminiLiveCoachOrchestrator? _liveOrchestrator;
     private bool _shutdownComplete;
     private bool _closingInProgress;
     private bool _syncingVoiceUi;
+
+    private bool IsAnyEngineRunning =>
+        (_orchestrator is { IsRunning: true }) || (_liveOrchestrator is { IsRunning: true });
+
+    private bool IsAnyEnginePaused =>
+        (_orchestrator?.IsPaused == true) || (_liveOrchestrator?.IsPaused == true);
 
     public MainWindow()
     {
@@ -77,6 +84,8 @@ public partial class MainWindow : Window
             SelectByTag(CmbVoiceGender, _config.VoiceGender);
             SelectByTag(CmbQuickGender, _config.VoiceGender);
             SelectByTag(CmbVoiceStyle, _config.VoiceStyle);
+            SelectByTag(CmbEngineType, _config.UseLiveConversational ? "live" : "classic");
+            ChkLiveMic.IsChecked = _config.EnableMic;
             SelectByContent(CmbLanguage, _config.VoiceLanguage);
             SelectByContent(CmbEfficiency, _config.TokenEfficiencyMode);
             SelectByContent(CmbOverlayPos, _config.OverlayPosition);
@@ -108,7 +117,7 @@ public partial class MainWindow : Window
     private void RefreshHotkeyButtonLabels()
     {
         BtnAnalyzeNow.Content = $"🎯 Analizar ({_config.HotkeyAnalyzeNow})";
-        bool paused = _orchestrator?.IsPaused == true;
+        bool paused = IsAnyEnginePaused;
         BtnPause.Content = paused
             ? $"▶ Reanudar ({_config.HotkeyTogglePause})"
             : $"⏸ Pausar ({_config.HotkeyTogglePause})";
@@ -194,7 +203,7 @@ public partial class MainWindow : Window
         await _lifecycleLock.WaitAsync();
         try
         {
-            if (_orchestrator is { IsRunning: true })
+            if (IsAnyEngineRunning)
             {
                 await ShutdownEngineCoreAsync(isAppClosing: false);
                 return;
@@ -205,42 +214,68 @@ public partial class MainWindow : Window
 
             bool testMode = GetSelectedTag(CmbRunMode) == "test";
             string? forcedId = CmbGameProfile.SelectedItem?.ToString();
-
-            var textOnlySensor = new TextOnlySensorService();
-            var router = new ProviderFailoverRouter(_accounts, onLog: AppendLog, textOnlySensor: textOnlySensor);
-            var windowDetector = new Win32WindowDetector();
-            var capture = new FastScreenCapture();
-            var voice = new HybridVoiceService(_repo.WorkspaceRoot);
+            bool wantLive = GetSelectedTag(CmbEngineType) == "live";
+            var geminiKey = _accounts.FirstOrDefault(a =>
+                a.Enabled &&
+                a.Provider.Equals("gemini", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(a.ApiKey))?.ApiKey.Trim();
 
             _overlay.Configure(_config.OverlayPosition, _config.OverlayWidth, _config.OverlayOpacity, _config.CaptureMonitor);
-
-            _orchestrator = new CoachOrchestrator(
-                _config,
-                _profiles,
-                router,
-                windowDetector,
-                capture,
-                voice,
-                _overlay,
-                testMode: testMode,
-                forcedGameId: forcedId,
-                onLog: AppendLog,
-                onStats: UpdateStatsUi,
-                onPauseChanged: OnPauseChanged
-            );
 
             BtnStartStop.IsEnabled = false;
             try
             {
-                await _orchestrator.StartAsync();
-                RegisterActiveHotkeys();
+                if (wantLive && !string.IsNullOrWhiteSpace(geminiKey))
+                {
+                    _liveOrchestrator = new GeminiLiveCoachOrchestrator(
+                        geminiKey,
+                        _config,
+                        _profiles,
+                        new Win32WindowDetector(),
+                        new FastScreenCapture(),
+                        new Win32StreamingPcmPlayer(),
+                        new Win32StreamingMicCapture(),
+                        _overlay,
+                        testMode: testMode,
+                        forcedGameId: forcedId,
+                        onLog: AppendLog,
+                        onStats: UpdateStatsUi,
+                        onPauseChanged: OnPauseChanged
+                    );
+                    await _liveOrchestrator.StartAsync();
+                    HeaderStatusText.Text = $"🎙 LIVE Conversacional · Voz {GeminiLiveCoachOrchestrator.ResolveLiveVoiceName(_config.VoiceGender)}";
+                }
+                else
+                {
+                    if (wantLive && string.IsNullOrWhiteSpace(geminiKey))
+                        AppendLog("Sin API Key de Gemini para modo Live — iniciando motor Multi-IA clásico.");
 
+                    var textOnlySensor = new TextOnlySensorService();
+                    var router = new ProviderFailoverRouter(_accounts, onLog: AppendLog, textOnlySensor: textOnlySensor);
+                    _orchestrator = new CoachOrchestrator(
+                        _config,
+                        _profiles,
+                        router,
+                        new Win32WindowDetector(),
+                        new FastScreenCapture(),
+                        new HybridVoiceService(_repo.WorkspaceRoot),
+                        _overlay,
+                        testMode: testMode,
+                        forcedGameId: forcedId,
+                        onLog: AppendLog,
+                        onStats: UpdateStatsUi,
+                        onPauseChanged: OnPauseChanged
+                    );
+                    await _orchestrator.StartAsync();
+                    HeaderStatusText.Text = $"Corriendo · {router.ActiveProviderLabel}";
+                }
+
+                RegisterActiveHotkeys();
                 BtnStartStop.Content = "⏹ Detener Coach";
                 BtnAnalyzeNow.IsEnabled = true;
                 BtnPause.IsEnabled = true;
                 PauseBadge.Visibility = Visibility.Collapsed;
                 RefreshHotkeyButtonLabels();
-                HeaderStatusText.Text = $"Corriendo · {router.ActiveProviderLabel}";
             }
             catch (Exception ex)
             {
@@ -261,13 +296,21 @@ public partial class MainWindow : Window
     private void RegisterActiveHotkeys()
     {
         _hotkeys.Stop();
-        if (_config.EnableHotkeys && _orchestrator is { IsRunning: true })
+        if (_config.EnableHotkeys && IsAnyEngineRunning)
         {
             _hotkeys.Start(
                 _config.HotkeyTogglePause,
                 _config.HotkeyAnalyzeNow,
-                () => _orchestrator?.TogglePause(),
-                () => _orchestrator?.TriggerOnDemandAnalysis(),
+                () =>
+                {
+                    _orchestrator?.TogglePause();
+                    _liveOrchestrator?.TogglePause();
+                },
+                () =>
+                {
+                    _orchestrator?.TriggerOnDemandAnalysis();
+                    _liveOrchestrator?.TriggerOnDemandAnalysis();
+                },
                 onWarning: AppendLog
             );
         }
@@ -289,6 +332,11 @@ public partial class MainWindow : Window
     private async Task ShutdownEngineCoreAsync(bool isAppClosing)
     {
         _hotkeys.Stop();
+        if (_liveOrchestrator is not null)
+        {
+            await _liveOrchestrator.DisposeAsync();
+            _liveOrchestrator = null;
+        }
         if (_orchestrator is not null)
         {
             await _orchestrator.DisposeAsync();
@@ -305,11 +353,25 @@ public partial class MainWindow : Window
         }
     }
 
-    private void BtnAnalyzeNow_Click(object sender, RoutedEventArgs e) =>
+    private void BtnAnalyzeNow_Click(object sender, RoutedEventArgs e)
+    {
         _orchestrator?.TriggerOnDemandAnalysis();
+        _liveOrchestrator?.TriggerOnDemandAnalysis();
+    }
 
-    private void BtnPause_Click(object sender, RoutedEventArgs e) =>
+    private void BtnPause_Click(object sender, RoutedEventArgs e)
+    {
         _orchestrator?.TogglePause();
+        _liveOrchestrator?.TogglePause();
+    }
+
+    private void ChkLiveMic_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_syncingVoiceUi) return;
+        bool on = ChkLiveMic.IsChecked == true;
+        _config.EnableMic = on;
+        _liveOrchestrator?.SetMicEnabled(on);
+    }
 
     private void BtnClearLogs_Click(object sender, RoutedEventArgs e) =>
         _logEntries.Clear();
@@ -484,6 +546,7 @@ public partial class MainWindow : Window
         LblVolumePct.Text = $"{(int)Math.Round(vol * 100)}%";
         _config.TtsVolume = vol;
         _orchestrator?.UpdateVoiceLive(_config.VoiceLanguage, vol, _config.VoiceGender, _config.VoiceStyle);
+        _liveOrchestrator?.SetVolume(vol);
         _previewVoice.UpdateSettings(_config.VoiceLanguage, vol, _config.VoiceGender, _config.VoiceStyle);
     }
 
@@ -492,6 +555,8 @@ public partial class MainWindow : Window
         _config.CoachMode = GetSelectedTag(CmbCoachMode);
         _config.VoiceGender = GetSelectedTag(CmbVoiceGender);
         _config.VoiceStyle = GetSelectedTag(CmbVoiceStyle);
+        _config.UseLiveConversational = GetSelectedTag(CmbEngineType) == "live";
+        _config.EnableMic = ChkLiveMic.IsChecked == true;
         _config.TextLanguage = (CmbLanguage.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "es";
         _config.VoiceLanguage = _config.TextLanguage;
         _config.TokenEfficiencyMode = (CmbEfficiency.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "eco";

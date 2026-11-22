@@ -357,6 +357,23 @@ await RunTest("13. TextOnlySensorService pays 0ms on Vision models, activates ON
     }
 });
 
+// 14. GeminiLiveCoachOrchestrator setup payload & native human voice selection (Fenrir / Aoede)
+await RunTest("14. GeminiLiveCoachOrchestrator selects Fenrir/Aoede and formats valid Live setup JSON", () =>
+{
+    Assert(GeminiLiveCoachOrchestrator.ResolveLiveVoiceName("male") == "Fenrir", "Male live voice is Fenrir");
+    Assert(GeminiLiveCoachOrchestrator.ResolveLiveVoiceName("female") == "Aoede", "Female live voice is Aoede");
+
+    var cfg = new UserConfig { VoiceGender = "female", VoiceLanguage = "es" };
+    var prof = ConfigRepository.CreateUniversalProfile(".");
+    var json31 = GeminiLiveCoachOrchestrator.BuildSetupPayloadJson("models/gemini-3.1-flash-live-preview", cfg, prof);
+    Assert(json31.Contains("\"Aoede\"") && json31.Contains("\"AUDIO\"") && json31.Contains("\"MINIMAL\"") && json31.Contains("outputAudioTranscription"),
+        $"Invalid 3.1 live setup JSON: {json31}");
+
+    var json25 = GeminiLiveCoachOrchestrator.BuildSetupPayloadJson("models/gemini-2.5-flash-native-audio-latest", cfg, prof);
+    Assert(json25.Contains("\"thinkingBudget\":0"), "2.5 native audio must disable thinking budget");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

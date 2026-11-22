@@ -158,6 +158,12 @@ public sealed class UserConfig
     [JsonPropertyName("voice_style")]
     public string VoiceStyle { get; set; } = "neural";
 
+    [JsonPropertyName("use_live_conversational")]
+    public bool UseLiveConversational { get; set; } = true;
+
+    [JsonPropertyName("enable_mic")]
+    public bool EnableMic { get; set; } = true;
+
     [JsonPropertyName("tts_volume")]
     public double TtsVolume { get; set; } = 0.75;
 

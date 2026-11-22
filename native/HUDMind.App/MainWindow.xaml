@@ -75,10 +75,18 @@
                             </ComboBox>
 
                             <TextBlock Text="Voz:" VerticalAlignment="Center" Foreground="#94A3B8" Margin="0,0,6,4" />
-                            <ComboBox x:Name="CmbQuickGender" Width="125" Margin="0,0,0,4" SelectionChanged="CmbQuickGender_SelectionChanged">
+                            <ComboBox x:Name="CmbQuickGender" Width="118" Margin="0,0,12,4" SelectionChanged="CmbQuickGender_SelectionChanged">
                                 <ComboBoxItem Content="👨 Hombre" Tag="male" />
                                 <ComboBoxItem Content="👩 Mujer" Tag="female" />
                             </ComboBox>
+
+                            <TextBlock Text="Motor:" VerticalAlignment="Center" Foreground="#94A3B8" Margin="0,0,6,4" />
+                            <ComboBox x:Name="CmbEngineType" Width="215" Margin="0,0,12,4">
+                                <ComboBoxItem Content="🎙 Live Conversacional (~0.9s)" Tag="live" />
+                                <ComboBoxItem Content="⚡ Turnos Multi-IA (Clásico)" Tag="classic" />
+                            </ComboBox>
+
+                            <CheckBox x:Name="ChkLiveMic" Content="🎤 Mic en vivo" Foreground="#38BDF8" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,0,4" Checked="ChkLiveMic_Changed" Unchecked="ChkLiveMic_Changed" />
                         </WrapPanel>
                     </Border>
 
