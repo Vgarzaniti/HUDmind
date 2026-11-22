@@ -1141,6 +1141,10 @@ await RunTest("35. GitHubReleaseUpdateService parses semver tags, skips drafts/p
 
     var upToDate = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 2, 0), preferSelfContained: false);
     Assert(!upToDate.IsUpdateAvailable, "Same version should report up to date");
+
+    var summary = GitHubReleaseUpdateService.SummarizeReleaseNotes(
+        "### Descargas Windows 10/11 (x64)\n- **`HUDMind.Native-Standalone-win-x64.exe`**\n---\n## What's Changed\n- **Mejora de latencia** en [Overlay](https://github.com/Vgarzaniti/HUDmind)\n- Chequeo horario\n**Full Changelog**: https://github.com/Vgarzaniti/HUDmind");
+    Assert(summary == "Mejora de latencia en Overlay · Chequeo horario", $"Unexpected summary: {summary}");
     return Task.CompletedTask;
 });
 

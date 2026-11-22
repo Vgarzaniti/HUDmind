@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using HUDMind.Core.AI;
 using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
@@ -46,9 +47,11 @@ public partial class MainWindow : Window
     private readonly HybridVoiceService _sharedVoice;
     private readonly GitHubReleaseUpdateService _updateService = new();
     private Win32TrayIcon? _trayIcon;
+    private DispatcherTimer? _updateTimer;
     private CancellationTokenSource? _updateCts;
     private AppUpdateInfo? _availableUpdate;
     private string? _downloadedUpdatePath;
+    private string? _dismissedUpdateTag;
     private bool _checkingUpdates;
     private bool _downloadingUpdate;
 
@@ -111,6 +114,14 @@ public partial class MainWindow : Window
             Hide();
             _trayIcon.Show();
         }
+        _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(60) };
+        _updateTimer.Tick += (_, _) =>
+        {
+            if (_config.CheckUpdatesOnStartup && !_coordinator.IsRunning && !_checkingUpdates && !_downloadingUpdate)
+                _ = CheckForUpdatesAsync(manual: false);
+        };
+        _updateTimer.Start();
+
         if (_config.CheckUpdatesOnStartup)
             _ = CheckForUpdatesAsync(manual: false);
     }
@@ -355,6 +366,8 @@ public partial class MainWindow : Window
 
         try
         {
+            _updateTimer?.Stop();
+            _updateTimer = null;
             _updateCts?.Cancel();
             _updateCts?.Dispose();
             _updateCts = null;
@@ -1384,6 +1397,23 @@ public partial class MainWindow : Window
 
             if (result.IsUpdateAvailable && result.Update is not null)
             {
+                if (!manual && string.Equals(result.Update.TagName, _dismissedUpdateTag, StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                bool alreadyDownloadedSameTag =
+                    !string.IsNullOrEmpty(_downloadedUpdatePath) &&
+                    File.Exists(_downloadedUpdatePath) &&
+                    string.Equals(_availableUpdate?.TagName, result.Update.TagName, StringComparison.OrdinalIgnoreCase);
+
+                if (alreadyDownloadedSameTag)
+                {
+                    UpdateBanner.Visibility = Visibility.Visible;
+                    return;
+                }
+
+                if (manual)
+                    _dismissedUpdateTag = null;
+
                 ShowAvailableUpdateBanner(result.Update);
                 AppendLog($"🚀 Nueva actualización disponible: {result.Update.TagName} (actual: v{GitHubReleaseUpdateService.FormatVersion(result.Update.CurrentVersion)}).");
             }
@@ -1656,6 +1686,7 @@ public partial class MainWindow : Window
     {
         if (_downloadingUpdate)
             _updateCts?.Cancel();
+        _dismissedUpdateTag = _availableUpdate?.TagName;
         UpdateBanner.Visibility = Visibility.Collapsed;
     }
 }

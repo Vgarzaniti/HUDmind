@@ -84,6 +84,9 @@ public sealed partial class GitHubReleaseUpdateService
     [GeneratedRegex(@"^[0-9a-fA-F]{64}$", RegexOptions.Compiled)]
     private static partial Regex Sha256HexRegex();
 
+    [GeneratedRegex(@"\[([^\]]+)\]\([^)]+\)", RegexOptions.Compiled)]
+    private static partial Regex MarkdownLinkRegex();
+
     private readonly HttpClient _http;
     private readonly string _owner;
     private readonly string _repo;
@@ -291,12 +294,27 @@ public sealed partial class GitHubReleaseUpdateService
         var lines = new List<string>();
         foreach (var rawLine in rawBody.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
-            var clean = new string(rawLine.Where(c => !char.IsControl(c)).ToArray())
-                .Trim()
+            var noCtrl = new string(rawLine.Where(c => !char.IsControl(c)).ToArray()).Trim();
+            if (noCtrl.Length == 0 || noCtrl.All(c => c is '-' or '*' or '_'))
+                continue;
+
+            var clean = MarkdownLinkRegex().Replace(noCtrl, "$1")
+                .Replace("**", string.Empty, StringComparison.Ordinal)
+                .Replace("__", string.Empty, StringComparison.Ordinal)
+                .Replace("`", string.Empty, StringComparison.Ordinal)
                 .TrimStart('#', '*', '-', ' ')
                 .Trim();
-            if (clean.Length == 0)
+
+            if (clean.Length == 0 ||
+                clean.StartsWith("Descargas Windows", StringComparison.OrdinalIgnoreCase) ||
+                clean.StartsWith("HUDMind.Native", StringComparison.OrdinalIgnoreCase) ||
+                clean.StartsWith("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase) ||
+                clean.StartsWith("Full Changelog:", StringComparison.OrdinalIgnoreCase) ||
+                clean.Equals("What's Changed", StringComparison.OrdinalIgnoreCase))
+            {
                 continue;
+            }
+
             lines.Add(clean);
             if (lines.Count >= 3)
                 break;
