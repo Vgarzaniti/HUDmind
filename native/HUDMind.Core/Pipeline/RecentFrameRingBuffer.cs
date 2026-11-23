@@ -6,21 +6,31 @@ using HUDMind.Core.Models;
 namespace HUDMind.Core.Pipeline;
 
 /// <summary>
-/// Thread-safe circular buffer holding high-density motion frames (~8 FPS, ~125ms spacing)
-/// so interactive questions, voice queries, and predictive callouts perceive a real video-like
-/// clip sequence instead of a single isolated post-action snapshot.
+/// Dual-tier thread-safe circular buffer in RAM (0% GPU):
+/// 1) High-density micro burst ring (~7.4 FPS, ~125ms spacing) for rapid mechanics (`flip reset`, `flick`, `peek`).
+/// 2) Long-horizon macro keyframe timeline (~1 FPS, ~18s window) continuously recorded even when the player is silent,
+/// so proactive callouts and questions perceive the full play development rather than a single isolated snapshot.
 /// </summary>
 public sealed class RecentFrameRingBuffer
 {
     private readonly object _sync = new();
     private readonly List<TemporalFrameSample> _frames = [];
+    private readonly List<TemporalFrameSample> _macroFrames = [];
     private readonly int _maxFrames;
     private readonly double _minSpacingMs;
+    private readonly int _macroMaxFrames;
+    private readonly double _macroMinSpacingMs;
 
-    public RecentFrameRingBuffer(int maxFrames = 10, double minSpacingMs = 125.0)
+    public RecentFrameRingBuffer(
+        int maxFrames = 12,
+        double minSpacingMs = 125.0,
+        int macroMaxFrames = 18,
+        double macroMinSpacingMs = 950.0)
     {
-        _maxFrames = Math.Clamp(maxFrames, 2, 16);
+        _maxFrames = Math.Clamp(maxFrames, 2, 24);
         _minSpacingMs = Math.Clamp(minSpacingMs, 60.0, 1500.0);
+        _macroMaxFrames = Math.Clamp(macroMaxFrames, 4, 30);
+        _macroMinSpacingMs = Math.Clamp(macroMinSpacingMs, 500.0, 3000.0);
     }
 
     public int Count
@@ -28,13 +38,38 @@ public sealed class RecentFrameRingBuffer
         get { lock (_sync) return _frames.Count; }
     }
 
+    public int MacroCount
+    {
+        get { lock (_sync) return _macroFrames.Count; }
+    }
+
+    public bool NeedsMacroKeyframe(DateTimeOffset nowUtc)
+    {
+        lock (_sync)
+        {
+            if (_macroFrames.Count == 0)
+                return true;
+            return (nowUtc - _macroFrames[^1].CapturedAtUtc).TotalMilliseconds >= _macroMinSpacingMs;
+        }
+    }
+
     public void Record(CapturedFrameData frame, bool forceReplaceTailIfTooClose = false)
     {
         if (frame.JpegBytes is not { Length: > 0 })
             return;
 
+        var sample = new TemporalFrameSample(frame.JpegBytes, frame.CapturedAtUtc, frame.PerceptualHash);
         lock (_sync)
         {
+            // Continuously append macro keyframes (~1 FPS) regardless of micro burst window
+            if (_macroFrames.Count == 0 ||
+                (frame.CapturedAtUtc - _macroFrames[^1].CapturedAtUtc).TotalMilliseconds >= _macroMinSpacingMs)
+            {
+                _macroFrames.Add(sample);
+                while (_macroFrames.Count > _macroMaxFrames)
+                    _macroFrames.RemoveAt(0);
+            }
+
             if (_frames.Count > 0)
             {
                 var last = _frames[^1];
@@ -42,12 +77,12 @@ public sealed class RecentFrameRingBuffer
                 if (elapsedMs < _minSpacingMs)
                 {
                     if (forceReplaceTailIfTooClose)
-                        _frames[^1] = new TemporalFrameSample(frame.JpegBytes, frame.CapturedAtUtc, frame.PerceptualHash);
+                        _frames[^1] = sample;
                     return;
                 }
             }
 
-            _frames.Add(new TemporalFrameSample(frame.JpegBytes, frame.CapturedAtUtc, frame.PerceptualHash));
+            _frames.Add(sample);
             while (_frames.Count > _maxFrames)
                 _frames.RemoveAt(0);
         }
@@ -55,20 +90,43 @@ public sealed class RecentFrameRingBuffer
 
     /// <summary>
     /// Returns evenly distributed chronological frames within <paramref name="maxAgeSeconds"/> (oldest -> newest).
+    /// Windows > 3.5s blend macro keyframes (~18s lookback) with micro burst frames for complete silent-play awareness.
     /// </summary>
     public List<TemporalFrameSample> SnapshotRecent(DateTimeOffset nowUtc, double maxAgeSeconds = 5.0, int maxCount = 6)
     {
         lock (_sync)
         {
-            if (_frames.Count == 0)
+            if (_frames.Count == 0 && _macroFrames.Count == 0)
                 return [];
 
             var minUtc = nowUtc.AddSeconds(-Math.Max(0.5, maxAgeSeconds));
-            var inWindow = _frames
-                .Where(f => f.CapturedAtUtc >= minUtc)
-                .ToList();
+            if (maxAgeSeconds <= 3.5)
+            {
+                var microOnly = _frames.Where(f => f.CapturedAtUtc >= minUtc).ToList();
+                return SelectEvenlySpacedWithTail(microOnly, Math.Clamp(maxCount, 1, _maxFrames));
+            }
 
-            return SelectEvenlySpacedWithTail(inWindow, Math.Clamp(maxCount, 1, _maxFrames));
+            // Merge macro timeline + fine micro frames without duplicating nearly-simultaneous timestamps
+            var merged = new List<TemporalFrameSample>(_macroFrames.Count + _frames.Count);
+            foreach (var f in _macroFrames)
+            {
+                if (f.CapturedAtUtc >= minUtc)
+                    merged.Add(f);
+            }
+
+            foreach (var f in _frames)
+            {
+                if (f.CapturedAtUtc < minUtc)
+                    continue;
+                int nearIdx = merged.FindIndex(m => Math.Abs((m.CapturedAtUtc - f.CapturedAtUtc).TotalMilliseconds) < 140.0);
+                if (nearIdx >= 0)
+                    merged[nearIdx] = f;
+                else
+                    merged.Add(f);
+            }
+
+            merged.Sort(static (a, b) => a.CapturedAtUtc.CompareTo(b.CapturedAtUtc));
+            return SelectEvenlySpacedWithTail(merged, Math.Clamp(maxCount, 1, Math.Max(_maxFrames, _macroMaxFrames)));
         }
     }
 
@@ -191,6 +249,9 @@ public sealed class RecentFrameRingBuffer
     public void Clear()
     {
         lock (_sync)
+        {
             _frames.Clear();
+            _macroFrames.Clear();
+        }
     }
 }

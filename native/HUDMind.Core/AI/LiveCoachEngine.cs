@@ -366,7 +366,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             _storyboardComposer,
                             freshFrame,
                             maxFrames: 6,
-                            maxAgeSeconds: 2.5,
+                            maxAgeSeconds: 8.0,
                             jpegQuality: Math.Max(cfgQuality, 84),
                             isEn: isEn)
                         : null;
@@ -486,7 +486,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 _storyboardComposer,
                 freshFrame,
                 maxFrames: 6,
-                maxAgeSeconds: 2.5,
+                maxAgeSeconds: 8.0,
                 jpegQuality: Math.Max(cfgQuality, 84),
                 isEn: isEn);
 
@@ -947,7 +947,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             if (latest is not null)
                 _session.FrameRingBuffer.Record(latest, forceReplaceTailIfTooClose: true);
 
-            var seq = _session.FrameRingBuffer.SnapshotRecent(DateTimeOffset.UtcNow, maxAgeSeconds: 2.2, maxCount: 3);
+            var seq = _session.FrameRingBuffer.SnapshotRecent(DateTimeOffset.UtcNow, maxAgeSeconds: 4.5, maxCount: 4);
             foreach (var sample in seq)
             {
                 if (ct.IsCancellationRequested || !_backend.IsConnected || _modelSpeaking)
@@ -999,6 +999,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         var (w, h, q) = ResolveTargetResolution();
         int phash = _session.ActiveProfile?.Manifest.PhashThreshold ?? 6;
         var region = _testMode ? null : _windowDetector.GetForegroundClientRect();
+        bool macroDue = !force && _session.FrameRingBuffer.NeedsMacroKeyframe(DateTimeOffset.UtcNow);
 
         var (frame, skipped) = _capture.CaptureIfChanged(
             _config.CaptureMonitor,
@@ -1008,7 +1009,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             jpegQuality: q,
             frameId: frameId,
             lastAcceptedHash: prevHash,
-            phashThreshold: force ? 0 : Math.Min(phash, 5),
+            phashThreshold: (force || macroDue) ? 0 : Math.Min(phash, 5),
             isForced: force);
 
         _session.ObserveCaptureHealth(_config);
@@ -1109,8 +1110,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                 var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
                                     _storyboardComposer,
                                     captured,
-                                    maxFrames: 3,
-                                    maxAgeSeconds: 2.0,
+                                    maxFrames: 6,
+                                    maxAgeSeconds: 12.0,
                                     jpegQuality: Math.Max(cfgQuality, 82),
                                     isEn: isEnEval);
 
@@ -1131,8 +1132,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                         ? $"{clip.SequenceNote} "
                                         : string.Empty;
                                     string prompt = isEnEval
-                                        ? $"{seqPrefix}{factNote}{ctxNote} Anticipate the next 2 seconds BEFORE the error: 1 crisp tip (8-13 words) ONLY on clearly seen pixels."
-                                        : $"{seqPrefix}{factNote}{ctxNote} Anticipate 2 segundos a la jugada (no narres lo pasado): 1 consejo claro (8 a 13 palabras) SOLO sobre lo que se ve nítido.";
+                                        ? $"{seqPrefix}{factNote}{ctxNote} You watched the full recent play even in silence. Give 1 predictive tip (8-13 words) for the next 2s ONLY on clearly seen pixels."
+                                        : $"{seqPrefix}{factNote}{ctxNote} Viste toda la jugada reciente aunque no te hayan hablado. Tirate 1 consejo predictivo (8 a 13 palabras) para los próximos 2s SOLO sobre lo visible.";
 
                                     Interlocked.Increment(ref _framesSent);
                                     if (_backend.SupportsMultiFrameTurn && clip.Frames.Count > 1)

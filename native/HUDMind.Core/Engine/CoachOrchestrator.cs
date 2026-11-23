@@ -300,7 +300,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                         _storyboardComposer,
                         frame,
                         maxFrames: 6,
-                        maxAgeSeconds: 2.5,
+                        maxAgeSeconds: 8.0,
                         jpegQuality: Math.Max(q, 84),
                         isEn: isEn);
                     var timelineText = _session.Memory.FormatVisualTimeline(isEn: isEn);
@@ -549,8 +549,9 @@ public sealed class CoachOrchestrator : ICoachEngine
                             _config.MinInferenceIntervalSeconds);
                         if (waitRem > TimeSpan.Zero)
                         {
-                            // Keep a local 0%-GPU temporal clip buffer in RAM (~7.4 Hz, 135ms polling)
-                            // so chat questions ("did I get a flip reset?") and predictive reads see fluid trajectory!
+                            // Keep a dual-tier 0%-GPU temporal video buffer in RAM (~7.4 Hz burst + ~1 FPS macro 18s window)
+                            // so silent proactive turns, F10, and chat questions see the entire recent play without gaps.
+                            bool macroDue = _session.FrameRingBuffer.NeedsMacroKeyframe(DateTimeOffset.UtcNow);
                             var (ringFrame, ringSkipped) = _capture.CaptureIfChanged(
                                 _config.CaptureMonitor,
                                 region,
@@ -559,7 +560,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                                 Math.Min(q, 78),
                                 Interlocked.Increment(ref frameCounter),
                                 _lastRingHash,
-                                Math.Min(profile.Manifest.PhashThreshold, 4),
+                                macroDue ? 0 : Math.Min(profile.Manifest.PhashThreshold, 4),
                                 isForced: false);
                             _session.ObserveCaptureHealth(_config);
                             if (!ringSkipped && ringFrame is not null)
@@ -577,6 +578,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                     }
                 }
 
+                bool mainMacroDue = !isForced && _session.FrameRingBuffer.NeedsMacroKeyframe(DateTimeOffset.UtcNow);
                 var (frame, skippedByHash) = _capture.CaptureIfChanged(
                     _config.CaptureMonitor,
                     region,
@@ -585,7 +587,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                     q,
                     Interlocked.Increment(ref frameCounter),
                     GetLastHash(),
-                    profile.Manifest.PhashThreshold,
+                    (isForced || mainMacroDue) ? 0 : profile.Manifest.PhashThreshold,
                     isForced);
 
                 _session.ObserveCaptureHealth(_config);
@@ -648,8 +650,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                 var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
                     _storyboardComposer,
                     frame,
-                    maxFrames: forceNow ? 6 : 3,
-                    maxAgeSeconds: forceNow ? 2.5 : 1.8,
+                    maxFrames: 6,
+                    maxAgeSeconds: forceNow ? 8.0 : 12.0,
                     jpegQuality: Math.Max(cfgQuality, 82),
                     isEn: isEn);
 

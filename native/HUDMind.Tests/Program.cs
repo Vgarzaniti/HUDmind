@@ -2106,6 +2106,67 @@ await RunTest("47. AES-256-GCM ProfileVault eliminates plaintext resources & ICo
         "Cross-game switch must flush outgoing snapshot and isolate FrameRingBuffer");
 });
 
+// 48. Continuous Dual-Tier Silent Vision (18s Macro + 7.4 FPS Micro), Auto Coach Voice Promotion & Silent Multi-Frame Proactive Observation
+await RunTest("48. Coach watches full silent play via dual-tier macro+micro buffer & auto-enables proactive cadence in voice-only mode", async () =>
+{
+    // 1) Dual-tier ring retains 10s+ macro play keyframes alongside high-density tail frames without user speaking
+    var ring = new RecentFrameRingBuffer(maxFrames: 6, minSpacingMs: 125.0, macroMaxFrames: 18, macroMinSpacingMs: 950.0);
+    var t0 = DateTimeOffset.UtcNow.AddSeconds(-11);
+    for (int s = 0; s <= 10; s++)
+    {
+        var ts = t0.AddSeconds(s);
+        ring.Record(new CapturedFrameData([(byte)(0x10 + s), 0xD8, 0xFF], (ulong)(s + 1), s + 1, 1, 1, ts));
+        if (s == 10)
+        {
+            ring.Record(new CapturedFrameData([0x21, 0xD8, 0xFF], 90UL, 90, 1, 1, ts.AddMilliseconds(160)));
+            ring.Record(new CapturedFrameData([0x22, 0xD8, 0xFF], 91UL, 91, 1, 1, ts.AddMilliseconds(320)));
+            ring.Record(new CapturedFrameData([0x23, 0xD8, 0xFF], 92UL, 92, 1, 1, ts.AddMilliseconds(480)));
+            ring.Record(new CapturedFrameData([0x24, 0xD8, 0xFF], 93UL, 93, 1, 1, ts.AddMilliseconds(640)));
+            ring.Record(new CapturedFrameData([0x25, 0xD8, 0xFF], 94UL, 94, 1, 1, ts.AddMilliseconds(800)));
+        }
+    }
+
+    Assert(ring.MacroCount >= 10, $"Expected >=10 macro keyframes over 11s silent play, got {ring.MacroCount}");
+    Assert(!ring.NeedsMacroKeyframe(t0.AddSeconds(10).AddMilliseconds(500)), "Should not trigger macro keyframe <950ms");
+    Assert(ring.NeedsMacroKeyframe(t0.AddSeconds(11).AddMilliseconds(50)), "Must force macro keyframe after >=950ms");
+
+    var composer = new StubStoryboardComposer();
+    var latest = new CapturedFrameData([0x7F, 0xD8, 0xFF], 999UL, 999, 1, 1, t0.AddSeconds(10).AddMilliseconds(960));
+    var macroClip = ring.BuildVisualClipPayload(composer, latest, maxFrames: 6, maxAgeSeconds: 12.0, jpegQuality: 84, isEn: false);
+    double spanSeconds = (macroClip.Frames[^1].CapturedAtUtc - macroClip.Frames[0].CapturedAtUtc).TotalSeconds;
+    Assert(macroClip.Frames.Count == 6 && spanSeconds >= 9.0,
+        $"Silent proactive clip must span >=9s across macro+micro play (panels={macroClip.Frames.Count}, span={spanSeconds:F1}s, note={macroClip.SequenceNote})");
+
+    // 2) coach_voice automatically promotes LiveAutoCoachSeconds > 0 when previously 0 so silent voice mode never mutes forever
+    var cfgVoice = new UserConfig { LiveAutoCoachSeconds = 0 };
+    cfgVoice.SetCommunicationMode("coach_voice");
+    Assert(cfgVoice.IsCoachVoiceOnlyMode && !cfgVoice.IsMicActive && cfgVoice.LiveAutoCoachSeconds > 0,
+        $"coach_voice mode must auto-enable proactive cadence (got {cfgVoice.LiveAutoCoachSeconds})");
+
+    // 3) Silent Live proactive loop delivers full multi-frame clip (4+ panels) & passive WS stream even when user never speaks
+    var stubLive = new StubLiveBackend();
+    var stubPlayer = new StubStreamingPlayer();
+    var stubMic = new StubStreamingMic();
+    var silentCfg = new UserConfig { LiveAutoCoachSeconds = 0.4, VoiceLanguage = "es", TextLanguage = "es" };
+    silentCfg.SetCommunicationMode("coach_voice");
+    var rlProf = new GameProfile
+    {
+        DirectoryPath = ".",
+        Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League", CaptureFps = 2.0, ProcessNames = ["RocketLeague.exe"] }
+    };
+
+    await using var silentLive = new RealtimeLiveCoachOrchestrator(
+        stubLive, silentCfg, [rlProf], new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), stubPlayer, stubMic, new RecordingOverlay(),
+        testMode: true, storyboardComposer: composer);
+    await silentLive.StartAsync();
+    for (int i = 0; i < 80 && stubLive.LastMultiFrameTurnCount < 2; i++) await Task.Delay(35);
+    await silentLive.StopAsync();
+
+    Assert(stubLive.SentTextTurns >= 1 && stubLive.LastMultiFrameTurnCount >= 2,
+        $"Silent coach_voice mode must observe full play & deliver multi-frame proactive turns without user speaking (turns={stubLive.SentTextTurns}, frames={stubLive.LastMultiFrameTurnCount})");
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
