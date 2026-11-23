@@ -304,6 +304,9 @@ public sealed class UserConfig
     [JsonPropertyName("check_updates_on_startup")]
     public bool CheckUpdatesOnStartup { get; set; } = true;
 
+    [JsonPropertyName("memory_match_window")]
+    public int MemoryMatchWindow { get; set; } = 10;
+
     [JsonIgnore]
     public string PreviousMatchFocus { get; set; } = string.Empty;
 
@@ -341,6 +344,7 @@ public sealed class UserConfig
         TokenEfficiencyMode = source.TokenEfficiencyMode;
         EnableAudioCues = source.EnableAudioCues;
         CheckUpdatesOnStartup = source.CheckUpdatesOnStartup;
+        MemoryMatchWindow = Math.Clamp(source.MemoryMatchWindow, 3, 30);
         PreviousMatchFocus = source.PreviousMatchFocus;
         SetCommunicationMode(source.CommunicationMode);
     }
@@ -480,4 +484,13 @@ public sealed record CoachRuntimeStats(
     string ActiveProvider,
     string ActiveGame,
     bool IsPaused = false
+);
+
+public sealed record MatchSessionSnapshot(
+    string MatchId,
+    string GameId,
+    string DisplayName,
+    int InterventionsCount,
+    string Digest,
+    IReadOnlyList<string> AdvicesSample
 );

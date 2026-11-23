@@ -17,6 +17,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
 
     private ICoachEngine? _activeEngine;
+    private string _lastMatchId = string.Empty;
+    private string _lastMatchGameId = string.Empty;
     private string _lastMatchGameName = string.Empty;
     private string _lastMatchDigest = string.Empty;
     private int _lastMatchCount;
@@ -41,7 +43,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
         Action<string> onLog,
         Action<CoachRuntimeStats> onStats,
         Action<bool> onPauseChanged,
-        Action onMicHotkey)
+        Action onMicHotkey,
+        Action<MatchSessionSnapshot>? onMatchCompleted = null)
     {
         await _lifecycleLock.WaitAsync();
         try
@@ -87,7 +90,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                             if (held && prev == 0 && config.IsPushToTalkMode && config.EnableAudioCues && !config.IsTextOnlyMode)
                                 Win32AudioCue.Play(AudioCueKind.SoftOn);
                             return held;
-                        }
+                        },
+                        onMatchCompleted: onMatchCompleted
                     );
                 }
                 catch
@@ -119,7 +123,9 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                     onLog: onLog,
                     onStats: onStats,
                     onPauseChanged: onPauseChanged,
-                    disposeVoice: false
+                    disposeVoice: false,
+                    telemetrySensor: textOnlySensor,
+                    onMatchCompleted: onMatchCompleted
                 );
             }
 
@@ -195,16 +201,31 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
     {
         if (_activeEngine is not null)
         {
-            var (g, d, count) = _activeEngine.GetMatchSessionDigest(isEn);
-            if (count > 0 && !string.IsNullOrWhiteSpace(d))
+            var snap = _activeEngine.CaptureMatchSnapshot(isEn);
+            if (snap is not null && snap.InterventionsCount > 0 && !string.IsNullOrWhiteSpace(snap.Digest))
             {
-                _lastMatchGameName = g;
-                _lastMatchDigest = d;
-                _lastMatchCount = count;
+                _lastMatchId = snap.MatchId;
+                _lastMatchGameId = snap.GameId;
+                _lastMatchGameName = snap.DisplayName;
+                _lastMatchDigest = snap.Digest;
+                _lastMatchCount = snap.InterventionsCount;
+            }
+            else
+            {
+                var (g, d, count) = _activeEngine.GetMatchSessionDigest(isEn);
+                if (count > 0 && !string.IsNullOrWhiteSpace(d))
+                {
+                    _lastMatchGameName = g;
+                    _lastMatchDigest = d;
+                    _lastMatchCount = count;
+                }
             }
         }
         return (_lastMatchGameName, _lastMatchDigest, _lastMatchCount);
     }
+
+    public (string MatchId, string GameId, string GameName, int Count) GetLastMatchMeta() =>
+        (_lastMatchId, _lastMatchGameId, _lastMatchGameName, _lastMatchCount);
 
     public (int InstalledCount, string Message) InstallValveGsiConfigs()
     {

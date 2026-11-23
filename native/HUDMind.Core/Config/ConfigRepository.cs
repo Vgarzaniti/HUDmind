@@ -279,6 +279,7 @@ public sealed partial class ConfigRepository
     public string ConfigDir => Path.Combine(WorkspaceRoot, "config");
     public string ProfilesDir => Path.Combine(WorkspaceRoot, "profiles");
     public string ReviewsDir => Path.Combine(WorkspaceRoot, "logs", "reviews");
+    public string MemoryDir => Path.Combine(WorkspaceRoot, "logs", "memory");
     public string AccountsPath => Path.Combine(ConfigDir, "accounts.json");
     public string UserConfigPath => Path.Combine(ConfigDir, "user_config.json");
     public string? LastLoadWarning { get; private set; }
@@ -833,6 +834,111 @@ public sealed partial class ConfigRepository
         {
             return string.Empty;
         }
+    }
+
+    public Pipeline.PlayerGameMemory LoadPlayerGameMemory(string? gameId)
+    {
+        var normId = string.IsNullOrWhiteSpace(gameId) ? "universal" : gameId.Trim().ToLowerInvariant();
+        if (!TryResolveSafeMemoryPath(normId, out var destPath))
+            return new Pipeline.PlayerGameMemory { GameId = normId };
+
+        try
+        {
+            if (!File.Exists(destPath))
+                return new Pipeline.PlayerGameMemory { GameId = normId };
+
+            var info = new FileInfo(destPath);
+            if (info.Length > MaxConfigFileBytes * 2 || (info.Attributes & FileAttributes.ReparsePoint) != 0)
+                return new Pipeline.PlayerGameMemory { GameId = normId };
+
+            var json = File.ReadAllText(destPath, Encoding.UTF8);
+            var parsed = JsonSerializer.Deserialize<Pipeline.PlayerGameMemory>(json, JsonOpts);
+            if (parsed is not null)
+            {
+                parsed.GameId = string.IsNullOrWhiteSpace(parsed.GameId) ? normId : parsed.GameId;
+                return parsed;
+            }
+        }
+        catch (Exception ex)
+        {
+            BackupCorruptFile(destPath);
+            LastLoadWarning = $"player_memory ilegible (backup guardado): {ex.Message}";
+        }
+
+        return new Pipeline.PlayerGameMemory { GameId = normId };
+    }
+
+    public Pipeline.PlayerGameMemory RecordMatchToRollingMemory(
+        string? gameId,
+        string? displayName,
+        Pipeline.MatchMemoryEntry entry,
+        int windowSize = Pipeline.PlayerMemoryStore.DefaultWindowSize)
+    {
+        var normId = string.IsNullOrWhiteSpace(gameId) ? "universal" : gameId.Trim().ToLowerInvariant();
+        if (!TryResolveSafeMemoryPath(normId, out var destPath))
+            throw new UnauthorizedAccessException("Ruta de memoria de juego inválida o insegura (CWE-22).");
+
+        var memoryDir = Path.GetDirectoryName(destPath)!;
+        Directory.CreateDirectory(memoryDir);
+
+        var mem = LoadPlayerGameMemory(normId);
+        if (string.IsNullOrWhiteSpace(mem.DisplayName) && !string.IsNullOrWhiteSpace(displayName))
+            mem.DisplayName = displayName.Trim();
+
+        Pipeline.PlayerMemoryStore.ApplyRollingMatch(mem, entry, windowSize);
+        var json = JsonSerializer.Serialize(mem, JsonOpts);
+        AtomicWrite(destPath, json);
+        return mem;
+    }
+
+    public void ResetPlayerGameMemory(string? gameId)
+    {
+        var normId = string.IsNullOrWhiteSpace(gameId) ? "universal" : gameId.Trim().ToLowerInvariant();
+        if (!TryResolveSafeMemoryPath(normId, out var destPath))
+            throw new UnauthorizedAccessException("Ruta de memoria de juego inválida o insegura (CWE-22).");
+
+        if (File.Exists(destPath) && (File.GetAttributes(destPath) & FileAttributes.ReparsePoint) == 0)
+            File.Delete(destPath);
+    }
+
+    public string LoadPlayerMemoryPromptContext(
+        string? gameId,
+        string? gameDisplayName = null,
+        int maxChars = 320,
+        bool isEn = false)
+    {
+        var normId = string.IsNullOrWhiteSpace(gameId) ? "universal" : gameId.Trim().ToLowerInvariant();
+        var mem = LoadPlayerGameMemory(normId);
+        var rolling = Pipeline.PlayerMemoryStore.FormatForCoachPrompt(mem, isEn: isEn, maxChars: maxChars);
+        if (!string.IsNullOrWhiteSpace(rolling))
+            return rolling;
+
+        return LoadLatestPostMatchFocus(gameDisplayName, Math.Min(maxChars, 240));
+    }
+
+    private bool TryResolveSafeMemoryPath(string normId, out string destPath)
+    {
+        destPath = string.Empty;
+        if (!SafeGameIdRegex().IsMatch(normId))
+            return false;
+
+        var logsDir = Path.GetFullPath(Path.Combine(WorkspaceRoot, "logs"));
+        var memoryFull = Path.GetFullPath(MemoryDir);
+        if ((Directory.Exists(logsDir) && (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) != 0) ||
+            (Directory.Exists(memoryFull) && (File.GetAttributes(memoryFull) & FileAttributes.ReparsePoint) != 0))
+        {
+            return false;
+        }
+
+        var candidate = Path.GetFullPath(Path.Combine(memoryFull, $"{normId}.json"));
+        if (!candidate.StartsWith(memoryFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (File.Exists(candidate) && (File.GetAttributes(candidate) & FileAttributes.ReparsePoint) != 0)
+            return false;
+
+        destPath = candidate;
+        return true;
     }
 
     private static string ReadBoundedText(string path, int maxChars)

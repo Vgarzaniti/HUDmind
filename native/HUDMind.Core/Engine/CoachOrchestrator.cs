@@ -23,12 +23,15 @@ public sealed class CoachOrchestrator : ICoachEngine
     private readonly Action<string>? _onLog;
     private readonly Action<CoachRuntimeStats>? _onStats;
     private readonly Action<bool>? _onPauseChanged;
+    private readonly ITextOnlySensorService? _telemetrySensor;
+    private readonly Action<MatchSessionSnapshot>? _onMatchCompleted;
     private readonly bool _testMode;
     private readonly bool _disposeVoice;
     private readonly string? _forcedGameId;
 
     private readonly InterventionStateMachine _stateMachine = new();
     private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
+    private readonly TacticalSignalTracker _tacticalTracker = new();
     private readonly BlackScreenDiagnostic _blackScreenDiagnostic = new();
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
@@ -36,6 +39,7 @@ public sealed class CoachOrchestrator : ICoachEngine
     private readonly object _voiceGate = new();
     private readonly ConcurrentDictionary<int, Task> _inFlightChat = new();
     private int _chatSeq;
+    private string _latestDeterministicFact = string.Empty;
 
     private Channel<CapturedFrameData>? _frameChannel;
     private CancellationTokenSource? _runCts;
@@ -89,7 +93,9 @@ public sealed class CoachOrchestrator : ICoachEngine
         Action<string>? onLog = null,
         Action<CoachRuntimeStats>? onStats = null,
         Action<bool>? onPauseChanged = null,
-        bool disposeVoice = true)
+        bool disposeVoice = true,
+        ITextOnlySensorService? telemetrySensor = null,
+        Action<MatchSessionSnapshot>? onMatchCompleted = null)
     {
         _config = config;
         _profiles = profiles;
@@ -104,6 +110,8 @@ public sealed class CoachOrchestrator : ICoachEngine
         _onStats = onStats;
         _onPauseChanged = onPauseChanged;
         _disposeVoice = disposeVoice;
+        _telemetrySensor = telemetrySensor;
+        _onMatchCompleted = onMatchCompleted;
     }
 
     public async Task StartAsync()
@@ -121,6 +129,8 @@ public sealed class CoachOrchestrator : ICoachEngine
             Interlocked.Exchange(ref _forceAnalysisPending, 0);
             _stateMachine.Reset();
             _memory.Clear(clearMatchLog: true);
+            _tacticalTracker.Reset();
+            Volatile.Write(ref _latestDeterministicFact, string.Empty);
             SetLastHash(null);
 
             try
@@ -430,11 +440,16 @@ public sealed class CoachOrchestrator : ICoachEngine
                     var matched = GameProfile.MatchForegroundProfile(_profiles, fg, _forcedGameId);
                     if (matched is not null && !ReferenceEquals(matched, _activeProfile))
                     {
+                        if (_activeProfile is not null)
+                            FlushMatchSnapshot(resetMatchLog: true);
+
                         _activeProfile = matched;
                         Interlocked.Increment(ref _profileEpoch);
                         SetLastHash(null);
                         _stateMachine.Reset();
                         _memory.Clear();
+                        _tacticalTracker.Reset(matched.Manifest.GameId);
+                        Volatile.Write(ref _latestDeterministicFact, string.Empty);
                         _onLog?.Invoke($"Juego detectado automáticamente: {matched.Manifest.DisplayName} ({fg})");
                         if (_config.EnableOverlay)
                             _overlay.ShowCallout("Coach Nativo ACTIVO — observando", UrgencyLevel.Low, matched.Manifest.DisplayName, 3.5);
@@ -454,7 +469,23 @@ public sealed class CoachOrchestrator : ICoachEngine
                     continue;
                 }
 
+                bool isEnEval = CoachingPersonaBuilder.IsEnglish(_config);
+                string rawTelemetry = _telemetrySensor is not null
+                    ? await _telemetrySensor.ReadTelemetryAsync(profile, ct)
+                    : string.Empty;
+                var tactical = TacticalSignalEvaluator.Evaluate(rawTelemetry, profile, _tacticalTracker, isEnEval);
+                Volatile.Write(ref _latestDeterministicFact, tactical.DeterministicFact);
+
+                if (tactical.MatchEnded)
+                    FlushMatchSnapshot(resetMatchLog: true);
+
                 bool hasPendingForce = Volatile.Read(ref _forceAnalysisPending) == 1;
+                if (!hasPendingForce && tactical.ShouldSilence)
+                {
+                    await WaitInterruptibleAsync(TimeSpan.FromMilliseconds(550), ct);
+                    continue;
+                }
+
                 if (hasPendingForce && _stateMachine.IsBusy)
                 {
                     await WaitInterruptibleAsync(TimeSpan.FromMilliseconds(150), ct);
@@ -468,16 +499,23 @@ public sealed class CoachOrchestrator : ICoachEngine
                 }
                 else
                 {
-                    var waitRem = _stateMachine.GetWaitUntilReady(
-                        EffectiveCooldown(profile),
-                        _config.MinInferenceIntervalSeconds);
-                    if (waitRem > TimeSpan.Zero)
+                    double scaledCd = Math.Max(2.5, EffectiveCooldown(profile) * tactical.CooldownMultiplier);
+                    bool eventTriggerReady = tactical.TriggerImmediate &&
+                        _stateMachine.CanAnalyze(Math.Max(2.5, EffectiveCooldown(profile) * 0.45), _config.MinInferenceIntervalSeconds);
+
+                    if (!eventTriggerReady)
                     {
-                        var boundedWait = waitRem > TimeSpan.FromMilliseconds(900)
-                            ? TimeSpan.FromMilliseconds(900)
-                            : waitRem;
-                        await WaitInterruptibleAsync(boundedWait, ct);
-                        continue;
+                        var waitRem = _stateMachine.GetWaitUntilReady(
+                            scaledCd,
+                            _config.MinInferenceIntervalSeconds);
+                        if (waitRem > TimeSpan.Zero)
+                        {
+                            var boundedWait = waitRem > TimeSpan.FromMilliseconds(900)
+                                ? TimeSpan.FromMilliseconds(900)
+                                : waitRem;
+                            await WaitInterruptibleAsync(boundedWait, ct);
+                            continue;
+                        }
                     }
                 }
 
@@ -550,13 +588,17 @@ public sealed class CoachOrchestrator : ICoachEngine
                 bool isEn = CoachingPersonaBuilder.IsEnglish(_config);
                 var history = _memory.FormatCompactHistory();
                 var timeline = _memory.FormatVisualTimeline(isEn: isEn);
+                var fact = Volatile.Read(ref _latestDeterministicFact);
+                var combinedContext = string.IsNullOrWhiteSpace(fact)
+                    ? timeline
+                    : (string.IsNullOrWhiteSpace(timeline) ? fact : $"{fact} | {timeline}");
                 var (resp, aiMs, model) = await _router.AnalyzeFrameAsync(
                     frame.JpegBytes,
                     profile,
                     _config,
                     history,
                     forceNow,
-                    timeline,
+                    combinedContext,
                     ct);
                 Volatile.Write(ref _lastAiMs, aiMs);
 
@@ -666,6 +708,21 @@ public sealed class CoachOrchestrator : ICoachEngine
     public (string GameName, string Digest, int Count) GetMatchSessionDigest(bool isEn = false) =>
         _memory.BuildMatchReviewDigest(isEn: isEn);
 
+    public MatchSessionSnapshot? CaptureMatchSnapshot(bool isEn = false) =>
+        _memory.BuildSessionSnapshot(isEn);
+
+    private void FlushMatchSnapshot(bool resetMatchLog)
+    {
+        bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+        var snap = _memory.BuildSessionSnapshot(isEn);
+        if (snap is not null && snap.InterventionsCount > 0)
+        {
+            try { _onMatchCompleted?.Invoke(snap); } catch { }
+        }
+        if (resetMatchLog)
+            _memory.Clear(clearMatchLog: true);
+    }
+
     public async Task StopAsync()
     {
         await _lifecycleLock.WaitAsync();
@@ -688,6 +745,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                 try { await Task.WhenAll(tasks); } catch { /* clean shutdown */ }
             }
 
+            FlushMatchSnapshot(resetMatchLog: false);
             _producerTask = null;
             _consumerTask = null;
             _frameChannel = null;

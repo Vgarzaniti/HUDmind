@@ -32,6 +32,28 @@ public sealed class LeagueLiveClientSensor : IGameTelemetrySensor
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(260));
 
+            using var respAll = await LocalApiHttp
+                .GetAsync("https://127.0.0.1:2999/liveclientdata/allgamedata", timeoutCts.Token)
+                .ConfigureAwait(false);
+            if (respAll.IsSuccessStatusCode)
+            {
+                await using var sAll = await respAll.Content.ReadAsStreamAsync(timeoutCts.Token).ConfigureAwait(false);
+                using var docAll = await JsonDocument.ParseAsync(sAll, cancellationToken: timeoutCts.Token).ConfigureAwait(false);
+                var parsed = ParseAllGameData(docAll.RootElement);
+                if (!string.IsNullOrEmpty(parsed))
+                    return parsed;
+            }
+        }
+        catch
+        {
+            // Fall through to compact activeplayer + gamestats endpoints
+        }
+
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(260));
+
             var tPlayer = LocalApiHttp.GetAsync("https://127.0.0.1:2999/liveclientdata/activeplayer", timeoutCts.Token);
             var tStats = LocalApiHttp.GetAsync("https://127.0.0.1:2999/liveclientdata/gamestats", timeoutCts.Token);
             await Task.WhenAll(tPlayer, tStats).ConfigureAwait(false);
@@ -47,24 +69,69 @@ public sealed class LeagueLiveClientSensor : IGameTelemetrySensor
             using var docStats = await JsonDocument.ParseAsync(sStats, cancellationToken: timeoutCts.Token).ConfigureAwait(false);
 
             double gameTime = docStats.RootElement.TryGetProperty("gameTime", out var gt) ? gt.GetDouble() : 0;
-            int lvl = docPlayer.RootElement.TryGetProperty("level", out var lv) ? lv.GetInt32() : 1;
-            double gold = docPlayer.RootElement.TryGetProperty("currentGold", out var cg) ? cg.GetDouble() : 0;
-
-            double hp = 1, maxHp = 1;
-            if (docPlayer.RootElement.TryGetProperty("championStats", out var st))
-            {
-                if (st.TryGetProperty("currentHealth", out var ch)) hp = ch.GetDouble();
-                if (st.TryGetProperty("maxHealth", out var mh)) maxHp = Math.Max(1.0, mh.GetDouble());
-            }
-
-            int mins = (int)(gameTime / 60);
-            int secs = (int)(gameTime % 60);
-            return $"LoL_API: Tiempo {mins:D2}:{secs:D2}, Nivel {lvl}, Oro {gold:F0}, Vida {(hp * 100.0 / maxHp):F0}%";
+            return FormatActiveSummary(docPlayer.RootElement, gameTime, cs: -1, wards: -1, isDead: false);
         }
         catch
         {
             return string.Empty;
         }
+    }
+
+    public static string ParseAllGameData(JsonElement root)
+    {
+        if (!root.TryGetProperty("activePlayer", out var ap))
+            return string.Empty;
+
+        double gameTime = 0;
+        if (root.TryGetProperty("gameData", out var gd) && gd.TryGetProperty("gameTime", out var gt))
+            gameTime = gt.GetDouble();
+
+        string? riotId = ap.TryGetProperty("riotId", out var rid) ? rid.GetString() : null;
+        string? summoner = ap.TryGetProperty("summonerName", out var sn) ? sn.GetString() : null;
+
+        int cs = -1, wards = -1;
+        bool isDead = false;
+        if (root.TryGetProperty("allPlayers", out var players) && players.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var p in players.EnumerateArray())
+            {
+                string? pRiot = p.TryGetProperty("riotId", out var pr) ? pr.GetString() : null;
+                string? pName = p.TryGetProperty("summonerName", out var ps) ? ps.GetString() : null;
+                bool matched = (!string.IsNullOrWhiteSpace(riotId) && string.Equals(riotId, pRiot, StringComparison.OrdinalIgnoreCase)) ||
+                               (!string.IsNullOrWhiteSpace(summoner) && string.Equals(summoner, pName, StringComparison.OrdinalIgnoreCase));
+                if (!matched) continue;
+
+                isDead = p.TryGetProperty("isDead", out var dd) && dd.ValueKind == JsonValueKind.True;
+                if (p.TryGetProperty("scores", out var sc))
+                {
+                    if (sc.TryGetProperty("creepScore", out var cEl)) cs = cEl.GetInt32();
+                    if (sc.TryGetProperty("wardScore", out var wEl)) wards = (int)Math.Round(wEl.GetDouble());
+                }
+                break;
+            }
+        }
+
+        return FormatActiveSummary(ap, gameTime, cs, wards, isDead);
+    }
+
+    private static string FormatActiveSummary(JsonElement activePlayer, double gameTime, int cs, int wards, bool isDead)
+    {
+        int lvl = activePlayer.TryGetProperty("level", out var lv) ? lv.GetInt32() : 1;
+        double gold = activePlayer.TryGetProperty("currentGold", out var cg) ? cg.GetDouble() : 0;
+
+        double hp = 1, maxHp = 1;
+        if (activePlayer.TryGetProperty("championStats", out var st))
+        {
+            if (st.TryGetProperty("currentHealth", out var ch)) hp = ch.GetDouble();
+            if (st.TryGetProperty("maxHealth", out var mh)) maxHp = Math.Max(1.0, mh.GetDouble());
+        }
+
+        int mins = (int)(gameTime / 60);
+        int secs = (int)(gameTime % 60);
+        string csTag = cs >= 0 ? $", CS {cs}" : string.Empty;
+        string wardTag = wards >= 0 ? $", Wards {wards}" : string.Empty;
+        string deadTag = isDead ? ", DEAD" : string.Empty;
+        return $"LoL_API: Tiempo {mins:D2}:{secs:D2}, Nivel {lvl}, Oro {gold:F0}, Vida {(hp * 100.0 / maxHp):F0}%{csTag}{wardTag}{deadTag}";
     }
 
     private static HttpClient CreateLoopbackApiClient()

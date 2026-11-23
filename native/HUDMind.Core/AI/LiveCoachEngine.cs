@@ -31,8 +31,10 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private readonly Action<string>? _onLog;
     private readonly Action<CoachRuntimeStats>? _onStats;
     private readonly Action<bool>? _onPauseChanged;
+    private readonly Action<MatchSessionSnapshot>? _onMatchCompleted;
 
     private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
+    private readonly TacticalSignalTracker _tacticalTracker = new();
     private readonly BlackScreenDiagnostic _blackScreenDiagnostic = new();
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
@@ -116,7 +118,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         Action<CoachRuntimeStats>? onStats = null,
         Action<bool>? onPauseChanged = null,
         ITextOnlySensorService? localPhaseGate = null,
-        Func<bool>? isPttKeyPressed = null)
+        Func<bool>? isPttKeyPressed = null,
+        Action<MatchSessionSnapshot>? onMatchCompleted = null)
     {
         _backend = backend;
         _config = config;
@@ -133,6 +136,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         _onLog = onLog;
         _onStats = onStats;
         _onPauseChanged = onPauseChanged;
+        _onMatchCompleted = onMatchCompleted;
         _micEnabled = config.IsMicActive;
     }
 
@@ -141,6 +145,21 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
     public (string GameName, string Digest, int Count) GetMatchSessionDigest(bool isEn = false) =>
         _memory.BuildMatchReviewDigest(isEn: isEn);
+
+    public MatchSessionSnapshot? CaptureMatchSnapshot(bool isEn = false) =>
+        _memory.BuildSessionSnapshot(isEn);
+
+    private void FlushMatchSnapshot(bool resetMatchLog)
+    {
+        bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+        var snap = _memory.BuildSessionSnapshot(isEn);
+        if (snap is not null && snap.InterventionsCount > 0)
+        {
+            try { _onMatchCompleted?.Invoke(snap); } catch { }
+        }
+        if (resetMatchLog)
+            _memory.Clear(clearMatchLog: true);
+    }
 
     public void SetAudioDevicesLive(string? inputDeviceName, string? outputDeviceName)
     {
@@ -170,6 +189,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _bargeInMuted = false;
             _suppressCurrentTurnAudio = false;
             _memory.Clear(clearMatchLog: true);
+            _tacticalTracker.Reset();
             Interlocked.Exchange(ref _lastPttHeldUtcTicks, 0);
             lock (_hashLock) _lastSentHash = null;
 
@@ -854,9 +874,13 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             if (!ReferenceEquals(matched, _activeProfile))
                             {
                                 var prev = _activeProfile;
+                                if (prev is not null)
+                                    FlushMatchSnapshot(resetMatchLog: true);
+
                                 _activeProfile = matched;
                                 lock (_hashLock) _lastSentHash = null;
                                 _localPhaseGate?.Reset();
+                                _tacticalTracker.Reset(matched.Manifest.GameId);
                                 _onLog?.Invoke($"Juego detectado automáticamente: {matched.Manifest.DisplayName} ({fg})");
                                 if (_config.EnableOverlay)
                                     _overlay.ShowCallout("Coach Live ACTIVO — observando", UrgencyLevel.Low, matched.Manifest.DisplayName, 3.0);
@@ -882,16 +906,26 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     {
                         Interlocked.Increment(ref _framesSent);
 
+                        bool isEnEval = CoachingPersonaBuilder.IsEnglish(_config);
+                        string rawTelemetry = _localPhaseGate is not null && _activeProfile is not null
+                            ? await _localPhaseGate.ReadTelemetryAsync(_activeProfile, ct)
+                            : string.Empty;
+                        var tactical = TacticalSignalEvaluator.Evaluate(rawTelemetry, _activeProfile, _tacticalTracker, isEnEval);
+                        if (tactical.MatchEnded)
+                            FlushMatchSnapshot(resetMatchLog: true);
+
                         double autoSec = _config.LiveAutoCoachSeconds;
                         long nowTicks = DateTimeOffset.UtcNow.UtcTicks;
                         long lastMicTicks = Interlocked.Read(ref _lastMicVoiceUtcTicks);
                         long lastNudgeTicks = Interlocked.Read(ref _lastAutoNudgeUtcTicks);
                         bool userRecentlySpoke = lastMicTicks > 0 && (nowTicks - lastMicTicks) < TimeSpan.FromSeconds(3.0).Ticks;
-                        bool shouldNudge = autoSec > 0 &&
-                            !_modelSpeaking &&
-                            !_pcmPlayer.IsPlayingAudio &&
-                            !userRecentlySpoke &&
-                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(autoSec).Ticks);
+                        bool canVoiceTurn = autoSec > 0 && !_modelSpeaking && !_pcmPlayer.IsPlayingAudio && !userRecentlySpoke;
+                        double scaledAutoSec = autoSec * tactical.CooldownMultiplier;
+                        bool regularDue = canVoiceTurn &&
+                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(scaledAutoSec).Ticks);
+                        bool eventDue = canVoiceTurn && tactical.TriggerImmediate &&
+                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(Math.Max(3.5, autoSec * 0.45)).Ticks);
+                        bool shouldNudge = (regularDue || eventDue) && !tactical.ShouldSilence;
 
                         bool sentAsTurn = false;
                         if (shouldNudge)
@@ -917,10 +951,14 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                 {
                                     Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
                                     Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
-                                    bool isEn = CoachingPersonaBuilder.IsEnglish(_config);
-                                    string prompt = isEn
-                                        ? "Look at this exact live game frame. Give 1 crisp, helpful tactical tip in 8-14 words based strictly on what you see."
-                                        : "Mirá esta captura exacta de la partida actual. Da 1 solo consejo táctico claro, natural y útil en español (8 a 14 palabras) basado únicamente en lo que ves en pantalla.";
+                                    string factNote = string.IsNullOrWhiteSpace(tactical.DeterministicFact)
+                                        ? string.Empty
+                                        : (isEnEval
+                                            ? $" Verified sensor fact: {tactical.DeterministicFact}."
+                                            : $" Dato exacto del juego: {tactical.DeterministicFact}.");
+                                    string prompt = isEnEval
+                                        ? $"Look at this exact live game frame.{factNote} Give 1 crisp, helpful tactical tip in 8-14 words based strictly on what you see."
+                                        : $"Mirá esta captura exacta de la partida actual.{factNote} Da 1 solo consejo táctico claro, natural y útil en español (8 a 14 palabras) basado únicamente en lo que ves en pantalla.";
                                     await _backend.SendImageAndPromptTurnAsync(jpeg, prompt, ct);
                                 }
                                 finally
@@ -998,6 +1036,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 try { await Task.WhenAll(tasksToAwait); } catch { /* clean stop */ }
             }
 
+            FlushMatchSnapshot(resetMatchLog: false);
             _sessionTask = null;
             _micSendTask = null;
             cts.Dispose();

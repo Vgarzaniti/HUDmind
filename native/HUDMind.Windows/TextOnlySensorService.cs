@@ -77,6 +77,9 @@ public sealed class TextOnlySensorService : ITextOnlySensorService
     public static string ClassifyPhase(IReadOnlyDictionary<string, string> zones, string logSummary) =>
         HudPhaseClassifier.ClassifyPhase(zones, logSummary);
 
+    public Task<string> ReadTelemetryAsync(GameProfile profile, CancellationToken ct = default) =>
+        ReadMatchingTelemetryAsync(profile, ct);
+
     public async Task<HudSensorSnapshot> ExtractAsync(byte[] jpegBytes, GameProfile profile, CancellationToken ct = default)
     {
         long t0 = Stopwatch.GetTimestamp();

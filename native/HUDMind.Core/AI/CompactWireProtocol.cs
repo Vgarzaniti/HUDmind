@@ -14,6 +14,7 @@ public static class CompactWireProtocol
     private static readonly HashSet<string> KnownPhases = new(StringComparer.OrdinalIgnoreCase)
     {
         "MENU", "LOBBY", "LOADING", "CARGANDO", "REPLAY", "PAUSE", "PAUSA", "PAUSED", "SCOREBOARD", "DEAD", "DESKTOP",
+        "DEAD_REVIEW", "OBJECTIVE_WINDOW", "COMBAT",
         "KICKOFF", "SAQUE", "ROUND_START", "BUY_PHASE", "FREEZETIME", "POST_PLANT", "CLUTCH", "OVERTIME",
         "TRAINING", "FREEPLAY", "FREE_PLAY", "WARMUP", "ENTRENAMIENTO", "PLAY", "MATCH", "PARTIDA",
         "INGAME", "IN_GAME", "UNKNOWN"
@@ -61,12 +62,12 @@ public static class CompactWireProtocol
               .Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
 
         if (!string.IsNullOrWhiteSpace(config.PreviousMatchFocus))
-            sb.Append(isEn ? "Previous match focus: " : "Foco pendiente de la partida anterior: ")
-              .Append(SanitizeInline(config.PreviousMatchFocus, 200)).Append('\n');
+            sb.Append(isEn ? "Rolling memory & focus: " : "Memoria y foco de partidas: ")
+              .Append(SanitizeInline(config.PreviousMatchFocus, 340)).Append('\n');
 
         if (!string.IsNullOrWhiteSpace(visualTimeline))
             sb.Append(isEn ? "Recent match context: " : "Contexto reciente de la partida: ")
-              .Append(SanitizeInline(visualTimeline, 300)).Append('\n');
+              .Append(SanitizeInline(visualTimeline, 360)).Append('\n');
 
         if (!string.IsNullOrWhiteSpace(recentHistory))
             sb.Append(isEn ? "Do not repeat recent tips: " : "No repitas estos consejos ya dados: ")
@@ -132,11 +133,11 @@ public static class CompactWireProtocol
               .Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
 
         if (!string.IsNullOrWhiteSpace(config.PreviousMatchFocus))
-            sb.Append(isEn ? "Previous match focus: " : "Foco pendiente de la partida anterior: ")
-              .Append(SanitizeInline(config.PreviousMatchFocus, 200)).Append('\n');
+            sb.Append(isEn ? "Rolling memory & focus: " : "Memoria y foco de partidas: ")
+              .Append(SanitizeInline(config.PreviousMatchFocus, 340)).Append('\n');
         if (!string.IsNullOrWhiteSpace(visualTimeline))
             sb.Append(isEn ? "Recent context: " : "Contexto reciente: ")
-              .Append(SanitizeInline(visualTimeline, 260)).Append('\n');
+              .Append(SanitizeInline(visualTimeline, 340)).Append('\n');
         if (!string.IsNullOrWhiteSpace(recentHistory))
             sb.Append(isEn ? "Do not repeat: " : "No repitas: ")
               .Append(SanitizeInline(recentHistory, 220)).Append('\n');
@@ -207,10 +208,10 @@ public static class CompactWireProtocol
               .Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
 
         if (!string.IsNullOrWhiteSpace(config.PreviousMatchFocus))
-            sb.Append(isEn ? "Previous match focus: " : "Foco pendiente de la partida anterior: ")
-              .Append(SanitizeInline(config.PreviousMatchFocus, 200)).Append('\n');
+            sb.Append(isEn ? "Rolling memory & focus: " : "Memoria y foco de partidas: ")
+              .Append(SanitizeInline(config.PreviousMatchFocus, 340)).Append('\n');
         if (!string.IsNullOrWhiteSpace(visualTimeline))
-            sb.Append(isEn ? "Recent context: " : "Contexto reciente: ").Append(SanitizeInline(visualTimeline, 240)).Append('\n');
+            sb.Append(isEn ? "Recent context: " : "Contexto reciente: ").Append(SanitizeInline(visualTimeline, 320)).Append('\n');
         if (!string.IsNullOrWhiteSpace(recentChatHistory))
             sb.Append(isEn ? "Recent chat turns: " : "Charla reciente: ").Append(SanitizeInline(recentChatHistory, 260)).Append('\n');
         if (!string.IsNullOrWhiteSpace(recentHistory))

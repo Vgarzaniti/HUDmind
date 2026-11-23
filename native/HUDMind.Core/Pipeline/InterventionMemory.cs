@@ -19,9 +19,13 @@ public sealed partial class InterventionMemory
     private readonly LinkedList<VisualEvent> _timeline = new();
     private readonly LinkedList<ChatExchange> _chatHistory = new();
     private readonly List<MatchSessionEvent> _matchEvents = [];
+    private string _lastMatchGameId = string.Empty;
     private string _lastMatchGameName = string.Empty;
+    private string _currentMatchId = CreateMatchId();
     private readonly int _maxItems;
     private readonly TimeSpan _ttl;
+
+    private static string CreateMatchId() => Guid.NewGuid().ToString("N")[..12];
 
     private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -50,7 +54,9 @@ public sealed partial class InterventionMemory
             if (clearMatchLog)
             {
                 _matchEvents.Clear();
+                _lastMatchGameId = string.Empty;
                 _lastMatchGameName = string.Empty;
+                _currentMatchId = CreateMatchId();
             }
         }
     }
@@ -88,6 +94,8 @@ public sealed partial class InterventionMemory
 
         lock (_sync)
         {
+            if (!string.IsNullOrWhiteSpace(gameId))
+                _lastMatchGameId = gameId.Trim();
             _lastMatchGameName = cleanGame;
             _matchEvents.Add(new MatchSessionEvent(ts, gameId ?? string.Empty, cleanGame, cleanPhase, cleanSummary, cleanAdvice));
             if (_matchEvents.Count > MaxMatchEvents)
@@ -95,27 +103,59 @@ public sealed partial class InterventionMemory
         }
     }
 
-    public (string GameName, string Digest, int Count) BuildMatchReviewDigest(int maxEvents = 36, bool isEn = false)
+    public MatchSessionSnapshot? BuildSessionSnapshot(bool isEn = false)
     {
         lock (_sync)
         {
             if (_matchEvents.Count == 0)
-                return (_lastMatchGameName, string.Empty, 0);
+                return null;
 
-            int total = _matchEvents.Count;
-            var slice = total <= maxEvents ? _matchEvents : _matchEvents.Skip(total - maxEvents).ToList();
-            var sb = new StringBuilder(Math.Min(1800, slice.Count * 55));
-            foreach (var ev in slice)
+            var (_, digest, count) = BuildMatchReviewDigestLocked(36);
+            var distinctAdvices = new List<string>(8);
+            foreach (var ev in _matchEvents)
             {
-                if (sb.Length >= 1650) break;
-                var localTime = ev.TimestampUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
-                sb.Append(localTime).Append(" [").Append(ev.Phase).Append("] ");
-                if (!string.IsNullOrWhiteSpace(ev.Summary))
-                    sb.Append(ev.Summary).Append(" -> ");
-                sb.Append(ev.Advice).Append('\n');
+                var kw = ExtractKeywords(ev.Advice);
+                if (distinctAdvices.Any(existing => AreKeywordSetsSimilar(ExtractKeywords(existing), kw, 0.62)))
+                    continue;
+                distinctAdvices.Add(ev.Advice);
+                if (distinctAdvices.Count >= 8)
+                    break;
             }
-            return (_lastMatchGameName, sb.ToString().TrimEnd(), total);
+
+            return new MatchSessionSnapshot(
+                _currentMatchId,
+                _lastMatchGameId,
+                _lastMatchGameName,
+                count,
+                digest,
+                distinctAdvices);
         }
+    }
+
+    public (string GameName, string Digest, int Count) BuildMatchReviewDigest(int maxEvents = 36, bool isEn = false)
+    {
+        lock (_sync)
+            return BuildMatchReviewDigestLocked(maxEvents);
+    }
+
+    private (string GameName, string Digest, int Count) BuildMatchReviewDigestLocked(int maxEvents)
+    {
+        if (_matchEvents.Count == 0)
+            return (_lastMatchGameName, string.Empty, 0);
+
+        int total = _matchEvents.Count;
+        var slice = total <= maxEvents ? _matchEvents : _matchEvents.Skip(total - maxEvents).ToList();
+        var sb = new StringBuilder(Math.Min(1800, slice.Count * 55));
+        foreach (var ev in slice)
+        {
+            if (sb.Length >= 1650) break;
+            var localTime = ev.TimestampUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+            sb.Append(localTime).Append(" [").Append(ev.Phase).Append("] ");
+            if (!string.IsNullOrWhiteSpace(ev.Summary))
+                sb.Append(ev.Summary).Append(" -> ");
+            sb.Append(ev.Advice).Append('\n');
+        }
+        return (_lastMatchGameName, sb.ToString().TrimEnd(), total);
     }
 
     public void RecordChatTurn(string userText, string coachReply, DateTimeOffset? nowUtc = null)
@@ -230,22 +270,30 @@ public sealed partial class InterventionMemory
                 if (entry.Keywords.Count == 0)
                     continue;
 
-                int shared = 0;
-                foreach (var w in kw)
-                {
-                    if (entry.Keywords.Contains(w))
-                        shared++;
-                }
-
-                // Jaccard + symmetric Dice protection: short tactical calls ("A" vs "B") never falsely collide!
-                int union = kw.Count + entry.Keywords.Count - shared;
-                double jaccard = union > 0 ? shared / (double)union : 0.0;
-                double overlap = shared / (double)Math.Min(kw.Count, entry.Keywords.Count);
-                if (jaccard >= 0.55 || (shared >= 3 && overlap >= overlapThreshold))
+                if (AreKeywordSetsSimilar(kw, entry.Keywords, overlapThreshold))
                     return true;
             }
         }
         return false;
+    }
+
+    internal static bool AreKeywordSetsSimilar(HashSet<string> a, HashSet<string> b, double overlapThreshold = 0.68)
+    {
+        if (a.Count == 0 || b.Count == 0)
+            return false;
+
+        int shared = 0;
+        foreach (var w in a)
+        {
+            if (b.Contains(w))
+                shared++;
+        }
+
+        // Jaccard + symmetric Dice protection: short tactical calls ("A" vs "B") never falsely collide!
+        int union = a.Count + b.Count - shared;
+        double jaccard = union > 0 ? shared / (double)union : 0.0;
+        double overlap = shared / (double)Math.Min(a.Count, b.Count);
+        return jaccard >= 0.55 || (shared >= 3 && overlap >= overlapThreshold);
     }
 
     public string FormatCompactHistory(DateTimeOffset? nowUtc = null, int maxLines = 4)
@@ -296,7 +344,7 @@ public sealed partial class InterventionMemory
         return norm;
     }
 
-    private static HashSet<string> ExtractKeywords(string text)
+    internal static HashSet<string> ExtractKeywords(string text)
     {
         var set = new HashSet<string>(StringComparer.Ordinal);
         // Preserve uppercase single-letter tactical designators (e.g. Bombsite "A", "B", "C") BEFORE lowercasing!

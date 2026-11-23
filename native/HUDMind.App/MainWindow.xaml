@@ -480,6 +480,7 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <DockPanel Grid.Row="0" Margin="0,0,0,10">
@@ -557,7 +558,15 @@
                         </Grid>
                     </Expander>
 
-                    <DockPanel Grid.Row="5" Margin="0,10,0,0">
+                    <!-- Compact Rolling N-Match Memory Status -->
+                    <Border Grid.Row="5" Background="#0F172A" CornerRadius="8" Padding="9,7" Margin="0,8,0,0" BorderBrush="#1E293B" BorderThickness="1">
+                        <DockPanel>
+                            <Button x:Name="BtnResetGameMemory" DockPanel.Dock="Right" Content="🧹 Limpiar memoria" Padding="10,4" FontSize="11.5" Click="BtnResetGameMemory_Click" ToolTip="Borra los patrones repetidos guardados en las últimas partidas de este juego" />
+                            <TextBlock x:Name="LblRollingMemorySummary" Text="🧠 Memoria del coach: sin partidas registradas aún (se actualiza sola al jugar)." Foreground="#CBD5E1" FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,10,0" />
+                        </DockPanel>
+                    </Border>
+
+                    <DockPanel Grid.Row="6" Margin="0,10,0,0">
                         <Button x:Name="BtnDeleteProfile" DockPanel.Dock="Left" Content="🗑 Eliminar Juego" Background="#7F1D1D" BorderBrush="#EF4444" Click="BtnDeleteProfile_Click" />
                         <Button Content="💾 Guardar Indicaciones" HorizontalAlignment="Right" Background="#0284C7" BorderBrush="#38BDF8" Padding="14,6" Click="BtnSaveRules_Click" />
                     </DockPanel>
@@ -585,6 +594,7 @@
                                             <ColumnDefinition Width="360" />
                                         </Grid.ColumnDefinitions>
                                         <Grid.RowDefinitions>
+                                            <RowDefinition Height="36" />
                                             <RowDefinition Height="36" />
                                             <RowDefinition Height="36" />
                                             <RowDefinition Height="36" />
@@ -630,6 +640,13 @@
                                             <ComboBoxItem Content="⚡ Rápido (menor consumo · recomendado)" Tag="eco" />
                                             <ComboBoxItem Content="⚖ Equilibrado (HD)" Tag="balanced" />
                                             <ComboBoxItem Content="💎 Máxima nitidez (Full HD)" Tag="high" />
+                                        </ComboBox>
+
+                                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Memoria de partidas:" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="CmbMemoryWindow" Grid.Row="6" Grid.Column="1" VerticalAlignment="Center" ToolTip="Cantidad de partidas recientes que el coach recuerda (al entrar nuevas se borran las más viejas)">
+                                            <ComboBoxItem Content="🧠 Últimas 5 partidas (se adapta rápido)" Tag="5" />
+                                            <ComboBoxItem Content="🧠 Últimas 10 partidas (recomendado)" Tag="10" />
+                                            <ComboBoxItem Content="🧠 Últimas 20 partidas (historial largo)" Tag="20" />
                                         </ComboBox>
                                     </Grid>
                                 </StackPanel>

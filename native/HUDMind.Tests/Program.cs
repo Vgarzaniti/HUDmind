@@ -1225,6 +1225,145 @@ await RunTest("36. GitHubReleaseUpdateService validates GitHub redirects, verifi
     }
 });
 
+// 37. Rolling N-Match Player Memory (FIFO Eviction, Habit Clustering, Upgrade & Evaporation)
+await RunTest("37. PlayerMemoryStore enforces rolling N-match eviction, upgrades AI review & drops aged habits", () =>
+{
+    var mem = new PlayerGameMemory { GameId = "rocket_league", DisplayName = "Rocket League" };
+    var t0 = DateTimeOffset.UtcNow.AddMinutes(-50);
+
+    // Match 1 & Match 2 share boost-conservation mistake (clustered across distinct matches)
+    var m1 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+        new MatchSessionSnapshot("m1", "rocket_league", "Rocket League", 4, "", ["Cuidá el boost al rotar a segundo palo"]), t0);
+    var m2 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+        new MatchSessionSnapshot("m2", "rocket_league", "Rocket League", 3, "", ["Rotá a segundo palo cuidando boost"]), t0.AddMinutes(10));
+
+    PlayerMemoryStore.ApplyRollingMatch(mem, m1, windowSize: 3);
+    PlayerMemoryStore.ApplyRollingMatch(mem, m2, windowSize: 3);
+
+    var recInitial = PlayerMemoryStore.ComputeRecurringHabits(mem, minOccurrences: 2);
+    Assert(recInitial.Count == 1 && recInitial[0].Occurrences == 2 && recInitial[0].WindowMatchCount == 2,
+        $"Expected 1 recurring boost pattern x2/2, got count={recInitial.Count}");
+
+    // Upgrading m2 with full AI review replaces in-place instead of duplicating
+    var m2Upgraded = PlayerMemoryStore.BuildEntryFromAiReview(
+        "m2", "rocket_league", "Rocket League", 5,
+        "1) Hábitos:\n- Rotá con boost guardado hacia segundo palo\n- Evitá double commit en sk-test1234567890abcdefghijklmnop\n2) Acierto: Buen saque\n3) Ejercicio: 5m de rotación defensiva en Freeplay",
+        t0.AddMinutes(11));
+    PlayerMemoryStore.ApplyRollingMatch(mem, m2Upgraded, windowSize: 3);
+    Assert(mem.Matches.Count == 2 && mem.Matches[1].IsAiReviewed && !string.Join(',', mem.Matches[1].Habits).Contains("sk-test"),
+        "In-place upgrade must preserve match count and redact secrets");
+
+    // Add 3 newer matches WITHOUT boost habit -> windowSize=3 evicts m1 and m2 so boost habit vanishes completely!
+    for (int i = 3; i <= 5; i++)
+    {
+        var mi = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+            new MatchSessionSnapshot($"m{i}", "rocket_league", "Rocket League", 2, "", ["Mantené distancia con tu compañero al atacar"]),
+            t0.AddMinutes(i * 10));
+        PlayerMemoryStore.ApplyRollingMatch(mem, mi, windowSize: 3);
+    }
+
+    Assert(mem.Matches.Count == 3 && mem.Matches[0].MatchId == "m3" && mem.Matches[^1].MatchId == "m5",
+        $"Rolling window must retain only 3 newest matches (m3..m5), got {mem.Matches.Count} starting at {mem.Matches[0].MatchId}");
+
+    var recAfterEviction = PlayerMemoryStore.ComputeRecurringHabits(mem, minOccurrences: 2);
+    Assert(recAfterEviction.Count == 1 && recAfterEviction[0].Summary.Contains("distancia", StringComparison.OrdinalIgnoreCase) &&
+           !recAfterEviction.Any(r => r.Summary.Contains("boost", StringComparison.OrdinalIgnoreCase)),
+        "Aged-out boost habit must evaporate after N newer matches push it out of the rolling window");
+    return Task.CompletedTask;
+});
+
+// 38. ConfigRepository Rolling Memory Persistence, CWE-22 Guard & Persona Injection
+await RunTest("38. ConfigRepository persists rolling N-match memory safely, blocks CWE-22 & injects into coach prompt", () =>
+{
+    var tmpRoot = Path.Combine(Path.GetTempPath(), $"hudmind_t38_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmpRoot);
+    try
+    {
+        var repo = new ConfigRepository(tmpRoot);
+        var e1 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+            new MatchSessionSnapshot("cs1", "cs2", "Counter-Strike 2", 3, "", ["No compres solo sin chaleco en ronda eco"]), DateTimeOffset.UtcNow.AddMinutes(-20));
+        var e2 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+            new MatchSessionSnapshot("cs2", "cs2", "Counter-Strike 2", 4, "", ["Respetá ronda eco sin comprar solo sin chaleco"]), DateTimeOffset.UtcNow.AddMinutes(-10));
+
+        repo.RecordMatchToRollingMemory("cs2", "Counter-Strike 2", e1, windowSize: 5);
+        repo.RecordMatchToRollingMemory("cs2", "Counter-Strike 2", e2, windowSize: 5);
+
+        var promptFocus = repo.LoadPlayerMemoryPromptContext("cs2", "Counter-Strike 2", maxChars: 340, isEn: false);
+        Assert(promptFocus.Contains("x2/2") && promptFocus.Contains("eco", StringComparison.OrdinalIgnoreCase),
+            $"Rolling prompt context missing recurring x2 pattern: {promptFocus}");
+
+        var cfg = new UserConfig { VoiceLanguage = "es", PreviousMatchFocus = promptFocus };
+        var prof = new GameProfile { DirectoryPath = tmpRoot, Manifest = new GameManifest { GameId = "cs2", DisplayName = "Counter-Strike 2" } };
+        var liveSys = CoachingPersonaBuilder.BuildLiveSystemInstruction(cfg, prof);
+        var wirePrompt = CompactWireProtocol.BuildRealtimePrompt(prof, cfg, "", false);
+        Assert(liveSys.Contains("x2/2") && wirePrompt.Contains("x2/2"),
+            "Both Live and Classic prompts must carry recurring N-match pattern");
+
+        bool blockedTraversal = false;
+        try { repo.ResetPlayerGameMemory("../outside"); } catch (UnauthorizedAccessException) { blockedTraversal = true; }
+        Assert(blockedTraversal, "Path traversal gameId must throw UnauthorizedAccessException");
+
+        repo.ResetPlayerGameMemory("cs2");
+        Assert(repo.LoadPlayerGameMemory("cs2").Matches.Count == 0, "ResetPlayerGameMemory must delete stored rolling matches");
+    }
+    finally
+    {
+        if (Directory.Exists(tmpRoot)) Directory.Delete(tmpRoot, true);
+    }
+    return Task.CompletedTask;
+});
+
+// 39. TacticalSignalEvaluator Deterministic Telemetry & Smart Event-Driven Triggers
+await RunTest("39. TacticalSignalEvaluator computes CS2/LoL/Dota2/RL facts, combat throttle, 1-shot death review & match boundaries", () =>
+{
+    var tracker = new TacticalSignalTracker();
+    var csProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "Counter-Strike 2" } };
+
+    // CS2 freezetime ECO without armor triggers immediately at faster cooldown
+    var buyEval = TacticalSignalEvaluator.Evaluate(
+        "CS2_GSI: de_mirage phase=live score=2:4 round=freezetime side=CT HP=100 Armor=0 Kit=0 $1450",
+        csProf, tracker, isEn: false);
+    Assert(buyEval.PhaseTag == "BUY_PHASE" && buyEval.TriggerImmediate && buyEval.CooldownMultiplier < 0.7 &&
+           buyEval.DeterministicFact.Contains("ECO", StringComparison.OrdinalIgnoreCase),
+        $"Expected BUY_PHASE ECO immediate trigger, got {buyEval}");
+
+    // CS2 active damage triggers combat pacing delay
+    _ = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=100 Armor=100 $1450", csProf, tracker, isEn: false);
+    var combatEval = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=58 Armor=85 $1450", csProf, tracker, isEn: false);
+    Assert(combatEval.PhaseTag == "COMBAT" && combatEval.ShouldDelayNonUrgent && combatEval.CooldownMultiplier > 1.2,
+        $"Expected COMBAT delay on HP drop, got {combatEval}");
+
+    // CS2 C4 < 12s without kit triggers urgent POST_PLANT
+    var c4Eval = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live C4=planted(~9s) side=CT HP=58 Armor=85 Kit=0 $1450", csProf, tracker, isEn: false);
+    Assert(c4Eval.PhaseTag == "POST_PLANT" && c4Eval.TriggerImmediate && c4Eval.DeterministicFact.Contains("SIN kit"),
+        $"Expected critical C4 without kit alert, got {c4Eval}");
+
+    // First death triggers DEAD_REVIEW once, second consecutive DEAD silences until respawn
+    var death1 = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=0 Armor=0 $2100", csProf, tracker, isEn: false);
+    var death2 = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=0 Armor=0 $2100", csProf, tracker, isEn: false);
+    Assert(death1.PhaseTag == "DEAD_REVIEW" && death1.TriggerImmediate && !death1.ShouldSilence && death2.ShouldSilence,
+        $"Death review should fire once then silence: d1={death1}, d2={death2}");
+
+    // CS2 gameover emits MatchEnded cleanly once
+    var end1 = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=gameover score=13:8", csProf, tracker, isEn: false);
+    var end2 = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=gameover score=13:8", csProf, tracker, isEn: false);
+    Assert(end1.MatchEnded && !end2.MatchEnded, "MatchEnded must fire exactly once per finished match");
+
+    // LoL CS/min + DEAD
+    var lolProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "league_of_legends", DisplayName = "LoL" } };
+    var lolEval = TacticalSignalEvaluator.Evaluate("LoL_API: Tiempo 10:00, Nivel 8, Oro 1550, Vida 0%, CS 75, Wards 6, DEAD", lolProf, tracker, isEn: false);
+    Assert(lolEval.PhaseTag == "DEAD_REVIEW" && lolEval.DeterministicFact.Contains("7.5 CS/m") && lolEval.DeterministicFact.Contains("1550g"),
+        $"LoL deterministic stats unexpected: {lolEval.DeterministicFact}");
+
+    // Dota 2 stack / rune window
+    var dotaProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "dota2", DisplayName = "Dota 2" } };
+    var runeEval = TacticalSignalEvaluator.Evaluate("DOTA2_GSI: 05:50 GAME_IN_PROGRESS juggernaut Lv6 HP=90% MP=70% Gold=1100", dotaProf, tracker, isEn: false);
+    Assert(runeEval.PhaseTag == "OBJECTIVE_WINDOW" && runeEval.TriggerImmediate && runeEval.DeterministicFact.Contains("10s"),
+        $"Dota 2 power rune countdown missing: {runeEval}");
+
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

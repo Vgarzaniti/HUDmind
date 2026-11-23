@@ -12,6 +12,7 @@ using HUDMind.Core.AI;
 using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
+using HUDMind.Core.Pipeline;
 using HUDMind.Core.Updates;
 using HUDMind.Windows;
 using MediaColor = System.Windows.Media.Color;
@@ -40,6 +41,7 @@ public partial class MainWindow : Window
 
     private readonly ConfigRepository _repo = new();
     private readonly CoachEngineCoordinator _coordinator = new();
+    private readonly object _memoryIoLock = new();
     private UserConfig _config;
     private List<ProviderAccount> _accounts;
     private List<GameProfile> _profiles;
@@ -213,6 +215,8 @@ public partial class MainWindow : Window
             SelectByTag(CmbSpeakerDevice, _config.AudioOutputDeviceName);
             SelectByTag(CmbLanguage, _config.VoiceLanguage);
             SelectByTag(CmbEfficiency, _config.TokenEfficiencyMode);
+            string memBucket = _config.MemoryMatchWindow switch { <= 7 => "5", <= 15 => "10", _ => "20" };
+            SelectByTag(CmbMemoryWindow, memBucket);
             SelectByTag(CmbOverlayPos, _config.OverlayPosition);
             SldOverlayScale.Value = Math.Clamp(_config.OverlayScale, 0.75, 1.45);
             LblOverlayScale.Text = $"{(int)Math.Round(SldOverlayScale.Value * 100)}%";
@@ -243,6 +247,7 @@ public partial class MainWindow : Window
         ConfigureOverlayFromCurrentConfig();
         RefreshAccountsList();
         RefreshOnboardingBanner();
+        RefreshRollingMemoryUi();
         UpdateLatencyCardHeaders(isLive: false);
 
         if (!string.IsNullOrWhiteSpace(_repo.LastLoadWarning))
@@ -464,9 +469,10 @@ public partial class MainWindow : Window
             var hintGameName = forcedId is not null
                 ? _profiles.FirstOrDefault(p => p.Manifest.GameId == forcedId)?.Manifest.DisplayName
                 : null;
-            _config.PreviousMatchFocus = _repo.LoadLatestPostMatchFocus(hintGameName);
+            bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+            _config.PreviousMatchFocus = _repo.LoadPlayerMemoryPromptContext(forcedId ?? "universal", hintGameName, maxChars: 340, isEn: isEn);
             if (!string.IsNullOrWhiteSpace(_config.PreviousMatchFocus))
-                AppendLog($"🎯 Foco de partida anterior activo: {_config.PreviousMatchFocus}");
+                AppendLog($"🧠 Memoria de partidas activa: {_config.PreviousMatchFocus}");
 
             try
             {
@@ -482,7 +488,8 @@ public partial class MainWindow : Window
                     AppendLog,
                     UpdateStatsUi,
                     OnPauseChanged,
-                    ToggleMicViaHotkey);
+                    ToggleMicViaHotkey,
+                    HandleMatchCompleted);
 
                 if (!result.Started)
                     return;
@@ -513,6 +520,36 @@ public partial class MainWindow : Window
         finally
         {
             BtnStartStop.IsEnabled = true;
+        }
+    }
+
+    private void HandleMatchCompleted(MatchSessionSnapshot snap)
+    {
+        try
+        {
+            var gameId = string.IsNullOrWhiteSpace(snap.GameId) ? "universal" : snap.GameId;
+            var entry = PlayerMemoryStore.BuildEntryFromSessionSnapshot(snap);
+            PlayerGameMemory updated;
+            lock (_memoryIoLock)
+                updated = _repo.RecordMatchToRollingMemory(gameId, snap.DisplayName, entry, _config.MemoryMatchWindow);
+
+            bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+            _config.PreviousMatchFocus = _repo.LoadPlayerMemoryPromptContext(gameId, snap.DisplayName, maxChars: 340, isEn: isEn);
+
+            if (!_shutdownComplete)
+            {
+                AppendLog($"🧠 Memoria actualizada ({updated.Matches.Count}/{PlayerMemoryStore.ClampWindowSize(_config.MemoryMatchWindow)} partidas) para {snap.DisplayName}.");
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (!_shutdownComplete)
+                        RefreshRollingMemoryUi();
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!_shutdownComplete)
+                AppendLog($"⚠ No se pudo guardar memoria de partida: {SecretRedactor.Redact(ex.Message)}");
         }
     }
 
@@ -932,12 +969,59 @@ public partial class MainWindow : Window
             TxtProfileExes.Text = "(Cualquier juego en foreground)";
             TxtProfileCooldown.Text = "8.0";
             TxtProfilePhash.Text = "6";
+            RefreshRollingMemoryUi("universal");
             return;
         }
 
         TxtProfileExes.Text = string.Join(", ", prof.Manifest.ProcessNames);
         TxtProfileCooldown.Text = prof.Manifest.CooldownSeconds.ToString("0.0", CultureInfo.InvariantCulture);
         TxtProfilePhash.Text = prof.Manifest.PhashThreshold.ToString(CultureInfo.InvariantCulture);
+        RefreshRollingMemoryUi(prof.Manifest.GameId);
+    }
+
+    private void RefreshRollingMemoryUi(string? gameId = null)
+    {
+        if (LblRollingMemorySummary is null || BtnResetGameMemory is null)
+            return;
+
+        var id = gameId ?? CmbRulesGame.SelectedValue?.ToString() ?? "universal";
+        PlayerGameMemory mem;
+        lock (_memoryIoLock)
+            mem = _repo.LoadPlayerGameMemory(id);
+
+        if (mem.WindowSize <= 0 || mem.Matches.Count == 0)
+            mem.WindowSize = _config.MemoryMatchWindow;
+
+        LblRollingMemorySummary.Text = PlayerMemoryStore.FormatForUiSummary(mem);
+        BtnResetGameMemory.IsEnabled = mem.Matches.Count > 0;
+    }
+
+    private void BtnResetGameMemory_Click(object sender, RoutedEventArgs e)
+    {
+        var id = CmbRulesGame.SelectedValue?.ToString() ?? "universal";
+        var prof = _profiles.FirstOrDefault(p => p.Manifest.GameId == id);
+        var displayName = prof?.Manifest.DisplayName ?? id;
+        var ans = System.Windows.MessageBox.Show(
+            $"¿Limpiar el historial de patrones aprendidos en las últimas partidas de '{displayName}'?",
+            "HUDMind · Limpiar memoria del coach",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (ans != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            lock (_memoryIoLock)
+                _repo.ResetPlayerGameMemory(id);
+            _config.PreviousMatchFocus = string.Empty;
+            _coordinator.RefreshPersona("memoria reseteada");
+            RefreshRollingMemoryUi(id);
+            AppendLog($"🧹 Memoria de últimas partidas limpiada para {displayName}.");
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(SecretRedactor.Redact(ex.Message), "Error al limpiar memoria", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void TxtCustomRules_TextChanged(object sender, TextChangedEventArgs e)
@@ -1260,6 +1344,20 @@ public partial class MainWindow : Window
             {
                 var savedPath = _repo.SavePostMatchReview(gameName, model, review);
                 AppendLog($"💾 Resumen guardado: {savedPath}");
+
+                var (matchId, matchGameId, _, matchCount) = _coordinator.GetLastMatchMeta();
+                var targetGameId = string.IsNullOrWhiteSpace(matchGameId)
+                    ? (CmbGameProfile.SelectedValue?.ToString() ?? "universal")
+                    : matchGameId;
+                var aiEntry = PlayerMemoryStore.BuildEntryFromAiReview(matchId, targetGameId, gameName, matchCount, review);
+                PlayerGameMemory updatedMem;
+                lock (_memoryIoLock)
+                    updatedMem = _repo.RecordMatchToRollingMemory(targetGameId, gameName, aiEntry, _config.MemoryMatchWindow);
+
+                _config.PreviousMatchFocus = _repo.LoadPlayerMemoryPromptContext(targetGameId, gameName, maxChars: 340, isEn: isEn);
+                _coordinator.RefreshPersona("resumen post-partida guardado");
+                RefreshRollingMemoryUi();
+                AppendLog($"🧠 Memoria del coach consolidada ({updatedMem.Matches.Count}/{PlayerMemoryStore.ClampWindowSize(_config.MemoryMatchWindow)} partidas).");
             }
             catch (Exception saveEx)
             {
@@ -1403,6 +1501,9 @@ public partial class MainWindow : Window
         _config.TextLanguage = GetSelectedTag(CmbLanguage, "es");
         _config.VoiceLanguage = _config.TextLanguage;
         _config.TokenEfficiencyMode = GetSelectedTag(CmbEfficiency, "eco");
+        _config.MemoryMatchWindow = int.TryParse(GetSelectedTag(CmbMemoryWindow, "10"), out int memWin)
+            ? PlayerMemoryStore.ClampWindowSize(memWin)
+            : PlayerMemoryStore.DefaultWindowSize;
         _config.OverlayPosition = GetSelectedTag(CmbOverlayPos, "top-right");
         _config.CaptureMonitor = CmbMonitor.SelectedValue is int m ? m : 1;
         _config.EnableOverlay = ChkEnableOverlay.IsChecked == true;
