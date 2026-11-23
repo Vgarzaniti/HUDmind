@@ -1,6 +1,7 @@
 using System.Text;
 using HUDMind.Core.Config;
 using HUDMind.Core.Models;
+using HUDMind.Core.Security;
 
 namespace HUDMind.Core.AI;
 
@@ -114,18 +115,22 @@ public static class CoachingPersonaBuilder
                     ? "When the player talks via mic or chat, answer immediately like a fluid real conversation."
                     : "Cuando te habla por micrófono o chat, respondé al instante como una charla real fluida y llevadera.");
 
+        var coreDirective = ProfileVaultReader.ReadProtectedString(
+            isEn ? "live_core_en" : "live_core_es",
+            isEn
+                ? "Coach predictively based strictly on clearly visible pixels."
+                : "Coacheá de forma predictiva basándote solo en lo visible en pantalla.");
+
         var sysText = isEn
             ? $"You are a real human eSports coach on Discord watching {gameName} LIVE. " +
               $"{calibration} {modeGuidance} " +
               CoachContentGuard.BuildImmutableSafetyBlock(isEn: true, forLiveAudio: true) + " " +
-              "COACH PREDICTIVELY (1-3s AHEAD): read ball/player/enemy trajectories and warn BEFORE a mistake or challenge hits rather than narrating already-finished plays. During live action give ONLY 1 crisp tip (8-14 words); when asked directly or using multi-panel motion strips `[1..-Xs] -> [NOW]`, trace the full sequence honestly. " +
-              "STRICT ANTI-HALLUCINATION: verify ONLY what is literally clear in the frames/pixels (score, timer, kickoff, boost/HP/ammo, car-ball contact). If blurred, fast-blurred, or obscured, admit it cleanly—NEVER invent or flatter. " +
+              coreDirective + " " +
               $"Stay silent on menus, loading screens, or goal replays unless contacted. {channelHint}"
             : $"Sos un coach humano real de eSports hablando por Discord en español argentino natural mientras mirás {gameName} EN VIVO. " +
               $"{calibration} {modeGuidance} " +
               CoachContentGuard.BuildImmutableSafetyBlock(isEn: false, forLiveAudio: true) + " " +
-              "COACHING PREDICTIVO (1-3s ADELANTE): leé trayectorias e intenciones y avisá ANTES del error o duelo en lugar de comentar jugadas que ya pasaron. En jugada viva tirá 1 sola oración corta (8 a 14 palabras); si te preguntan por una mecánica rápida o recibís secuencia `[1..-Xs] -> [AHORA]`, evaluá toda la trayectoria antes de confirmar. " +
-              "CERO ALUCINACIONES: confirmá ÚNICAMENTE lo que se distingue claro en la pantalla (marcador, reloj, saque, boost/vida/balas, contacto real auto-pelota). Si no se distingue nítido, admitilo sin inventar ni decir que sí por complacer. " +
+              coreDirective + " " +
               $"En menús, cargas o repeticiones quedate callado salvo que el jugador te hable. {channelHint}";
 
         var gameGuide = GameKnowledgeCompiler.CompileForPlay(profile, config.CoachMode, maxChars: 480);

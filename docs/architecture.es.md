@@ -1,6 +1,6 @@
 > 🌐 **Idioma / Language:** **[🇪🇸 Español](architecture.es.md)** | [🇺🇸 English](architecture.en.md)
 
-# Arquitectura Técnica — HUDMind Native v1.1.1 (ISO/IEC/IEEE 42010)
+# Arquitectura Técnica — HUDMind Native v1.2.0 (ISO/IEC/IEEE 42010)
 
 Este documento describe la arquitectura modular de **HUDMind Native** sobre **.NET 9**, su separación estricta entre lógica pura, capa Win32 y UI WPF, sus motores polimórficos y sus Registros de Decisión de Arquitectura (ADRs).
 
@@ -66,6 +66,8 @@ Este documento describe la arquitectura modular de **HUDMind Native** sobre **.N
    - Si una cuenta falla o limita cuota (`429`/`402`/`5xx`), rota automáticamente. En proveedores con `SupportsFastHedgedVision`, dispara una carrera especulativa si el primario supera el umbral de latencia, evitando errores no observados y descartando respuestas tardías si expiró la frescura automática.
 4. **Sensores Perezosos Ciego-Texto (`TextOnlySensorService` + `HudPhaseClassifier`):**
    - Cuando la cuenta activa soporta visión, el costo OCR es `0 ms`. Solo ante cuentas solo-texto (`SupportsVision == false`) o evaluación de compuerta local en Live ejecuta WinRT OCR por zonas + sensores de juego para describir la partida sin enviar píxeles.
+5. **Chain of Responsibility (`ICoachSafetyPipeline` / `CompositeContentSafetyPipeline`) y Coordinador de Sesión (`MatchSessionCoordinator`):**
+   - `ICoachSafetyPipeline` permite encadenar y extender reglas de filtrado de idioma/NSFW/alcance sin modificar los orquestadores; `MatchSessionCoordinator` centraliza aislamiento entre juegos, fencing por `epoch`, memoria táctica y `RecentFrameRingBuffer` compartido por ambos motores.
 
 ---
 
@@ -95,3 +97,4 @@ Este documento describe la arquitectura modular de **HUDMind Native** sobre **.N
 | **ADR-007** | Confirmación sonora vía WAV embebido *pinned* (`Win32AudioCue` + `PlaySoundW`) | Síntesis TTS o archivos WAV externos en disco | Latencia de disparo en microsegundos, cero I/O de disco y silencio garantizado cuando `text_only` o `EnableAudioCues=false`. |
 | **ADR-008** | Voz clásica 100% C# (`WinRtNaturalVoiceService` + `InstantSapiVoiceService`) y perfiles embebidos | Subproceso Python archivado o dependencia de carpeta externa obligatoria | Cero procesos Python en runtime, respeto directo al dispositivo `AudioOutputDeviceName` y portabilidad plug-and-play en cualquier PC Windows. |
 | **ADR-009** | Actualizador asistido in-app vía GitHub Releases con verificación `SHA-256` sin auto-parcheo en caliente | Scripts `.bat`/PowerShell auto-reemplazando el `.exe` en ejecución | Evita falsos positivos heurísticos de antivirus/SmartScreen, valida redirecciones únicamente a GitHub CDN y permite descargar y lanzar limpiamente el nuevo binario. |
+| **ADR-010** | Vault cifrado `HUDMind.Vault.bin` (Brotli + AES-256-GCM en `HUDMind.Packer`) + `ReadyToRun` + single-file comprimido + CLI `Obfuscar` en release | Recursos embebidos `.md`/`.json` en texto plano o dependencias NuGet de ILCompiler | Elimina literales y perfiles legibles con `strings`/`ILSpy` dentro del binario distribuido, preserva cero NuGet en los `.csproj` y protege la apertura del vault vía `RuntimeHardeningGuard` solo en binarios empaquetados. |

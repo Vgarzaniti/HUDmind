@@ -205,7 +205,14 @@ public partial class MainWindow : Window
             SelectByTag(CmbSkillTier, _config.PlayerSkillTier);
             TxtRankLabel.Text = _config.PlayerRankLabel;
             SelectByTag(CmbCoachStyle, _config.CoachStyle);
-            SelectByTag(CmbLiveAutoRate, ((int)Math.Round(_config.LiveAutoCoachSeconds)).ToString());
+            string liveBucket = _config.LiveAutoCoachSeconds <= 0.1
+                ? "0"
+                : _config.LiveAutoCoachSeconds <= 6.0
+                    ? "5"
+                    : _config.LiveAutoCoachSeconds <= 10.0
+                        ? "8"
+                        : "12";
+            SelectByTag(CmbLiveAutoRate, liveBucket);
             SelectByTag(CmbVoiceGender, _config.VoiceGender);
             SelectByTag(CmbQuickGender, _config.VoiceGender);
             SelectByTag(CmbVoiceStyle, _config.VoiceStyle);
@@ -680,6 +687,10 @@ public partial class MainWindow : Window
         {
             SelectByTag(CmbCommMode, _config.CommunicationMode);
             SelectByTag(CmbCommModeSettings, _config.CommunicationMode);
+            string autoTag = _config.LiveAutoCoachSeconds <= 0.1 ? "0"
+                : _config.LiveAutoCoachSeconds <= 6.0 ? "5"
+                : _config.LiveAutoCoachSeconds <= 10.0 ? "8" : "12";
+            SelectByTag(CmbLiveAutoRate, autoTag);
         }
         finally
         {
@@ -1602,7 +1613,7 @@ public partial class MainWindow : Window
         _config.PlayerSkillTier = GetSelectedTag(CmbSkillTier);
         _config.PlayerRankLabel = (TxtRankLabel.Text ?? string.Empty).Trim();
         _config.CoachStyle = GetSelectedTag(CmbCoachStyle);
-        _config.LiveAutoCoachSeconds = double.TryParse(GetSelectedTag(CmbLiveAutoRate), out double autoSec) ? autoSec : 12.0;
+        _config.LiveAutoCoachSeconds = double.TryParse(GetSelectedTag(CmbLiveAutoRate), out double autoSec) ? autoSec : 8.0;
         _config.VoiceGender = GetSelectedTag(CmbVoiceGender);
         _config.VoiceStyle = GetSelectedTag(CmbVoiceStyle);
         _config.TtsRate = GetSelectedTag(CmbVoiceRate, "+5%");

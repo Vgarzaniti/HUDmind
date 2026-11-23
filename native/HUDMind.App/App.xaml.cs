@@ -1,6 +1,8 @@
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using HUDMind.Core.Security;
+using HUDMind.Windows.Security;
 
 namespace HUDMind.App;
 
@@ -14,6 +16,7 @@ public partial class App : System.Windows.Application
         RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
 
         bool smokeMode = e.Args.Any(a => string.Equals(a, "--smoke-startup", StringComparison.OrdinalIgnoreCase));
+        ProfileVaultReader.RegisterRuntimeIntegrityProbe(() => RuntimeHardeningGuard.IsExternalDebuggerAttached(smokeMode));
         if (!smokeMode)
         {
             _singleInstanceMutex = new Mutex(true, "HUDMind_Native_SingleInstance_Mutex", out bool createdNew);

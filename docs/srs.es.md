@@ -3,7 +3,7 @@
 # Especificación de Requisitos de Software (SRS) — ISO/IEC/IEEE 29148
 
 **Proyecto:** HUDMind Native (.NET 9) — Coach Táctico de Videojuegos en Tiempo Real  
-**Versión:** 1.1.1 (`HUDMind.Native`)  
+**Versión:** 1.2.0 (`HUDMind.Native`)  
 **Estándares de Referencia:** ISO/IEC/IEEE 29148 (Ingeniería de Requisitos), ISO/IEC 25010 (Calidad de Producto de Software), ISO/IEC 27001 (Seguridad de la Información), ISO/IEC/IEEE 42010 (Descripción de Arquitectura), ISO/IEC/IEEE 29119 (Pruebas de Software).
 
 ---
@@ -63,3 +63,4 @@
 | **REQ-SEC-04** | Validación estricta de TLS loopback Riot e HTTP GSI. | `LeagueLiveClientSensor` verifica host `127.0.0.1:2999`, vigencia, RSA>=2048/ECDSA>=256, SAN loopback, identidad `Riot Games` y proceso activo. `LoopbackGsiService` limita headers (`8KB`), body (`64KB`, `413`), rechaza `chunked` (`400`) y limita conexiones concurrentes. |
 | **REQ-SEC-05** | Neutralización de inyección de prompts en OCR/telemetría. | `CoachingPersonaBuilder.SanitizeField` limpia separadores de protocolo (`\|`), tags XML/prompt (`<...>`) y trunca longitud antes de inyectar contexto en prompts del modelo. |
 | **REQ-SEC-06** | Integridad y origen confiable en descargas de actualización. | `GitHubReleaseUpdateService` permite solo HTTPS hacia `github.com` / `.githubusercontent.com` en petición inicial y en hasta 5 redirecciones, limita lecturas (`512KB` API / `250MB` binario) y verifica `SHA-256` contra `SHA256SUMS.txt` descartando archivos alterados. |
+| **REQ-SEC-07** | Guardrails extensibles y protección anti-extracción de activos en binario. | `ICoachSafetyPipeline` / `CoachContentGuard` bloquean insultos y contenido NSFW/off-topic en tiempo real; `HUDMind.Packer` sella perfiles y reglas sensibles en `HUDMind.Vault.bin` (Brotli + AES-256-GCM) y `release.yml` empaqueta en `ReadyToRun` single-file endurecido con `RuntimeHardeningGuard`. |

@@ -23,7 +23,7 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
    - **GitHub Updates (`GitHubReleaseUpdateService`):** Allow HTTPS redirects (`<= 5` hops) **only** to trusted `github.com` / `.githubusercontent.com` hosts, cap response sizes, and verify `SHA-256` against `SHA256SUMS.txt` when that checksum asset exists, is readable, and lists the downloaded file (failing and deleting the file on mismatch). Otherwise the download completes without verification and launch remains available in `MainWindow`.
    - **Path Traversal (`ConfigRepository` & `LoopbackGsiService`):** Validate game IDs (`^[a-z0-9_\-]{1,64}$`), block `..`, UNC paths, and `ReparsePoint` symlinks; write configs atomically (`AtomicWrite`).
    - **Secrets (`SecretRedactor`):** Mask API keys/tokens in all logs, error messages, corrupt backups, and Markdown match reviews.
-   - **Prompt Sanitization (`CoachingPersonaBuilder.SanitizeField`):** Strip protocol delimiters (`|`) and XML-like tags (`<...>`) from OCR/telemetry before prompt injection.
+   - **Prompt Sanitization & Encrypted Asset Vault (`CoachingPersonaBuilder.SanitizeField`, `CoachContentGuard`, `ProfileVaultReader`, `RuntimeHardeningGuard`):** Strip delimiters (`|`) and XML-like tags (`<...>`), enforce the extensible `ICoachSafetyPipeline` chain across inputs/outputs/markdown, and seal default profiles + sensitive rule templates inside `HUDMind.Vault.bin` (Brotli + AES-256-GCM packed by `HUDMind.Packer`, with `RuntimeHardeningGuard` active strictly in single-file binaries).
 5. **Cross-Platform Core Split:** Keep `native/HUDMind.Core` strictly `net9.0` (no `Windows`, `WPF`, or `WinForms` imports) so `HUDMind.Tests` runs on both `ubuntu-latest` and `windows-latest`.
 6. **Archive & Runtime Assets Rules:**
    - Do **not** modify `archive/legacy_python/` or reintroduce Python runtime dependencies.
@@ -38,17 +38,19 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
 | `native/HUDMind.Core/` | `net9.0` cross-platform core | Domain models, atomic config, embedded profiles, AI routing, wire protocol, pipelines, update checker |
 | `native/HUDMind.Core/Models/DomainModels.cs` | Models | `UserConfig` (preserves Python `ExtraFields`), `ProviderAccount`, `GameProfile`, `GameManifest`, `CoachResponse`, `UrgencyLevel`, `HudSensorSnapshot`, `CoachRuntimeStats` |
 | `native/HUDMind.Core/Config/ConfigRepository.cs` | Config & security | `ConfigRepository`, `SecretRedactor`, `BaseUrlSecurityValidator`, `HotkeyParser`, `EnsureDefaultProfilesSeeded` |
-| `native/HUDMind.Core/AI/` | AI routing & backends | `ProviderRegistry`, `ProviderFailoverRouter` (hedged vision + circuit breaker), `SharedHttpFactory`, `CompactWireProtocol` (`FASE\|QUE_VEO\|URG\|CONSEJO`), `CoachingPersonaBuilder`, `LiveCoachEngine` (`RealtimeLiveCoachOrchestrator`), `Adapters/*`, `LiveBackends/*` |
-| `native/HUDMind.Core/Engine/` | Classic engine | `Abstractions.cs` (`ICoachEngine`, `IScreenCaptureService`, `IForegroundWindowDetector`, `IVoiceOutputService`, `IOverlayOutputService`, `ITextOnlySensorService`), `CoachOrchestrator.cs` |
-| `native/HUDMind.Core/Pipeline/` | Frame/audio utilities | `PerceptualHasher` (64-bit dHash), `InterventionMemory` (TTL anti-repeat + chat isolation), `HudPhaseClassifier`, `AudioPcmUtilities`, `BlackScreenDiagnostic` |
+| `native/HUDMind.Core/Security/` | AES-256-GCM vault | `ProfileVaultCodec` (Brotli + AES-256-GCM), `ProfileVaultReader` (in-RAM unsealing + integrity probe) |
+| `native/HUDMind.Core/AI/` | AI routing & backends | `ProviderRegistry`, `ProviderFailoverRouter`, `CoachContentGuard` (`ICoachSafetyPipeline` / `CompositeContentSafetyPipeline`), `SharedHttpFactory`, `CompactWireProtocol`, `CoachingPersonaBuilder`, `LiveCoachEngine` (`RealtimeLiveCoachOrchestrator`), `Adapters/*`, `LiveBackends/*` |
+| `native/HUDMind.Core/Engine/` | Orchestrators | `Abstractions.cs` (`ICoachEngine`, etc.), `MatchSessionCoordinator` (shared epoch/memory/ring-buffer coordinator), `CoachOrchestrator.cs` |
+| `native/HUDMind.Core/Pipeline/` | Frame/audio utilities | `PerceptualHasher` (64-bit dHash), `InterventionMemory` (TTL anti-repeat + chat isolation), `RecentFrameRingBuffer`, `GameKnowledgeCompiler`, `TacticalSignalEvaluator`, `HudPhaseClassifier`, `AudioPcmUtilities`, `BlackScreenDiagnostic` |
 | `native/HUDMind.Core/Updates/GitHubReleaseUpdateService.cs` | Self-update check & download | `CheckForUpdatesAsync`, `ParseLatestReleaseJson`, `SelectPreferredAssets`, `DownloadAssetAsync` (GitHub redirect allowlist + `SHA-256`) |
-| `native/HUDMind.Windows/` | `net9.0-windows10.0.19041.0` | GDI capture, Win32 detection, hotkeys, WinMM audio, WinRT TTS/OCR, passive game sensors, `KnownFolders` |
+| `native/HUDMind.Windows/` | `net9.0-windows10.0.19041.0` | GDI capture, Win32 detection, hotkeys, WinMM audio, WinRT TTS/OCR, passive game sensors, `RuntimeHardeningGuard`, `KnownFolders` |
 | `native/HUDMind.Windows/Sensors/` | Passive sensors | `TailLogSensorBase`, `RocketLeagueLogSensor`, `ValorantLogSensor`, `ValveGsiTelemetrySensor`, `LeagueLiveClientSensor` |
 | `native/HUDMind.Windows/Audio/` | Pure WinMM / WinRT audio | `Win32AudioDevices`, `Win32StreamingMicCapture` (16kHz), `Win32StreamingPcmPlayer` (24kHz), `WinRtNaturalVoiceService`, `Win32AudioCue`, `AudioDiagnosticsService` |
-| `native/HUDMind.App/` | WPF UI (`HUDMind.Native.exe`) | `App.xaml.cs` (SoftwareOnly + mutex + `ReleaseSingleInstanceMutex`), `MainWindow.xaml/.cs` (cyber-tactical sidebar + 4 views + `UpdateBanner`), `OverlayWindow.xaml/.cs` (translucent click-through PerMonitorV2 HUD), `Controls/` (`ActiveProfileBanner`, `AudioWaveformControl`), `Services/` (`CoachEngineCoordinator`, `HudVisualPalette`, `HudNavigationMediator`), `Win32TrayIcon.cs` |
-| `native/HUDMind.Tests/` | `net9.0` test suite | 46 cross-platform unit/integration tests (`Program.cs`) |
-| `native/HUDMind.Windows.Tests/` | `net9.0-windows` test suite | 12 Windows-native tests for WinMM, GSI, TLS pinning, logs, capture, voice, and `KnownFolders` (`Program.cs`) |
-| `profiles/` | Game cartridges | 7 bundled profiles (`aoe2_de`, `cs2`, `dota2`, `league_of_legends`, `rob_run`, `rocket_league`, `valorant`) embedded in `HUDMind.Core.csproj` |
+| `native/HUDMind.App/` | WPF UI (`HUDMind.Native.exe`) | `App.xaml.cs` (SoftwareOnly + mutex + `RuntimeHardeningGuard` probe), `MainWindow.xaml/.cs` (`UpdateBanner`), `OverlayWindow.xaml/.cs`, `Controls/`, `Services/` (`CoachEngineCoordinator`), `Win32TrayIcon.cs` |
+| `native/HUDMind.Packer/` | Build tool (`net9.0`) | Seals `profiles/**/*` and `ProtectedAssets/` into `HUDMind.Vault.bin` (`IsPublishable=false`, zero NuGets) |
+| `native/HUDMind.Tests/` | `net9.0` test suite | 48 cross-platform unit/integration tests (`Program.cs`) |
+| `native/HUDMind.Windows.Tests/` | `net9.0-windows` test suite | 13 Windows-native tests for WinMM, GSI, TLS pinning, logs, capture, voice, hardening, and `KnownFolders` (`Program.cs`) |
+| `profiles/` | Game cartridges | 7 bundled profiles (`aoe2_de`, `cs2`, `dota2`, `league_of_legends`, `rob_run`, `rocket_league`, `valorant`) sealed inside `HUDMind.Vault.bin` |
 | `docs/` | Bilingual technical docs | All docs have `.es.md` & `.en.md` pairs (`architecture`, `srs`, `test_plan_ieee29119`, `game_profiles_guide`, `versioning_and_releases`, `pull_request_guide`) |
 | `.github/` | CI/CD & governance | `workflows/ci.yml`, `workflows/release.yml`, `PULL_REQUEST_TEMPLATE.md`, `ISSUE_TEMPLATE/*`, `dependabot.yml` |
 
@@ -71,7 +73,7 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
 # 1. Build entire solution (must pass with 0 warnings / 0 errors)
 dotnet build native/HUDMind.sln -c Release
 
-# 2. Run cross-platform Core suite (46 tests) & Windows native suite (12 tests)
+# 2. Run cross-platform Core suite (48 tests) & Windows native suite (13 tests)
 dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
 

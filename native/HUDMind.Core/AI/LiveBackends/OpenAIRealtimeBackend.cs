@@ -23,7 +23,7 @@ public sealed class OpenAIRealtimeBackend : ILiveRealtimeBackend
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly object _frameLock = new();
     private volatile ClientWebSocket? _ws;
-    private byte[]? _latestJpeg;
+    private readonly List<TemporalFrameSample> _recentFrames = [];
     private volatile bool _connected;
     private volatile bool _disposed;
 
@@ -178,6 +178,7 @@ public sealed class OpenAIRealtimeBackend : ILiveRealtimeBackend
         finally
         {
             _connected = false;
+            lock (_frameLock) _recentFrames.Clear();
             try { ws.Dispose(); } catch { }
             if (ReferenceEquals(_ws, ws))
                 _ws = null;
@@ -188,7 +189,20 @@ public sealed class OpenAIRealtimeBackend : ILiveRealtimeBackend
     {
         if (jpegBytes is { Length: > 0 })
         {
-            lock (_frameLock) _latestJpeg = jpegBytes;
+            var now = DateTimeOffset.UtcNow;
+            lock (_frameLock)
+            {
+                if (_recentFrames.Count == 0 || (now - _recentFrames[^1].CapturedAtUtc).TotalMilliseconds >= 750.0)
+                {
+                    _recentFrames.Add(new TemporalFrameSample(jpegBytes, now, 0));
+                    while (_recentFrames.Count > 6)
+                        _recentFrames.RemoveAt(0);
+                }
+                else
+                {
+                    _recentFrames[^1] = new TemporalFrameSample(jpegBytes, now, 0);
+                }
+            }
         }
         return Task.CompletedTask;
     }
@@ -262,11 +276,12 @@ public sealed class OpenAIRealtimeBackend : ILiveRealtimeBackend
         var ws = _ws;
         if (ws is null || ws.State != WebSocketState.Open) return;
 
-        byte[]? cachedFrame;
-        lock (_frameLock) cachedFrame = _latestJpeg;
-        if (cachedFrame is { Length: > 0 })
+        List<TemporalFrameSample> cachedSeq;
+        lock (_frameLock)
+            cachedSeq = [.. _recentFrames];
+        if (cachedSeq.Count > 0)
         {
-            await SendImageAndPromptTurnAsync(cachedFrame, promptText, ct);
+            await SendFrameSequenceAndPromptTurnAsync(cachedSeq, promptText, ct);
             return;
         }
 
@@ -342,6 +357,7 @@ public sealed class OpenAIRealtimeBackend : ILiveRealtimeBackend
     {
         _disposed = true;
         _connected = false;
+        lock (_frameLock) _recentFrames.Clear();
         var ws = _ws;
         _ws = null;
         try { ws?.Dispose(); } catch { }

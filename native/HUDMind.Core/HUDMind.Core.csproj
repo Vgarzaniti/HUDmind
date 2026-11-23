@@ -6,7 +6,22 @@
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
   <ItemGroup>
-    <EmbeddedResource Include="../../profiles/**/*.json" LogicalName="HUDMind.DefaultProfiles/%(RecursiveDir)%(Filename)%(Extension)" />
-    <EmbeddedResource Include="../../profiles/**/*.md" Exclude="../../profiles/**/custom_rules.md" LogicalName="HUDMind.DefaultProfiles/%(RecursiveDir)%(Filename)%(Extension)" />
+    <ProjectReference Include="..\HUDMind.Packer\HUDMind.Packer.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <VaultSourceFile Include="../../profiles/**/*.json" />
+    <VaultSourceFile Include="../../profiles/**/*.md" Exclude="../../profiles/**/custom_rules.md" />
+    <VaultSourceFile Include="ProtectedAssets/vault_strings.json" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)HUDMind.Vault.bin" LogicalName="HUDMind.Vault.bin" />
   </ItemGroup>
+  <Target Name="BuildAssetVault" BeforeTargets="AssignTargetPaths;PrepareResources;CoreResGen"
+          Inputs="@(VaultSourceFile)" Outputs="$(IntermediateOutputPath)HUDMind.Vault.bin">
+    <MSBuild Projects="..\HUDMind.Packer\HUDMind.Packer.csproj"
+             Properties="Configuration=$(Configuration);RuntimeIdentifier="
+             Targets="Build">
+      <Output TaskParameter="TargetOutputs" PropertyName="_PackerAssemblyPath" />
+    </MSBuild>
+    <Exec Command="dotnet &quot;$(_PackerAssemblyPath)&quot; &quot;$(MSBuildThisFileDirectory)..\..\profiles&quot; &quot;$(MSBuildThisFileDirectory)ProtectedAssets\vault_strings.json&quot; &quot;$(IntermediateOutputPath)HUDMind.Vault.bin&quot;" />
+    <ItemGroup>
+      <FileWrites Include="$(IntermediateOutputPath)HUDMind.Vault.bin" />
+    </ItemGroup>
+  </Target>
 </Project>

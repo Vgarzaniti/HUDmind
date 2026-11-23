@@ -2039,6 +2039,134 @@ await RunTest("46. High-FPS clip ring buffer, native multi-frame HTTP/Live paylo
     await live.StopAsync();
 });
 
+// 47. Encrypted Vault Sealing + Chain-of-Responsibility Safety Pipeline + MatchSessionCoordinator Isolation
+await RunTest("47. AES-256-GCM ProfileVault eliminates plaintext resources & ICoachSafetyPipeline/MatchSessionCoordinator isolate cleanly", async () =>
+{
+    var resNames = typeof(ConfigRepository).Assembly.GetManifestResourceNames();
+    Assert(resNames.Length == 1 && string.Equals(resNames[0], HUDMind.Core.Security.ProfileVaultReader.ResourceLogicalName, StringComparison.Ordinal),
+        $"Expected ONLY encrypted vault resource HUDMind.Vault.bin, found: [{string.Join(", ", resNames)}]");
+
+    var vaultEntries = HUDMind.Core.Security.ProfileVaultReader.GetDefaultProfileEntries();
+    Assert(vaultEntries.Count >= 21 && HUDMind.Core.Security.ProfileVaultReader.IsVaultIntegrityHealthy,
+        $"Expected >=21 encrypted default profile assets unsealed cleanly (got {vaultEntries.Count})");
+    Assert(vaultEntries.ContainsKey("rocket_league/knowledge_base.md") && vaultEntries.ContainsKey("cs2/manifest.json") && vaultEntries.ContainsKey("valorant/system_prompt.md"),
+        "Encrypted vault must contain all game cartridges cleanly");
+    Assert(HUDMind.Core.Security.ProfileVaultReader.ReadDefaultProfileText("rocket_league", "knowledge_base.md", 5000).Contains("Flip Reset", StringComparison.OrdinalIgnoreCase),
+        "Rocket League knowledge base must unseal cleanly in RAM");
+
+    // AES-256-GCM round-trip + tamper detection
+    var sealedBlob = HUDMind.Core.Security.ProfileVaultCodec.Seal(new Dictionary<string, byte[]>
+    {
+        ["test/key.txt"] = System.Text.Encoding.UTF8.GetBytes("sealed-secret")
+    });
+    var unsealed = HUDMind.Core.Security.ProfileVaultCodec.Unseal(sealedBlob);
+    Assert(System.Text.Encoding.UTF8.GetString(unsealed["test/key.txt"]) == "sealed-secret", "Vault round-trip mismatch");
+
+    sealedBlob[^1] ^= 0xFF; // corrupt tag/ciphertext
+    bool tamperRejected = false;
+    try { HUDMind.Core.Security.ProfileVaultCodec.Unseal(sealedBlob); }
+    catch (System.Security.Cryptography.CryptographicException) { tamperRejected = true; }
+    Assert(tamperRejected, "Flipping ciphertext byte must throw CryptographicException");
+
+    // Chain-of-Responsibility custom safety rule injected cleanly into ProviderFailoverRouter
+    var customPipeline = ((CompositeContentSafetyPipeline)CoachContentGuard.DefaultPipeline)
+        .WithAdditionalRule(new CustomKeywordSafetyRule(SafetyCategory.OffTopicNonGaming, "horoscopo_custom_xyz"));
+    var acc = new ProviderAccount { Label = "Stub", Provider = "gemini", ApiKey = "AIzaTestCustomRule123", Model = "gemini-2.5-flash", Priority = 1 };
+    int backendHits = 0;
+    await using var guardedRouter = new ProviderFailoverRouter(
+        [acc],
+        factory: a => new CallbackQuestionProvider(a, (_, _, _) => { backendHits++; return new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Low, "ok", "ok", "")); }),
+        safetyPipeline: customPipeline);
+
+    var cfg = new UserConfig { VoiceLanguage = "es", TextLanguage = "es" };
+    var prof = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "Rocket League", ProcessNames = ["RocketLeague.exe"] } };
+    var (blockedReply, _, blockedModel) = await guardedRouter.AskQuestionAsync(null, "Decime horoscopo_custom_xyz hoy", prof, cfg);
+    Assert(blockedModel == "safety-guard" && backendHits == 0 && !string.IsNullOrWhiteSpace(blockedReply),
+        $"Custom Chain-of-Responsibility rule must intercept before AI call (model={blockedModel}, hits={backendHits})");
+
+    // MatchSessionCoordinator cross-game isolation + epoch increment + match snapshot emission
+    var rlProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "Rocket League", ProcessNames = ["RocketLeague.exe"] } };
+    var csProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "Counter-Strike 2", ProcessNames = ["cs2.exe"] } };
+    var winDet = new MutableWindowDetector("RocketLeague.exe");
+    var completed = new List<MatchSessionSnapshot>();
+    var coordinator = new MatchSessionCoordinator(
+        [rlProf, csProf], winDet, new StubCapture(), new RecordingOverlay(),
+        testMode: false, onMatchCompleted: s => completed.Add(s));
+
+    coordinator.InitializeOnStart(cfg, predetectInNonTestMode: true);
+    Assert(coordinator.CurrentEpoch == 0 && coordinator.ActiveProfile == rlProf, "Expected RL initial foreground lock");
+    coordinator.Memory.RecordMatchEvent("rl", "Rocket League", "PLAY", "mid", "Rotá al segundo palo");
+    coordinator.FrameRingBuffer.Record(new CapturedFrameData([0xFF, 0xD8, 0xFF, 0xD9], 1UL, 1, 1.0, 1.0, DateTimeOffset.UtcNow));
+
+    winDet.CurrentExe = "cs2.exe";
+    var outcome = coordinator.SyncForegroundProfile(cfg, "Coach activo");
+    Assert(outcome.Switched && outcome.PreviousProfile == rlProf && outcome.CurrentProfile == csProf, "Expected switch RL -> CS2");
+    Assert(coordinator.CurrentEpoch == 1, $"Expected epoch increment 0 -> 1, got {coordinator.CurrentEpoch}");
+    Assert(coordinator.FrameRingBuffer.Count == 0 && completed.Count == 1 && completed[0].GameId == "rl",
+        "Cross-game switch must flush outgoing snapshot and isolate FrameRingBuffer");
+});
+
+// 48. Continuous Dual-Tier Silent Vision (18s Macro + 7.4 FPS Micro), Auto Coach Voice Promotion & Silent Multi-Frame Proactive Observation
+await RunTest("48. Coach watches full silent play via dual-tier macro+micro buffer & auto-enables proactive cadence in voice-only mode", async () =>
+{
+    // 1) Dual-tier ring retains 10s+ macro play keyframes alongside high-density tail frames without user speaking
+    var ring = new RecentFrameRingBuffer(maxFrames: 6, minSpacingMs: 125.0, macroMaxFrames: 18, macroMinSpacingMs: 950.0);
+    var t0 = DateTimeOffset.UtcNow.AddSeconds(-11);
+    for (int s = 0; s <= 10; s++)
+    {
+        var ts = t0.AddSeconds(s);
+        ring.Record(new CapturedFrameData([(byte)(0x10 + s), 0xD8, 0xFF], (ulong)(s + 1), s + 1, 1, 1, ts));
+        if (s == 10)
+        {
+            ring.Record(new CapturedFrameData([0x21, 0xD8, 0xFF], 90UL, 90, 1, 1, ts.AddMilliseconds(160)));
+            ring.Record(new CapturedFrameData([0x22, 0xD8, 0xFF], 91UL, 91, 1, 1, ts.AddMilliseconds(320)));
+            ring.Record(new CapturedFrameData([0x23, 0xD8, 0xFF], 92UL, 92, 1, 1, ts.AddMilliseconds(480)));
+            ring.Record(new CapturedFrameData([0x24, 0xD8, 0xFF], 93UL, 93, 1, 1, ts.AddMilliseconds(640)));
+            ring.Record(new CapturedFrameData([0x25, 0xD8, 0xFF], 94UL, 94, 1, 1, ts.AddMilliseconds(800)));
+        }
+    }
+
+    Assert(ring.MacroCount >= 10, $"Expected >=10 macro keyframes over 11s silent play, got {ring.MacroCount}");
+    Assert(!ring.NeedsMacroKeyframe(t0.AddSeconds(10).AddMilliseconds(500)), "Should not trigger macro keyframe <950ms");
+    Assert(ring.NeedsMacroKeyframe(t0.AddSeconds(11).AddMilliseconds(50)), "Must force macro keyframe after >=950ms");
+
+    var composer = new StubStoryboardComposer();
+    var latest = new CapturedFrameData([0x7F, 0xD8, 0xFF], 999UL, 999, 1, 1, t0.AddSeconds(10).AddMilliseconds(960));
+    var macroClip = ring.BuildVisualClipPayload(composer, latest, maxFrames: 6, maxAgeSeconds: 12.0, jpegQuality: 84, isEn: false);
+    double spanSeconds = (macroClip.Frames[^1].CapturedAtUtc - macroClip.Frames[0].CapturedAtUtc).TotalSeconds;
+    Assert(macroClip.Frames.Count == 6 && spanSeconds >= 9.0,
+        $"Silent proactive clip must span >=9s across macro+micro play (panels={macroClip.Frames.Count}, span={spanSeconds:F1}s, note={macroClip.SequenceNote})");
+
+    // 2) coach_voice automatically promotes LiveAutoCoachSeconds > 0 when previously 0 so silent voice mode never mutes forever
+    var cfgVoice = new UserConfig { LiveAutoCoachSeconds = 0 };
+    cfgVoice.SetCommunicationMode("coach_voice");
+    Assert(cfgVoice.IsCoachVoiceOnlyMode && !cfgVoice.IsMicActive && cfgVoice.LiveAutoCoachSeconds > 0,
+        $"coach_voice mode must auto-enable proactive cadence (got {cfgVoice.LiveAutoCoachSeconds})");
+
+    // 3) Silent Live proactive loop delivers full multi-frame clip (4+ panels) & passive WS stream even when user never speaks
+    var stubLive = new StubLiveBackend();
+    var stubPlayer = new StubStreamingPlayer();
+    var stubMic = new StubStreamingMic();
+    var silentCfg = new UserConfig { LiveAutoCoachSeconds = 0.4, VoiceLanguage = "es", TextLanguage = "es" };
+    silentCfg.SetCommunicationMode("coach_voice");
+    var rlProf = new GameProfile
+    {
+        DirectoryPath = ".",
+        Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League", CaptureFps = 2.0, ProcessNames = ["RocketLeague.exe"] }
+    };
+
+    await using var silentLive = new RealtimeLiveCoachOrchestrator(
+        stubLive, silentCfg, [rlProf], new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), stubPlayer, stubMic, new RecordingOverlay(),
+        testMode: true, storyboardComposer: composer);
+    await silentLive.StartAsync();
+    for (int i = 0; i < 80 && stubLive.LastMultiFrameTurnCount < 2; i++) await Task.Delay(35);
+    await silentLive.StopAsync();
+
+    Assert(stubLive.SentTextTurns >= 1 && stubLive.LastMultiFrameTurnCount >= 2,
+        $"Silent coach_voice mode must observe full play & deliver multi-frame proactive turns without user speaking (turns={stubLive.SentTextTurns}, frames={stubLive.LastMultiFrameTurnCount})");
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -2260,4 +2388,11 @@ sealed class CallbackQuestionProvider(
         Task.FromResult(onQuestion(jpegBytes, userQuestion, visualTimeline));
     public Task<(bool Ok, string Message)> TestConnectionAsync(CancellationToken ct = default) => Task.FromResult((true, "ok"));
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+sealed class CustomKeywordSafetyRule(SafetyCategory category, string keyword) : IContentSafetyRule
+{
+    public SafetyCategory Category { get; } = category;
+    public bool AppliesToOutput => true;
+    public bool IsMatch(string normalizedText) => normalizedText.Contains(keyword, StringComparison.Ordinal);
 }

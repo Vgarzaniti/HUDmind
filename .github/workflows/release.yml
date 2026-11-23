@@ -55,14 +55,20 @@ jobs:
           $p = Start-Process -FilePath "native/HUDMind.App/bin/Release/net9.0-windows10.0.19041.0/HUDMind.Native.exe" -ArgumentList "--smoke-startup" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "WPF --smoke-startup failed with exit code $($p.ExitCode)" }
 
-      - name: Publish Standalone & Framework-Dependent Single-File .exe
+      - name: Install build-time IL hardening CLI (zero runtime NuGet dependencies)
+        shell: pwsh
+        run: dotnet tool install -g Obfuscar.GlobalTool --version 2.2.50
+
+      - name: Publish Hardened Standalone & Framework-Dependent Single-File .exe
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
 
           dotnet publish native/HUDMind.App/HUDMind.App.csproj -c Release -r win-x64 `
             --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:DebugType=None -p:Version=$env:APP_VERSION -o release-out/standalone
+            -p:PublishReadyToRun=true -p:EnableCompressionInSingleFile=true -p:ObfuscateRelease=true `
+            -p:DebugType=None -p:DebugSymbols=false -p:DebuggerSupport=false `
+            -p:Version=$env:APP_VERSION -o release-out/standalone
 
           $p1 = Start-Process -FilePath "release-out/standalone/HUDMind.Native.exe" -ArgumentList "--smoke-startup" -Wait -PassThru
           if ($p1.ExitCode -ne 0) { throw "Standalone exe --smoke-startup failed ($($p1.ExitCode))" }
@@ -70,7 +76,9 @@ jobs:
 
           dotnet publish native/HUDMind.App/HUDMind.App.csproj -c Release -r win-x64 `
             --no-self-contained -p:PublishSingleFile=true `
-            -p:DebugType=None -p:Version=$env:APP_VERSION -o release-out/compact
+            -p:PublishReadyToRun=true -p:ObfuscateRelease=true `
+            -p:DebugType=None -p:DebugSymbols=false -p:DebuggerSupport=false `
+            -p:Version=$env:APP_VERSION -o release-out/compact
 
           $p2 = Start-Process -FilePath "release-out/compact/HUDMind.Native.exe" -ArgumentList "--smoke-startup" -Wait -PassThru
           if ($p2.ExitCode -ne 0) { throw "Compact exe --smoke-startup failed ($($p2.ExitCode))" }
