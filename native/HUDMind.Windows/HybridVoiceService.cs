@@ -25,7 +25,7 @@ public sealed class HybridVoiceService : IVoiceOutputService
     }
 
     public bool IsNeuralWorkerPresent => _winRt.IsAvailable;
-    public bool IsSpeaking => _style == "neural" && _winRt.IsAvailable && _winRt.IsSpeaking;
+    public bool IsSpeaking => (_style == "neural" && _winRt.IsAvailable) ? _winRt.IsSpeaking : _instant.IsSpeaking;
 
     public string EngineName =>
         _style == "neural" && _winRt.IsAvailable

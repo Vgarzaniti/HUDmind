@@ -32,5 +32,8 @@ Cuando el jugador esté en **Modo Entrenamiento** (*The Range / Galería de Tiro
 - **Disciplina de Disparo (*Burst / Tap & Deadzoning*):** Con Vandal/Phantom a media-larga distancia, priorizar ráfagas de 2–3 balas con *strafe* lateral entre ráfagas en lugar de *full spray* agachado.
 - **Práctica de Habilidades y Lineups:** Guiar la colocación de humos al ras del borde del choke point (sin dejar huecos a los costados) y el uso de flashes/recons.
 
-## 5. Lista Negra de UI (En modo `match`)
+## 5. Lectura Predictiva (1–3s Antes)
+- **Minimapa y Utilidad Pre-Duelo:** Si hay iconos enemigos aproximándose sin ward/centinela cubriendo espalda o la Spike entra en ventana de `7s` (defuse completo) -> avisar **antes** de abrir en seco (*"Usá flash/recon antes de abrir ese ángulo"* o *"Tenés 7s exactos, jugá al tiempo/tap"*).
+
+## 6. Lista Negra de UI (En modo `match`)
 - Menú principal, lobby, selección de agente, pantalla de carga, `TAB` (scoreboard), muerte/espectador, chat de texto o overlays externos.

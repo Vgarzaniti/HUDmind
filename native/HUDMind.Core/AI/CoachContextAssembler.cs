@@ -101,6 +101,8 @@ public static class CoachContextAssembler
             }
 
             var cleanLine = trimmed.TrimStart('-', '*', '•', ' ', '\t').Replace("**", string.Empty, StringComparison.Ordinal);
+            if (CoachContentGuard.ContainsUnsafeInstruction(cleanLine))
+                continue;
             var safe = CoachingPersonaBuilder.SanitizeField(SecretRedactor.Redact(cleanLine), 140);
             if (string.IsNullOrWhiteSpace(safe))
                 continue;

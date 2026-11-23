@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 using HUDMind.Windows;
 
@@ -347,6 +348,81 @@ await RunTest("W10. Win32StreamingPcmPlayer prebuffer/flush/interrupt & WinRt/SA
     using var voice = new HybridVoiceService();
     voice.SetSpeechRate("+5%");
     voice.SetSpeechRate("+0%");
+    return Task.CompletedTask;
+});
+
+// W11. Win32TemporalStoryboardComposer packs 2x1 motion strip & 2x2 chronological storyboard cleanly
+await RunTest("W11. Win32TemporalStoryboardComposer renders valid 2x1 motion strips & 2x2 storyboards cleanly", () =>
+{
+    var composer = new Win32TemporalStoryboardComposer();
+    Assert(composer.ComposeSequenceJpeg([], 1440, 810, 84) is null, "Empty frames must return null");
+    Assert(composer.ComposeSequenceJpeg([new TemporalFrameSample([1, 2, 3], DateTimeOffset.UtcNow, 1UL)], 1440, 810, 84) is null,
+        "Single malformed frame must return null safely");
+
+    byte[] MakeTestJpeg(System.Drawing.Color c)
+    {
+        using var bmp = new System.Drawing.Bitmap(320, 180);
+        using (var g = System.Drawing.Graphics.FromImage(bmp))
+            g.Clear(c);
+        using var ms = new MemoryStream();
+        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+        return ms.ToArray();
+    }
+
+    var now = DateTimeOffset.UtcNow;
+    var samples = new List<TemporalFrameSample>
+    {
+        new(MakeTestJpeg(System.Drawing.Color.Navy), now.AddMilliseconds(-900), 1UL),
+        new(MakeTestJpeg(System.Drawing.Color.DarkCyan), now.AddMilliseconds(-600), 2UL),
+        new(MakeTestJpeg(System.Drawing.Color.DarkGreen), now.AddMilliseconds(-300), 3UL),
+        new(MakeTestJpeg(System.Drawing.Color.DarkOrange), now, 4UL)
+    };
+
+    var pair = composer.ComposeSequenceJpeg(samples.Take(2).ToList(), 1440, 405, 82);
+    Assert(pair is { Length: > 1000 }, "2-frame strip must produce valid JPEG bytes");
+    using (var ms2 = new MemoryStream(pair!))
+    using (var img2 = System.Drawing.Image.FromStream(ms2))
+    {
+        Assert(img2.Width == 1440 && img2.Height == 405, $"Expected 1440x405 2x1 strip, got {img2.Width}x{img2.Height}");
+    }
+
+    var grid = composer.ComposeSequenceJpeg(samples, 1440, 810, 85);
+    Assert(grid is { Length: > 1000 }, "4-frame storyboard must produce valid JPEG bytes");
+    using (var ms4 = new MemoryStream(grid!))
+    using (var img4 = System.Drawing.Image.FromStream(ms4))
+    {
+        Assert(img4.Width == 1440 && img4.Height == 810, $"Expected 1440x810 2x2 storyboard, got {img4.Width}x{img4.Height}");
+    }
+
+    var sixSamples = new List<TemporalFrameSample>(samples)
+    {
+        new(MakeTestJpeg(System.Drawing.Color.DarkMagenta), now.AddMilliseconds(200), 5UL),
+        new(MakeTestJpeg(System.Drawing.Color.DarkGoldenrod), now.AddMilliseconds(400), 6UL)
+    };
+    var strip6 = composer.ComposeSequenceJpeg(sixSamples, 1620, 720, 84);
+    Assert(strip6 is { Length: > 1000 }, "6-frame 3x2 filmstrip must produce valid JPEG bytes");
+    using (var ms6 = new MemoryStream(strip6!))
+    using (var img6 = System.Drawing.Image.FromStream(ms6))
+    {
+        Assert(img6.Width == 1620 && img6.Height == 720, $"Expected 1620x720 3x2 filmstrip, got {img6.Width}x{img6.Height}");
+    }
+    return Task.CompletedTask;
+});
+
+// W12. Long multi-slice DMA streaming, continuous turn recovery, and clean TTS markdown speech sanitizer
+await RunTest("W12. Win32StreamingPcmPlayer slices >400ms buffers smoothly & SanitizeForSpeech removes markdown noise", () =>
+{
+    var clean = HUDMind.Core.AI.CoachContentGuard.SanitizeForSpeech("**Rotá** [AHORA] | guardá `boost`...");
+    Assert(!clean.Contains('*') && !clean.Contains('|') && !clean.Contains('`') && !clean.Contains('['),
+        $"SanitizeForSpeech left symbols that cause TTS hesitations: '{clean}'");
+
+    using var player = new Win32StreamingPcmPlayer();
+    player.SetVolume(0.75);
+    player.EnqueuePcm24k(new byte[12000]); // primes 240ms + submits with 20ms silent lead-in
+    player.EnqueuePcm24k(new byte[48000]); // 1000ms continuous chunk -> slices cleanly into <=400ms WAVEHDR blocks
+    player.FlushBuffered();
+    player.InterruptAndClear();
+    Assert(!player.IsPlayingAudio, "InterruptAndClear must clear IsPlayingAudio cleanly after multi-slice write");
     return Task.CompletedTask;
 });
 

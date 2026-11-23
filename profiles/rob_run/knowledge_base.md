@@ -46,5 +46,8 @@ Cuando el jugador active el **Modo Entrenamiento (`--training-mode`)** en *ROB R
 4. **Optimización de Base y Economía Inicial:**
    - Si está empezando con el auto alquilado básico, priorizar robos rápidos de bajo riesgo (tiendas chicas / cajeros) y extracción inmediata para comprar terreno, base propia y un vehículo con buena capacidad de carga.
 
-## 5. Lista Negra de UI (En modo `match`)
+## 5. Lectura Predictiva (1–3s Antes)
+- Si barra de ruido/sospecha o tiempo de policía sube y el inventario ya trae botín valioso -> avisar **antes** de abrir otra caja para iniciar extracción segura hacia el vehículo.
+
+## 6. Lista Negra de UI (En modo `match`)
 - Menú principal de Steam/juego, pantalla de carga de servidor, edición estática prolongada de ajustes gráficos o chat social sin acción en curso.

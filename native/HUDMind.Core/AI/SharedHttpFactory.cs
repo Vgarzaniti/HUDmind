@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using HUDMind.Core.Config;
+using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 
 namespace HUDMind.Core.AI;
@@ -17,6 +18,7 @@ public sealed record ProviderCallResult(
 public interface IAIProvider : IAsyncDisposable
 {
     ProviderAccount Account { get; }
+    bool SupportsNativeMultiFrame => false;
     Task PrewarmAsync(CancellationToken ct = default);
     Task<ProviderCallResult> AnalyzeFrameAsync(
         byte[] jpegBytes,
@@ -27,6 +29,18 @@ public interface IAIProvider : IAsyncDisposable
         string spatialTelemetry = "",
         HudSensorSnapshot? sensorSnapshot = null,
         CancellationToken ct = default);
+    Task<ProviderCallResult> AnalyzeFrameSequenceAsync(
+        TemporalVisualPayload visual,
+        GameProfile profile,
+        UserConfig config,
+        string recentHistory,
+        bool forceAdvice,
+        string spatialTelemetry = "",
+        HudSensorSnapshot? sensorSnapshot = null,
+        CancellationToken ct = default) =>
+        AnalyzeFrameAsync(
+            visual.FallbackSingleJpeg ?? [],
+            profile, config, recentHistory, forceAdvice, spatialTelemetry, sensorSnapshot, ct);
     Task<ProviderCallResult> AskQuestionAsync(
         byte[]? jpegBytes,
         string userQuestion,
@@ -38,6 +52,19 @@ public interface IAIProvider : IAsyncDisposable
         string recentChatHistory = "",
         CancellationToken ct = default) =>
         Task.FromResult(new ProviderCallResult(null, 501, "Chat interactivo no implementado en este adaptador."));
+    Task<ProviderCallResult> AskQuestionSequenceAsync(
+        TemporalVisualPayload? visual,
+        string userQuestion,
+        GameProfile profile,
+        UserConfig config,
+        string recentHistory = "",
+        string visualTimeline = "",
+        HudSensorSnapshot? sensorSnapshot = null,
+        string recentChatHistory = "",
+        CancellationToken ct = default) =>
+        AskQuestionAsync(
+            visual?.FallbackSingleJpeg,
+            userQuestion, profile, config, recentHistory, visualTimeline, sensorSnapshot, recentChatHistory, ct);
     Task<ProviderCallResult> AskRawTextAsync(
         string prompt,
         UserConfig config,

@@ -2,6 +2,40 @@ using HUDMind.Core.Models;
 
 namespace HUDMind.Core.Engine;
 
+public sealed record TemporalFrameSample(
+    byte[] JpegBytes,
+    DateTimeOffset CapturedAtUtc,
+    ulong PerceptualHash
+);
+
+/// <summary>
+/// Dual-representation temporal clip payload: native chronological HD frames for multi-image APIs
+/// (Gemini, OpenAI, Anthropic, Live) plus a CPU-composed filmstrip fallback for single-image Vision endpoints.
+/// </summary>
+public sealed record TemporalVisualPayload(
+    IReadOnlyList<TemporalFrameSample> Frames,
+    byte[]? StoryboardJpeg,
+    int PanelCount,
+    string SequenceNote
+)
+{
+    public byte[]? FallbackSingleJpeg =>
+        StoryboardJpeg ?? (Frames.Count > 0 ? Frames[^1].JpegBytes : null);
+}
+
+/// <summary>
+/// Pure CPU (0% GPU) temporal sequence composer combining recent frames into a single
+/// timestamp-labeled motion strip (e.g. 2x1 live delta or 2x2 storyboard) for any Vision provider.
+/// </summary>
+public interface ITemporalStoryboardComposer
+{
+    byte[]? ComposeSequenceJpeg(
+        IReadOnlyList<TemporalFrameSample> frames,
+        int targetWidth,
+        int targetHeight,
+        int jpegQuality);
+}
+
 public interface IForegroundWindowDetector
 {
     string? GetForegroundExecutable();

@@ -46,8 +46,8 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
 | `native/HUDMind.Windows/Sensors/` | Passive sensors | `TailLogSensorBase`, `RocketLeagueLogSensor`, `ValorantLogSensor`, `ValveGsiTelemetrySensor`, `LeagueLiveClientSensor` |
 | `native/HUDMind.Windows/Audio/` | Pure WinMM / WinRT audio | `Win32AudioDevices`, `Win32StreamingMicCapture` (16kHz), `Win32StreamingPcmPlayer` (24kHz), `WinRtNaturalVoiceService`, `Win32AudioCue`, `AudioDiagnosticsService` |
 | `native/HUDMind.App/` | WPF UI (`HUDMind.Native.exe`) | `App.xaml.cs` (SoftwareOnly + mutex + `ReleaseSingleInstanceMutex`), `MainWindow.xaml/.cs` (cyber-tactical sidebar + 4 views + `UpdateBanner`), `OverlayWindow.xaml/.cs` (translucent click-through PerMonitorV2 HUD), `Controls/` (`ActiveProfileBanner`, `AudioWaveformControl`), `Services/` (`CoachEngineCoordinator`, `HudVisualPalette`, `HudNavigationMediator`), `Win32TrayIcon.cs` |
-| `native/HUDMind.Tests/` | `net9.0` test suite | 43 cross-platform unit/integration tests (`Program.cs`) |
-| `native/HUDMind.Windows.Tests/` | `net9.0-windows` test suite | 10 Windows-native tests for WinMM, GSI, TLS pinning, logs, capture, voice, and `KnownFolders` (`Program.cs`) |
+| `native/HUDMind.Tests/` | `net9.0` test suite | 46 cross-platform unit/integration tests (`Program.cs`) |
+| `native/HUDMind.Windows.Tests/` | `net9.0-windows` test suite | 12 Windows-native tests for WinMM, GSI, TLS pinning, logs, capture, voice, and `KnownFolders` (`Program.cs`) |
 | `profiles/` | Game cartridges | 7 bundled profiles (`aoe2_de`, `cs2`, `dota2`, `league_of_legends`, `rob_run`, `rocket_league`, `valorant`) embedded in `HUDMind.Core.csproj` |
 | `docs/` | Bilingual technical docs | All docs have `.es.md` & `.en.md` pairs (`architecture`, `srs`, `test_plan_ieee29119`, `game_profiles_guide`, `versioning_and_releases`, `pull_request_guide`) |
 | `.github/` | CI/CD & governance | `workflows/ci.yml`, `workflows/release.yml`, `PULL_REQUEST_TEMPLATE.md`, `ISSUE_TEMPLATE/*`, `dependabot.yml` |
@@ -71,7 +71,7 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
 # 1. Build entire solution (must pass with 0 warnings / 0 errors)
 dotnet build native/HUDMind.sln -c Release
 
-# 2. Run cross-platform Core suite (43 tests) & Windows native suite (10 tests)
+# 2. Run cross-platform Core suite (46 tests) & Windows native suite (12 tests)
 dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
 

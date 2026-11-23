@@ -26,12 +26,14 @@ public sealed class CoachOrchestrator : ICoachEngine
     private readonly ITextOnlySensorService? _telemetrySensor;
     private readonly Action<MatchSessionSnapshot>? _onMatchCompleted;
     private readonly Func<GameProfile, AssembledCoachContext>? _resolveContextForProfile;
+    private readonly ITemporalStoryboardComposer? _storyboardComposer;
     private readonly bool _testMode;
     private readonly bool _disposeVoice;
     private readonly string? _forcedGameId;
 
     private readonly InterventionStateMachine _stateMachine = new();
     private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
+    private readonly RecentFrameRingBuffer _frameRingBuffer = new(maxFrames: 10, minSpacingMs: 125.0);
     private readonly TacticalSignalTracker _tacticalTracker = new();
     private readonly BlackScreenDiagnostic _blackScreenDiagnostic = new();
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
@@ -50,6 +52,7 @@ public sealed class CoachOrchestrator : ICoachEngine
     private volatile GameProfile? _activeProfile;
     private long _profileEpoch;
     private ulong? _lastAcceptedHash;
+    private ulong? _lastRingHash;
     private volatile bool _userPaused;
     private bool _disposed;
     private int _forceAnalysisPending;
@@ -101,7 +104,8 @@ public sealed class CoachOrchestrator : ICoachEngine
         bool disposeVoice = true,
         ITextOnlySensorService? telemetrySensor = null,
         Action<MatchSessionSnapshot>? onMatchCompleted = null,
-        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null)
+        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null,
+        ITemporalStoryboardComposer? storyboardComposer = null)
     {
         _config = config;
         _profiles = profiles;
@@ -119,6 +123,7 @@ public sealed class CoachOrchestrator : ICoachEngine
         _telemetrySensor = telemetrySensor;
         _onMatchCompleted = onMatchCompleted;
         _resolveContextForProfile = resolveContextForProfile;
+        _storyboardComposer = storyboardComposer;
     }
 
     public async Task StartAsync()
@@ -137,10 +142,12 @@ public sealed class CoachOrchestrator : ICoachEngine
             Interlocked.Exchange(ref _forceAnalysisPending, 0);
             _stateMachine.Reset();
             _memory.Clear(clearMatchLog: true);
+            _frameRingBuffer.Clear();
             _tacticalTracker.Reset();
             _blackScreenDiagnostic.Reset();
             Volatile.Write(ref _latestDeterministicFact, string.Empty);
             SetLastHash(null);
+            _lastRingHash = null;
 
             try
             {
@@ -249,6 +256,27 @@ public sealed class CoachOrchestrator : ICoachEngine
 
         long chatEpoch = Volatile.Read(ref _profileEpoch);
         _onLog?.Invoke($"💬 Vos: \"{msg}\"");
+
+        bool isEnMsg = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+        var inputGuard = CoachContentGuard.EvaluateUserInput(msg, isEnMsg);
+        if (!inputGuard.IsAllowed)
+        {
+            if (_config.EnableOverlay)
+                _overlay.ShowCallout(inputGuard.SafeRedirectReply, UrgencyLevel.Low, profile.Manifest.DisplayName, Math.Min(_config.OverlayDurationSeconds, 3.5));
+            double guardVoiceMs = 0;
+            lock (_voiceGate)
+            {
+                if (_config.IsCoachVoiceActive && !_userPaused)
+                {
+                    guardVoiceMs = _voice.SpeakInstant(CoachContentGuard.SanitizeForSpeech(inputGuard.SafeRedirectReply));
+                    Interlocked.Exchange(ref _lastChatSpeechUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
+                }
+            }
+            Volatile.Write(ref _lastVoiceMs, guardVoiceMs);
+            _onLog?.Invoke($"🛡️ Coach [safety-guard]: \"{inputGuard.SafeRedirectReply}\"");
+            EmitStats();
+            return true;
+        }
         int taskId = Interlocked.Increment(ref _chatSeq);
         CancellationTokenSource? linkedCts = null;
         try
@@ -277,13 +305,27 @@ public sealed class CoachOrchestrator : ICoachEngine
                         frameId: 0, lastAcceptedHash: null, phashThreshold: 0, isForced: true);
 
                     bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
-                    var (reply, aiMs, model) = await _router.AskQuestionAsync(
-                        frame?.JpegBytes,
+                    var clip = _frameRingBuffer.BuildVisualClipPayload(
+                        _storyboardComposer,
+                        frame,
+                        maxFrames: 6,
+                        maxAgeSeconds: 2.5,
+                        jpegQuality: Math.Max(q, 84),
+                        isEn: isEn);
+                    var timelineText = _memory.FormatVisualTimeline(isEn: isEn);
+                    if (clip.PanelCount >= 2 && !string.IsNullOrWhiteSpace(clip.SequenceNote))
+                    {
+                        timelineText = string.IsNullOrWhiteSpace(timelineText)
+                            ? clip.SequenceNote
+                            : $"{clip.SequenceNote} ; {timelineText}";
+                    }
+                    var (reply, aiMs, model) = await _router.AskQuestionSequenceAsync(
+                        clip,
                         msg,
                         profile,
                         _config,
                         _memory.FormatCompactHistory(),
-                        _memory.FormatVisualTimeline(isEn: isEn),
+                        timelineText,
                         _memory.FormatChatHistory(isEn: isEn),
                         linkedCts.Token);
 
@@ -310,7 +352,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                     {
                         if (_config.IsCoachVoiceActive && !_userPaused && !linkedCts.Token.IsCancellationRequested)
                         {
-                            voiceMs = _voice.SpeakInstant(reply);
+                            voiceMs = _voice.SpeakInstant(CoachContentGuard.SanitizeForSpeech(reply));
                             Interlocked.Exchange(ref _lastChatSpeechUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
                         }
                     }
@@ -426,16 +468,16 @@ public sealed class CoachOrchestrator : ICoachEngine
     private (int W, int H, int Quality) ResolveTargetResolution() =>
         _config.TokenEfficiencyMode.ToLowerInvariant() switch
         {
-            "eco" => (800, 450, Math.Max(_config.ImageCompressionQuality, 74)),
-            "balanced" => (960, 540, Math.Max(_config.ImageCompressionQuality, 78)),
-            _ => (1280, 720, Math.Max(_config.ImageCompressionQuality, 82))
+            "eco" => (960, 540, Math.Max(_config.ImageCompressionQuality, 76)),
+            "high" => (1440, 810, Math.Max(_config.ImageCompressionQuality, 84)),
+            _ => (1280, 720, Math.Max(_config.ImageCompressionQuality, 80))
         };
 
     private double EffectiveCooldown(GameProfile profile)
     {
         var baseCd = profile.Manifest.CooldownSeconds;
         return _config.CoachMode.Equals("training", StringComparison.OrdinalIgnoreCase)
-            ? Math.Max(3.5, Math.Round(baseCd * 0.7, 1))
+            ? Math.Max(2.8, Math.Round(baseCd * 0.65, 1))
             : baseCd;
     }
 
@@ -464,8 +506,10 @@ public sealed class CoachOrchestrator : ICoachEngine
                         Interlocked.Increment(ref _profileEpoch);
                         _config.RuntimeTiltRisk = false;
                         SetLastHash(null);
+                        _lastRingHash = null;
                         _stateMachine.Reset();
                         _memory.Clear(clearMatchLog: true);
+                        _frameRingBuffer.Clear();
                         _tacticalTracker.Reset(matched.Manifest.GameId);
                         _blackScreenDiagnostic.Reset();
                         Volatile.Write(ref _latestDeterministicFact, string.Empty);
@@ -498,9 +542,14 @@ public sealed class CoachOrchestrator : ICoachEngine
                 var tactical = TacticalSignalEvaluator.Evaluate(rawTelemetry, profile, _tacticalTracker, isEnEval);
                 _config.RuntimeTiltRisk = tactical.IsTiltRisk;
                 Volatile.Write(ref _latestDeterministicFact, tactical.DeterministicFact);
+                if (!string.IsNullOrWhiteSpace(tactical.DeterministicFact))
+                    _memory.UpdateMatchAnchor(tactical.DeterministicFact);
 
                 if (tactical.MatchEnded)
                     FlushMatchSnapshot(resetMatchLog: true);
+
+                var (w, h, q) = ResolveTargetResolution();
+                var region = _testMode ? null : _windowDetector.GetForegroundClientRect();
 
                 bool hasPendingForce = Volatile.Read(ref _forceAnalysisPending) == 1;
                 if (!hasPendingForce && tactical.ShouldSilence)
@@ -522,9 +571,9 @@ public sealed class CoachOrchestrator : ICoachEngine
                 }
                 else
                 {
-                    double scaledCd = Math.Max(2.5, EffectiveCooldown(profile) * tactical.CooldownMultiplier);
+                    double scaledCd = Math.Max(2.2, EffectiveCooldown(profile) * tactical.CooldownMultiplier);
                     bool eventTriggerReady = tactical.TriggerImmediate &&
-                        _stateMachine.CanAnalyze(Math.Max(2.5, EffectiveCooldown(profile) * 0.45), _config.MinInferenceIntervalSeconds);
+                        _stateMachine.CanAnalyze(Math.Max(2.2, EffectiveCooldown(profile) * 0.45), _config.MinInferenceIntervalSeconds);
 
                     if (!eventTriggerReady)
                     {
@@ -533,8 +582,27 @@ public sealed class CoachOrchestrator : ICoachEngine
                             _config.MinInferenceIntervalSeconds);
                         if (waitRem > TimeSpan.Zero)
                         {
-                            var boundedWait = waitRem > TimeSpan.FromMilliseconds(900)
-                                ? TimeSpan.FromMilliseconds(900)
+                            // Keep a local 0%-GPU temporal clip buffer in RAM (~7.4 Hz, 135ms polling)
+                            // so chat questions ("did I get a flip reset?") and predictive reads see fluid trajectory!
+                            var (ringFrame, ringSkipped) = _capture.CaptureIfChanged(
+                                _config.CaptureMonitor,
+                                region,
+                                w,
+                                h,
+                                Math.Min(q, 78),
+                                Interlocked.Increment(ref frameCounter),
+                                _lastRingHash,
+                                Math.Min(profile.Manifest.PhashThreshold, 4),
+                                isForced: false);
+                            _blackScreenDiagnostic.Observe(_capture, _activeProfile, _testMode, _onLog, _overlay, _config.EnableOverlay);
+                            if (!ringSkipped && ringFrame is not null)
+                            {
+                                _lastRingHash = ringFrame.PerceptualHash;
+                                _frameRingBuffer.Record(ringFrame);
+                            }
+
+                            var boundedWait = waitRem > TimeSpan.FromMilliseconds(135)
+                                ? TimeSpan.FromMilliseconds(135)
                                 : waitRem;
                             await WaitInterruptibleAsync(boundedWait, ct);
                             continue;
@@ -542,8 +610,6 @@ public sealed class CoachOrchestrator : ICoachEngine
                     }
                 }
 
-                var (w, h, q) = ResolveTargetResolution();
-                var region = _testMode ? null : _windowDetector.GetForegroundClientRect();
                 var (frame, skippedByHash) = _capture.CaptureIfChanged(
                     _config.CaptureMonitor,
                     region,
@@ -563,6 +629,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                 }
                 else if (frame is not null)
                 {
+                    _lastRingHash = frame.PerceptualHash;
+                    _frameRingBuffer.Record(frame, forceReplaceTailIfTooClose: isForced);
                     Interlocked.Increment(ref _framesCaptured);
                     Volatile.Write(ref _lastCaptureMs, frame.CaptureMs + frame.EncodeMs);
                     channel.Writer.TryWrite(frame);
@@ -609,14 +677,27 @@ public sealed class CoachOrchestrator : ICoachEngine
             {
                 Interlocked.Increment(ref _aiCalls);
                 bool isEn = CoachingPersonaBuilder.IsEnglish(_config);
+                var (_, _, cfgQuality) = ResolveTargetResolution();
+                var clip = _frameRingBuffer.BuildVisualClipPayload(
+                    _storyboardComposer,
+                    frame,
+                    maxFrames: forceNow ? 6 : 3,
+                    maxAgeSeconds: forceNow ? 2.5 : 1.8,
+                    jpegQuality: Math.Max(cfgQuality, 82),
+                    isEn: isEn);
+
                 var history = _memory.FormatCompactHistory();
                 var timeline = _memory.FormatVisualTimeline(isEn: isEn);
                 var fact = Volatile.Read(ref _latestDeterministicFact);
-                var combinedContext = string.IsNullOrWhiteSpace(fact)
-                    ? timeline
-                    : (string.IsNullOrWhiteSpace(timeline) ? fact : $"{fact} | {timeline}");
-                var (resp, aiMs, model) = await _router.AnalyzeFrameAsync(
-                    frame.JpegBytes,
+                var contextParts = new List<string>(3);
+                if (clip.PanelCount >= 2 && !string.IsNullOrWhiteSpace(clip.SequenceNote))
+                    contextParts.Add(clip.SequenceNote);
+                if (!string.IsNullOrWhiteSpace(fact)) contextParts.Add(fact);
+                if (!string.IsNullOrWhiteSpace(timeline)) contextParts.Add(timeline);
+                var combinedContext = string.Join(" | ", contextParts);
+
+                var (resp, aiMs, model) = await _router.AnalyzeFrameSequenceAsync(
+                    clip,
                     profile,
                     _config,
                     history,
@@ -671,7 +752,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                             {
                                 bool avoidMidSentenceCut = !forceNow && resp.Urgency != UrgencyLevel.High && _voice.IsSpeaking;
                                 if (!avoidMidSentenceCut && _config.IsCoachVoiceActive && !_userPaused && !ct.IsCancellationRequested && !string.IsNullOrWhiteSpace(resp.VoiceLine))
-                                    voiceMs = _voice.SpeakInstant(resp.VoiceLine);
+                                    voiceMs = _voice.SpeakInstant(CoachContentGuard.SanitizeForSpeech(resp.VoiceLine));
                             }
                         }
 
@@ -770,6 +851,7 @@ public sealed class CoachOrchestrator : ICoachEngine
             }
 
             FlushMatchSnapshot(resetMatchLog: false);
+            _frameRingBuffer.Clear();
             _producerTask = null;
             _consumerTask = null;
             _frameChannel = null;

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using HUDMind.Core.AI;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Pipeline;
 using Windows.Media.SpeechSynthesis;
@@ -31,6 +32,8 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
     private string _gender = "male";
     private double _rateFactor = 1.05;
     private string _selectedVoiceName = "WinRT";
+    private bool _dirtyVoiceConfig;
+    private int _isSynthesizing;
     private bool _initAttempted;
     private bool _available;
     private bool _disposed;
@@ -44,7 +47,7 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
         }
     }
 
-    public bool IsSpeaking => _player.IsPlayingAudio;
+    public bool IsSpeaking => Volatile.Read(ref _isSynthesizing) != 0 || _player.IsPlayingAudio;
 
     public string EngineName => _available ? $"winrt-natural({_selectedVoiceName})" : "winrt-unavailable";
 
@@ -69,8 +72,8 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
                            !string.Equals(_gender, nextGender, StringComparison.OrdinalIgnoreCase);
             _language = nextLang;
             _gender = nextGender;
-            if (changed && _synth is not null)
-                ApplyVoiceSelectionLocked(_synth, _language, _gender);
+            if (changed)
+                _dirtyVoiceConfig = true;
         }
     }
 
@@ -81,15 +84,21 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
         double factor = ParseRateFactor(rate);
         lock (_sync)
         {
-            _rateFactor = factor;
-            if (_synth is not null)
-                _synth.Options.SpeakingRate = factor;
+            if (Math.Abs(_rateFactor - factor) > 0.001)
+            {
+                _rateFactor = factor;
+                _dirtyVoiceConfig = true;
+            }
         }
     }
 
     public double SpeakInstant(string text)
     {
         if (_disposed || string.IsNullOrWhiteSpace(text))
+            return 0;
+
+        var cleanSpeech = CoachContentGuard.SanitizeForSpeech(text);
+        if (string.IsNullOrWhiteSpace(cleanSpeech))
             return 0;
 
         EnsureInitialized();
@@ -100,7 +109,7 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
         lock (_sync)
         {
             if (_disposed || !_available) return 0;
-            _pendingText = text.Trim();
+            _pendingText = cleanSpeech;
             // Cancel only pending text synthesis; wait until the new PCM is ready before swapping playback
             // so the current sentence is never chopped into dead silence prematurely.
             try { _utteranceCts?.Cancel(); } catch { }
@@ -227,11 +236,19 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
             string? text;
             SpeechSynthesizer? synth;
             CancellationTokenSource uttCts;
+            bool applyVoiceCfg;
+            string desiredLang, desiredGender;
+            double desiredRate;
             lock (_sync)
             {
                 text = _pendingText;
                 _pendingText = null;
                 synth = _synth;
+                applyVoiceCfg = _dirtyVoiceConfig;
+                _dirtyVoiceConfig = false;
+                desiredLang = _language;
+                desiredGender = _gender;
+                desiredRate = _rateFactor;
                 _utteranceCts?.Dispose();
                 _utteranceCts = CancellationTokenSource.CreateLinkedTokenSource(disposeCt);
                 uttCts = _utteranceCts;
@@ -240,8 +257,15 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
             if (string.IsNullOrWhiteSpace(text) || synth is null)
                 continue;
 
+            Interlocked.Exchange(ref _isSynthesizing, 1);
             try
             {
+                if (applyVoiceCfg)
+                {
+                    try { synth.Options.SpeakingRate = desiredRate; } catch { }
+                    ApplyVoiceSelectionLocked(synth, desiredLang, desiredGender);
+                }
+
                 using var stream = await synth.SynthesizeTextToStreamAsync(text).AsTask(uttCts.Token).ConfigureAwait(false);
                 if (uttCts.IsCancellationRequested)
                     continue;
@@ -266,6 +290,10 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
             catch
             {
                 // Resilient audio path
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _isSynthesizing, 0);
             }
         }
     }

@@ -33,8 +33,10 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private readonly Action<bool>? _onPauseChanged;
     private readonly Action<MatchSessionSnapshot>? _onMatchCompleted;
     private readonly Func<GameProfile, AssembledCoachContext>? _resolveContextForProfile;
+    private readonly ITemporalStoryboardComposer? _storyboardComposer;
 
     private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
+    private readonly RecentFrameRingBuffer _frameRingBuffer = new(maxFrames: 10, minSpacingMs: 125.0);
     private readonly TacticalSignalTracker _tacticalTracker = new();
     private readonly BlackScreenDiagnostic _blackScreenDiagnostic = new();
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
@@ -74,6 +76,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private long _lastAutoNudgeUtcTicks;
     private long _lastMicVoiceUtcTicks;
     private long _lastPttHeldUtcTicks;
+    private long _lastWebSocketFrameTick;
+    private long _lastMicVisualBurstTick;
 
     public bool IsRunning => Volatile.Read(ref _runCts) is { IsCancellationRequested: false };
     public bool IsPaused => _userPaused;
@@ -124,7 +128,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         ITextOnlySensorService? localPhaseGate = null,
         Func<bool>? isPttKeyPressed = null,
         Action<MatchSessionSnapshot>? onMatchCompleted = null,
-        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null)
+        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null,
+        ITemporalStoryboardComposer? storyboardComposer = null)
     {
         _backend = backend;
         _config = config;
@@ -143,6 +148,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         _onPauseChanged = onPauseChanged;
         _onMatchCompleted = onMatchCompleted;
         _resolveContextForProfile = resolveContextForProfile;
+        _storyboardComposer = storyboardComposer;
         _micEnabled = config.IsMicActive;
     }
 
@@ -196,10 +202,13 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _bargeInMuted = false;
             _suppressCurrentTurnAudio = false;
             _memory.Clear(clearMatchLog: true);
+            _frameRingBuffer.Clear();
             _tacticalTracker.Reset();
             _blackScreenDiagnostic.Reset();
             Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, 0);
             Interlocked.Exchange(ref _lastPttHeldUtcTicks, 0);
+            Interlocked.Exchange(ref _lastWebSocketFrameTick, 0);
+            Interlocked.Exchange(ref _lastMicVisualBurstTick, 0);
             lock (_hashLock) _lastSentHash = null;
 
             if (_testMode)
@@ -339,6 +348,23 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             return false;
         }
 
+        bool isEnMsg = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+        var inputGuard = CoachContentGuard.EvaluateUserInput(msg, isEnMsg);
+        if (!inputGuard.IsAllowed)
+        {
+            _onLog?.Invoke($"💬 Vos: \"{msg}\"");
+            _onLog?.Invoke($"🛡️ Coach [safety-guard]: \"{inputGuard.SafeRedirectReply}\"");
+            if (_config.EnableOverlay && !_userPaused)
+            {
+                _overlay.ShowCallout(
+                    inputGuard.SafeRedirectReply,
+                    UrgencyLevel.Low,
+                    _activeProfile?.Manifest.DisplayName ?? "HUDMind Live",
+                    Math.Min(_config.OverlayDurationSeconds, 3.5));
+            }
+            return true;
+        }
+
         var runCt = CurrentRunToken();
         if (runCt.IsCancellationRequested || callerCt.IsCancellationRequested)
             return false;
@@ -361,9 +387,25 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
                     Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
 
-                    byte[]? fresh = attachCurrentScreen
+                    var freshFrame = attachCurrentScreen
                         ? CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _framesSent))
                         : null;
+                    var (_, _, cfgQuality) = ResolveTargetResolution();
+                    bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+                    var clip = freshFrame is not null
+                        ? _frameRingBuffer.BuildVisualClipPayload(
+                            _storyboardComposer,
+                            freshFrame,
+                            maxFrames: 6,
+                            maxAgeSeconds: 2.5,
+                            jpegQuality: Math.Max(cfgQuality, 84),
+                            isEn: isEn)
+                        : null;
+
+                    var guide = GameKnowledgeCompiler.CompileForQuestion(_activeProfile, msg, maxChars: 520);
+                    var timeline = _memory.FormatVisualTimeline(isEn: isEn);
+                    var enrichedPrompt = BuildEnrichedLiveQuestionPrompt(
+                        msg, guide, timeline, clip?.SequenceNote ?? string.Empty, clip?.PanelCount ?? 0, isEn);
 
                     await _turnGate.WaitAsync(ct);
                     try
@@ -373,10 +415,19 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             readyTcs.TrySetResult(false);
                             return;
                         }
-                        if (fresh is not null)
-                            await _backend.SendImageAndPromptTurnAsync(fresh, msg, ct);
+                        if (clip is { Frames.Count: > 0 })
+                        {
+                            if (_backend.SupportsMultiFrameTurn && clip.Frames.Count > 1)
+                                await _backend.SendFrameSequenceAndPromptTurnAsync(clip.Frames, enrichedPrompt, ct);
+                            else if (clip.FallbackSingleJpeg is { Length: > 0 } singleBytes)
+                                await _backend.SendImageAndPromptTurnAsync(singleBytes, enrichedPrompt, ct);
+                            else
+                                await _backend.SendTextTurnAsync(enrichedPrompt, ct);
+                        }
                         else
-                            await _backend.SendTextTurnAsync(msg, ct);
+                        {
+                            await _backend.SendTextTurnAsync(enrichedPrompt, ct);
+                        }
                         readyTcs.TrySetResult(true);
                     }
                     finally
@@ -456,9 +507,19 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
         TrackFireAndForget(async ct =>
         {
-            var fresh = CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _framesSent));
-            if (fresh is null)
+            var freshFrame = CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _framesSent));
+            if (freshFrame is null)
                 return;
+
+            var (_, _, cfgQuality) = ResolveTargetResolution();
+            bool isEn = CoachingPersonaBuilder.IsEnglish(_config);
+            var clip = _frameRingBuffer.BuildVisualClipPayload(
+                _storyboardComposer,
+                freshFrame,
+                maxFrames: 6,
+                maxAgeSeconds: 2.5,
+                jpegQuality: Math.Max(cfgQuality, 84),
+                isEn: isEn);
 
             await _turnGate.WaitAsync(ct);
             try
@@ -468,12 +529,17 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
                 Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
 
-                bool isEn = CoachingPersonaBuilder.IsEnglish(_config);
+                string seqPrefix = clip.PanelCount >= 2 && !string.IsNullOrWhiteSpace(clip.SequenceNote)
+                    ? $"{clip.SequenceNote} "
+                    : string.Empty;
                 string prompt = isEn
-                    ? "Look closely at this exact game frame. Tell me in 1 crisp clear sentence what is happening and the best next play right now."
-                    : "Mirá esta imagen actual exacta del juego. Decime en 1 oración corta y clara qué está pasando y qué me conviene hacer ahora.";
+                    ? $"{seqPrefix}Give 1 predictive, crystal-clear tactical callout (8-14 words) for the next 2 seconds based ONLY on clearly visible pixels."
+                    : $"{seqPrefix}Dame 1 sola llamada táctica predictiva y clara (8 a 14 palabras) para los próximos 2 segundos basándote SOLO en lo que se ve nítido.";
 
-                await _backend.SendImageAndPromptTurnAsync(fresh, prompt, ct);
+                if (_backend.SupportsMultiFrameTurn && clip.Frames.Count > 1)
+                    await _backend.SendFrameSequenceAndPromptTurnAsync(clip.Frames, prompt, ct);
+                else
+                    await _backend.SendImageAndPromptTurnAsync(clip.FallbackSingleJpeg ?? freshFrame.JpegBytes, prompt, ct);
             }
             finally
             {
@@ -621,6 +687,24 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     {
         if (string.IsNullOrWhiteSpace(currentLine) || Volatile.Read(ref _profileEpoch) != sessionEpoch) return;
 
+        bool isEnOut = CoachingPersonaBuilder.IsEnglish(_config);
+        var outGuard = CoachContentGuard.InspectAndCleanModelOutput(currentLine, isEnOut);
+        if (!outGuard.IsSafe)
+        {
+            lock (_audioStateLock)
+            {
+                _suppressCurrentTurnAudio = true;
+                _modelSpeaking = false;
+                _pcmPlayer.InterruptAndClear();
+            }
+            if (_config.EnableOverlay && !_userPaused)
+            {
+                var title = (sessionProfile ?? _activeProfile)?.Manifest.DisplayName ?? "HUDMind Live";
+                _overlay.ShowCallout(outGuard.FallbackReplacement, UrgencyLevel.Low, title, 3.0);
+            }
+            return;
+        }
+
         if (_config.IsTextOnlyMode && Interlocked.Exchange(ref _waitingFirstAudioInt, 0) == 1)
         {
             long reqTick = Volatile.Read(ref _lastTurnRequestTick);
@@ -648,10 +732,13 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private void HandleTurnComplete(long sessionEpoch, GameProfile? sessionProfile, string spoken)
     {
         bool staleEpoch = Volatile.Read(ref _profileEpoch) != sessionEpoch;
+        bool isEnOut = CoachingPersonaBuilder.IsEnglish(_config);
+        var outGuard = CoachContentGuard.InspectAndCleanModelOutput(spoken, isEnOut);
+
         bool allowFlush;
         lock (_audioStateLock)
         {
-            allowFlush = !staleEpoch && _config.IsCoachVoiceActive && !_userPaused && !_bargeInMuted && !_suppressCurrentTurnAudio;
+            allowFlush = !staleEpoch && outGuard.IsSafe && _config.IsCoachVoiceActive && !_userPaused && !_bargeInMuted && !_suppressCurrentTurnAudio;
             if (allowFlush)
                 _pcmPlayer.FlushBuffered();
             else
@@ -667,6 +754,24 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         if (!staleEpoch && !string.IsNullOrWhiteSpace(spoken))
         {
             var prof = sessionProfile ?? _activeProfile;
+            if (!outGuard.IsSafe)
+            {
+                if (_config.EnableOverlay && !_userPaused)
+                {
+                    _overlay.ShowCallout(
+                        outGuard.FallbackReplacement,
+                        UrgencyLevel.Low,
+                        prof?.Manifest.DisplayName ?? "HUDMind Live",
+                        3.5);
+                }
+                _onLog?.Invoke($"🛡️ Coach [safety-filter]: \"{outGuard.FallbackReplacement}\"");
+                if (outGuard.Category == SafetyCategory.SevereSexualOrIllegal)
+                    _ = _backend.ResetSessionStateAsync();
+                EmitStats();
+                return;
+            }
+
+            _memory.RecordObservation("LIVE", spoken);
             _memory.RecordMatchEvent(
                 prof?.Manifest.GameId ?? string.Empty,
                 prof?.Manifest.DisplayName ?? "HUDMind Live",
@@ -808,6 +913,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         {
                             Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
                             Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
+                            TriggerVoiceMotionSyncIfDue(nowTicks);
                         }
                     }
                     else
@@ -817,6 +923,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             Interlocked.Exchange(ref _lastMicVoiceUtcTicks, nowTicks);
                             Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
                             Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
+                            TriggerVoiceMotionSyncIfDue(nowTicks);
                         }
                         else
                         {
@@ -852,15 +959,70 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         ch?.Writer.TryComplete();
     }
 
+    private void TriggerVoiceMotionSyncIfDue(long nowTicks)
+    {
+        if (_disposed || !_backend.IsConnected || _modelSpeaking)
+            return;
+
+        long prev = Interlocked.Read(ref _lastMicVisualBurstTick);
+        if (prev > 0 && (nowTicks - prev) < TimeSpan.FromSeconds(1.8).Ticks)
+            return;
+        if (Interlocked.CompareExchange(ref _lastMicVisualBurstTick, nowTicks, prev) != prev)
+            return;
+
+        TrackFireAndForget(async ct =>
+        {
+            if (_disposed || !_backend.IsConnected || _modelSpeaking)
+                return;
+            var latest = CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _framesSent));
+            if (latest is not null)
+                _frameRingBuffer.Record(latest, forceReplaceTailIfTooClose: true);
+
+            var seq = _frameRingBuffer.SnapshotRecent(DateTimeOffset.UtcNow, maxAgeSeconds: 2.2, maxCount: 3);
+            foreach (var sample in seq)
+            {
+                if (ct.IsCancellationRequested || !_backend.IsConnected || _modelSpeaking)
+                    break;
+                await _backend.SendVideoFrameAsync(sample.JpegBytes, ct);
+            }
+        });
+    }
+
+    private static string BuildEnrichedLiveQuestionPrompt(
+        string question,
+        string topicGuide,
+        string timeline,
+        string sequenceNote,
+        int panelCount,
+        bool isEn)
+    {
+        var sb = new System.Text.StringBuilder(question.Length + topicGuide.Length + 280);
+        if (panelCount >= 2)
+        {
+            var note = string.IsNullOrWhiteSpace(sequenceNote) ? string.Empty : $"{sequenceNote} ";
+            sb.Append(isEn
+                ? $"{note}[Video-like sequence attached ({panelCount} frames); trace trajectory across ALL frames before confirming rapid mechanics.] "
+                : $"{note}[Secuencia tipo video adjunta ({panelCount} cuadros); seguí la trayectoria cuadro por cuadro antes de confirmar mecánicas rápidas.] ");
+        }
+        if (!string.IsNullOrWhiteSpace(topicGuide))
+            sb.Append(isEn ? $"Relevant game rules: {topicGuide}. " : $"Mecánicas/reglas del juego: {topicGuide}. ");
+        if (!string.IsNullOrWhiteSpace(timeline))
+            sb.Append(isEn ? $"Match context: {timeline}. " : $"Contexto de partida: {timeline}. ");
+        sb.Append(isEn
+            ? $"Answer honestly based ONLY on what you clearly see (admit if obscured/unclear, never guess yes). Question: {question}"
+            : $"Respondé con 100% honestidad SOLO por lo que ves claro (si un contacto o detalle no se distingue, admitilo sin inventar). Pregunta: {question}");
+        return sb.ToString();
+    }
+
     private (int W, int H, int Quality) ResolveTargetResolution() =>
         (_config.TokenEfficiencyMode ?? "balanced").ToLowerInvariant() switch
         {
-            "eco" => (800, 450, 74),
-            "high" => (1280, 720, 82),
-            _ => (960, 540, 78)
+            "eco" => (960, 540, Math.Max(_config.ImageCompressionQuality, 76)),
+            "high" => (1440, 810, Math.Max(_config.ImageCompressionQuality, 84)),
+            _ => (1280, 720, Math.Max(_config.ImageCompressionQuality, 80))
         };
 
-    private byte[]? CaptureSharpFrame(bool force, long frameId)
+    private CapturedFrameData? CaptureSharpFrame(bool force, long frameId)
     {
         ulong? prevHash;
         lock (_hashLock) prevHash = _lastSentHash;
@@ -877,7 +1039,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             jpegQuality: q,
             frameId: frameId,
             lastAcceptedHash: prevHash,
-            phashThreshold: phash,
+            phashThreshold: force ? 0 : Math.Min(phash, 5),
             isForced: force);
 
         _blackScreenDiagnostic.Observe(_capture, _activeProfile, _testMode, _onLog, _overlay, _config.EnableOverlay);
@@ -890,7 +1052,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _lastSentHash = frame.PerceptualHash;
             Volatile.Write(ref _lastCaptureMs, frame.CaptureMs + frame.EncodeMs);
         }
-        return frame.JpegBytes;
+        _frameRingBuffer.Record(frame, forceReplaceTailIfTooClose: force);
+        return frame;
     }
 
     private async Task VideoAndAutoCoachLoopAsync(CancellationToken ct)
@@ -920,6 +1083,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                 _config.RuntimeTiltRisk = false;
                                 Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, 0);
                                 lock (_hashLock) _lastSentHash = null;
+                                _frameRingBuffer.Clear();
                                 _localPhaseGate?.Reset();
                                 _tacticalTracker.Reset(matched.Manifest.GameId);
                                 _blackScreenDiagnostic.Reset();
@@ -946,17 +1110,19 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         }
                     }
 
-                    var jpeg = CaptureSharpFrame(force: false, frameId: ++frameCounter);
-                    if (jpeg is not null)
+                    // Sample ~7.4 FPS continuously into local RAM ring buffer (0 API cost) so voice, F10 & chat get clip motion
+                    var captured = CaptureSharpFrame(force: false, frameId: ++frameCounter);
+                    if (captured is not null)
                     {
-                        Interlocked.Increment(ref _framesSent);
-
+                        var jpeg = captured.JpegBytes;
                         bool isEnEval = CoachingPersonaBuilder.IsEnglish(_config);
                         string rawTelemetry = _localPhaseGate is not null && _activeProfile is not null
                             ? await _localPhaseGate.ReadTelemetryAsync(_activeProfile, ct)
                             : string.Empty;
                         var tactical = TacticalSignalEvaluator.Evaluate(rawTelemetry, _activeProfile, _tacticalTracker, isEnEval);
                         _config.RuntimeTiltRisk = tactical.IsTiltRisk;
+                        if (!string.IsNullOrWhiteSpace(tactical.DeterministicFact))
+                            _memory.UpdateMatchAnchor(tactical.DeterministicFact);
                         if (tactical.MatchEnded)
                             FlushMatchSnapshot(resetMatchLog: true);
 
@@ -970,7 +1136,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         bool regularDue = canVoiceTurn &&
                             (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(scaledAutoSec).Ticks);
                         bool eventDue = canVoiceTurn && tactical.TriggerImmediate &&
-                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(Math.Max(3.5, autoSec * 0.45)).Ticks);
+                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(Math.Max(3.0, autoSec * 0.45)).Ticks);
                         bool shouldNudge = (regularDue || eventDue) && !tactical.ShouldSilence;
 
                         bool sentAsTurn = false;
@@ -992,6 +1158,15 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             if (!skipProactive)
                             {
                                 sentAsTurn = true;
+                                var (_, _, cfgQuality) = ResolveTargetResolution();
+                                var clip = _frameRingBuffer.BuildVisualClipPayload(
+                                    _storyboardComposer,
+                                    captured,
+                                    maxFrames: 3,
+                                    maxAgeSeconds: 2.0,
+                                    jpegQuality: Math.Max(cfgQuality, 82),
+                                    isEn: isEnEval);
+
                                 await _turnGate.WaitAsync(ct);
                                 try
                                 {
@@ -1000,12 +1175,23 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                     string factNote = string.IsNullOrWhiteSpace(tactical.DeterministicFact)
                                         ? string.Empty
                                         : (isEnEval
-                                            ? $" Verified sensor fact: {tactical.DeterministicFact}."
-                                            : $" Dato exacto del juego: {tactical.DeterministicFact}.");
+                                            ? $" Verified fact: {tactical.DeterministicFact}."
+                                            : $" Dato real: {tactical.DeterministicFact}.");
+                                    string timelineNote = _memory.FormatVisualTimeline(isEn: isEnEval);
+                                    string ctxNote = string.IsNullOrWhiteSpace(timelineNote) ? string.Empty
+                                        : (isEnEval ? $" Match context: {timelineNote}." : $" Contexto: {timelineNote}.");
+                                    string seqPrefix = clip.PanelCount >= 2 && !string.IsNullOrWhiteSpace(clip.SequenceNote)
+                                        ? $"{clip.SequenceNote} "
+                                        : string.Empty;
                                     string prompt = isEnEval
-                                        ? $"Look at this exact live game frame.{factNote} Give 1 crisp, helpful tactical tip in 8-14 words based strictly on what you see."
-                                        : $"Mirá esta captura exacta de la partida actual.{factNote} Da 1 solo consejo táctico claro, natural y útil en español (8 a 14 palabras) basado únicamente en lo que ves en pantalla.";
-                                    await _backend.SendImageAndPromptTurnAsync(jpeg, prompt, ct);
+                                        ? $"{seqPrefix}{factNote}{ctxNote} Anticipate the next 2 seconds BEFORE the error: 1 crisp tip (8-13 words) ONLY on clearly seen pixels."
+                                        : $"{seqPrefix}{factNote}{ctxNote} Anticipate 2 segundos a la jugada (no narres lo pasado): 1 consejo claro (8 a 13 palabras) SOLO sobre lo que se ve nítido.";
+
+                                    Interlocked.Increment(ref _framesSent);
+                                    if (_backend.SupportsMultiFrameTurn && clip.Frames.Count > 1)
+                                        await _backend.SendFrameSequenceAndPromptTurnAsync(clip.Frames, prompt, ct);
+                                    else
+                                        await _backend.SendImageAndPromptTurnAsync(clip.FallbackSingleJpeg ?? jpeg, prompt, ct);
                                 }
                                 finally
                                 {
@@ -1014,16 +1200,24 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             }
                         }
 
-                        if (!sentAsTurn)
+                        // Throttle passive WebSocket JPEG streaming to profile FPS while pausing during active speech for stutter-free audio
+                        double fps = _activeProfile?.Manifest.CaptureFps ?? 1.5;
+                        int wsPeriodMs = Math.Clamp((int)Math.Round(1000.0 / Math.Clamp(fps, 0.5, 3.0)), 330, 1500);
+                        long prevWsTick = Interlocked.Read(ref _lastWebSocketFrameTick);
+                        bool wsDue = prevWsTick == 0 || Stopwatch.GetElapsedTime(prevWsTick).TotalMilliseconds >= wsPeriodMs;
+                        if (!sentAsTurn && !_modelSpeaking && wsDue)
+                        {
+                            Interlocked.Exchange(ref _lastWebSocketFrameTick, Stopwatch.GetTimestamp());
+                            Interlocked.Increment(ref _framesSent);
                             await _backend.SendVideoFrameAsync(jpeg, ct);
+                        }
 
                         EmitStats();
                     }
                 }
 
-                double fps = _activeProfile?.Manifest.CaptureFps ?? 1.0;
-                int periodMs = Math.Clamp((int)Math.Round(1000.0 / Math.Clamp(fps, 0.5, 2.0)), 500, 1500);
-                try { await _wakeSignal.WaitAsync(TimeSpan.FromMilliseconds(periodMs), ct); }
+                // 135ms local ring-buffer cadence (~7.4 FPS in RAM) keeps fluid clip memory ready for voice, F10 & chat
+                try { await _wakeSignal.WaitAsync(TimeSpan.FromMilliseconds(135), ct); }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1083,6 +1277,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             }
 
             FlushMatchSnapshot(resetMatchLog: false);
+            _frameRingBuffer.Clear();
             _sessionTask = null;
             _micSendTask = null;
             cts.Dispose();

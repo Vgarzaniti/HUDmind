@@ -15,8 +15,10 @@ namespace HUDMind.Windows;
 public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
 {
     private const int BytesPerSecond24k16 = 48000;
-    private const int StartupPrebufferBytes = 7680;   // 160ms initial jitter pre-buffer when starting from silence
+    private const int StartupPrebufferBytes = 11520;  // 240ms initial jitter pre-buffer when starting from silence
     private const int SteadyCoalesceBytes = 3840;    // 80ms smooth streaming granularity once DMA queue is primed
+    private const int MaxWaveHeaderBytes = 19200;    // 400ms max DMA buffer per WAVEHDR to avoid driver glitches on long speech
+    private const int LeadInSilenceBytes = 960;      // 20ms silent DAC/Bluetooth wake-up before syllable 1
     private const int TailSilencePaddingBytes = 2304; // 48ms zero-tail padding so DAC drivers do not clip final syllables
 
     [DllImport("winmm.dll")]
@@ -55,6 +57,7 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
     private bool _disposed;
 
     private static readonly long EchoHangoverTicks = (long)(0.48 * Stopwatch.Frequency);
+    private static readonly long IdleReprimeGapTicks = (long)(0.95 * Stopwatch.Frequency);
 
     public void SetDevice(string? deviceName)
     {
@@ -116,18 +119,30 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
                 return;
 
             ReclaimCompletedLocked();
-            if (_inFlight.Count == 0 && Stopwatch.GetTimestamp() >= Volatile.Read(ref _playbackEndsAtTick))
+            long nowTick = Stopwatch.GetTimestamp();
+            long endTick = Volatile.Read(ref _playbackEndsAtTick);
+
+            // Re-prime ONLY if starting a fresh stream or truly idle > 950ms past playback end.
+            // Brief mid-turn network jitter gaps MUST NOT stall playback for another 240ms or chop mid-syllable!
+            if (_inFlight.Count == 0 && endTick > 0 && nowTick >= endTick + IdleReprimeGapTicks)
             {
                 _needsStreamPrime = true;
                 _streamEmittedAudio = false;
             }
 
+            bool recoveredFromMidTurnGap = !_needsStreamPrime && _streamEmittedAudio && _inFlight.Count == 0;
             _coalesce.Write(pcmBytes, 0, pcmBytes.Length);
+
             int threshold = _needsStreamPrime ? StartupPrebufferBytes : SteadyCoalesceBytes;
             if (_coalesce.Length >= threshold)
             {
                 bool priming = _needsStreamPrime;
-                if (WriteCoalescedLocked(applyFadeIn: priming, applyFadeOut: false, trailingZeroBytes: 0))
+                if (WriteCoalescedLocked(
+                    applyFadeIn: priming || recoveredFromMidTurnGap,
+                    gentleRecoveryFade: recoveredFromMidTurnGap,
+                    prependLeadIn: priming && !_streamEmittedAudio,
+                    applyFadeOut: false,
+                    trailingZeroBytes: 0))
                 {
                     _needsStreamPrime = false;
                     _streamEmittedAudio = true;
@@ -146,6 +161,8 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
             {
                 WriteCoalescedLocked(
                     applyFadeIn: _needsStreamPrime,
+                    gentleRecoveryFade: false,
+                    prependLeadIn: _needsStreamPrime && !_streamEmittedAudio,
                     applyFadeOut: true,
                     trailingZeroBytes: TailSilencePaddingBytes);
             }
@@ -160,18 +177,27 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
         }
     }
 
-    private bool WriteCoalescedLocked(bool applyFadeIn, bool applyFadeOut, int trailingZeroBytes)
+    private bool WriteCoalescedLocked(
+        bool applyFadeIn,
+        bool gentleRecoveryFade,
+        bool prependLeadIn,
+        bool applyFadeOut,
+        int trailingZeroBytes)
     {
         int total = (int)_coalesce.Length;
         int len = total & ~1;
         if (len < 2) return false;
 
         byte[] bufAll = _coalesce.GetBuffer();
-        int allocBytes = len + trailingZeroBytes;
+        int leadBytes = prependLeadIn ? LeadInSilenceBytes : 0;
+        int allocBytes = leadBytes + len + trailingZeroBytes;
         byte[] raw = ArrayPool<byte>.Shared.Rent(allocBytes);
         try
         {
-            Buffer.BlockCopy(bufAll, 0, raw, 0, len);
+            if (leadBytes > 0)
+                raw.AsSpan(0, leadBytes).Clear();
+
+            Buffer.BlockCopy(bufAll, 0, raw, leadBytes, len);
             if (trailingZeroBytes == 0 && total > len)
             {
                 byte odd = bufAll[len];
@@ -185,19 +211,34 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
 
             ReclaimCompletedLocked();
 
-            var pcmSpan = raw.AsSpan(0, len);
+            var pcmSpan = raw.AsSpan(leadBytes, len);
             if (applyFadeIn)
-                AudioPcmUtilities.ApplyFadeIn16(pcmSpan, fadeSamples: 120);
+                AudioPcmUtilities.ApplyFadeIn16(pcmSpan, fadeSamples: gentleRecoveryFade ? 36 : 96);
             if (applyFadeOut)
                 AudioPcmUtilities.ApplyFadeOut16(pcmSpan, fadeSamples: 96);
             if (trailingZeroBytes > 0)
-                raw.AsSpan(len, trailingZeroBytes).Clear();
+                raw.AsSpan(leadBytes + len, trailingZeroBytes).Clear();
 
             double vol = Volatile.Read(ref _volume);
             if (vol < 0.99)
-                ApplyVolumeInPlace(raw, len, vol);
+                ApplyVolumeInPlace(raw, leadBytes, len, vol);
 
-            return SubmitWaveOutBufferLocked(raw, allocBytes);
+            // Slice cleanly into <=400ms DMA buffers so Windows audio drivers never choke on one giant WAVEHDR
+            int offset = 0;
+            bool anySubmitted = false;
+            while (offset < allocBytes)
+            {
+                int remaining = allocBytes - offset;
+                int sliceLen = remaining <= MaxWaveHeaderBytes ? remaining : MaxWaveHeaderBytes;
+                sliceLen &= ~1;
+                if (sliceLen < 2) break;
+
+                if (!SubmitWaveOutBufferSliceLocked(raw, offset, sliceLen))
+                    break;
+                anySubmitted = true;
+                offset += sliceLen;
+            }
+            return anySubmitted;
         }
         finally
         {
@@ -214,7 +255,7 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
         try
         {
             zeros.AsSpan(0, silenceBytes).Clear();
-            _ = SubmitWaveOutBufferLocked(zeros, silenceBytes);
+            _ = SubmitWaveOutBufferSliceLocked(zeros, 0, silenceBytes);
         }
         finally
         {
@@ -222,7 +263,7 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
         }
     }
 
-    private bool SubmitWaveOutBufferLocked(byte[] managedBytes, int byteCount)
+    private bool SubmitWaveOutBufferSliceLocked(byte[] managedBytes, int startOffset, int byteCount)
     {
         if (byteCount < 2 || _hWaveOut == IntPtr.Zero)
             return false;
@@ -232,7 +273,7 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
         try
         {
             dataPtr = Marshal.AllocHGlobal(byteCount);
-            Marshal.Copy(managedBytes, 0, dataPtr, byteCount);
+            Marshal.Copy(managedBytes, startOffset, dataPtr, byteCount);
 
             uint hdrSize = (uint)Marshal.SizeOf<WAVEHDR>();
             var hdr = new WAVEHDR { lpData = dataPtr, dwBufferLength = (uint)byteCount };
@@ -335,15 +376,16 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
         }
     }
 
-    private static void ApplyVolumeInPlace(byte[] pcm16, int len, double volume)
+    private static void ApplyVolumeInPlace(byte[] pcm16, int startOffset, int len, double volume)
     {
         int sampleCount = len / 2;
         for (int i = 0; i < sampleCount; i++)
         {
-            short sample = (short)(pcm16[i * 2] | (pcm16[i * 2 + 1] << 8));
+            int idx = startOffset + i * 2;
+            short sample = (short)(pcm16[idx] | (pcm16[idx + 1] << 8));
             int scaled = Math.Clamp((int)Math.Round(sample * volume), short.MinValue, short.MaxValue);
-            pcm16[i * 2] = (byte)(scaled & 0xFF);
-            pcm16[i * 2 + 1] = (byte)((scaled >> 8) & 0xFF);
+            pcm16[idx] = (byte)(scaled & 0xFF);
+            pcm16[idx + 1] = (byte)((scaled >> 8) & 0xFF);
         }
     }
 

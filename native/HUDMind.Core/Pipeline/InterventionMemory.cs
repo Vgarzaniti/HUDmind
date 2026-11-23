@@ -19,6 +19,7 @@ public sealed partial class InterventionMemory
     private readonly LinkedList<VisualEvent> _timeline = new();
     private readonly LinkedList<ChatExchange> _chatHistory = new();
     private readonly List<MatchSessionEvent> _matchEvents = [];
+    private string _latestMatchAnchor = string.Empty;
     private string _lastMatchGameId = string.Empty;
     private string _lastMatchGameName = string.Empty;
     private string _currentMatchId = CreateMatchId();
@@ -54,6 +55,7 @@ public sealed partial class InterventionMemory
             if (clearMatchLog)
             {
                 _matchEvents.Clear();
+                _latestMatchAnchor = string.Empty;
                 _lastMatchGameId = string.Empty;
                 _lastMatchGameName = string.Empty;
                 _currentMatchId = CreateMatchId();
@@ -191,8 +193,21 @@ public sealed partial class InterventionMemory
     }
 
     /// <summary>
+    /// Updates the latest verified match/HUD state anchor for the current ongoing match
+    /// (cleared only when starting a fresh match or switching games).
+    /// </summary>
+    public void UpdateMatchAnchor(string? anchorSummary)
+    {
+        var clean = SanitizeOneLine(anchorSummary, 140);
+        if (string.IsNullOrWhiteSpace(clean))
+            return;
+        lock (_sync)
+            _latestMatchAnchor = clean;
+    }
+
+    /// <summary>
     /// Records every grounded visual observation (even during REPLAY/KICKOFF/silence)
-    /// so the AI understands match progression across ANY game.
+    /// so the AI understands full intra-match progression across ANY game.
     /// </summary>
     public void RecordObservation(string phase, string visualSummary, DateTimeOffset? nowUtc = null)
     {
@@ -201,33 +216,42 @@ public sealed partial class InterventionMemory
 
         var ts = nowUtc ?? DateTimeOffset.UtcNow;
         var cleanPhase = string.IsNullOrWhiteSpace(phase) ? "PLAY" : phase.Trim().ToUpperInvariant();
-        var cleanSum = SanitizeOneLine(visualSummary, 100);
+        var cleanSum = SanitizeOneLine(visualSummary, 110);
 
         lock (_sync)
         {
             PruneLocked(ts);
+            if (_timeline.Last is not null &&
+                string.Equals(_timeline.Last.Value.Phase, cleanPhase, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(_timeline.Last.Value.Summary, cleanSum, StringComparison.OrdinalIgnoreCase))
+            {
+                _timeline.RemoveLast();
+            }
             _timeline.AddLast(new VisualEvent(ts, cleanPhase, cleanSum));
-            while (_timeline.Count > 6)
+            while (_timeline.Count > 10)
                 _timeline.RemoveFirst();
         }
     }
 
-    public string FormatVisualTimeline(DateTimeOffset? nowUtc = null, int maxEvents = 4, bool isEn = false)
+    public string FormatVisualTimeline(DateTimeOffset? nowUtc = null, int maxEvents = 5, bool isEn = false)
     {
         var ts = nowUtc ?? DateTimeOffset.UtcNow;
         lock (_sync)
         {
             PruneLocked(ts);
-            if (_timeline.Count == 0)
-                return string.Empty;
+            var parts = new List<string>(maxEvents + 1);
+            if (!string.IsNullOrWhiteSpace(_latestMatchAnchor))
+                parts.Add(isEn ? $"LiveState: {_latestMatchAnchor}" : $"EstadoVivo: {_latestMatchAnchor}");
 
-            return string.Join(" ; ", _timeline.TakeLast(maxEvents).Select(ev =>
+            foreach (var ev in _timeline.TakeLast(maxEvents))
             {
                 int ago = Math.Max(1, (int)Math.Round((ts - ev.TimestampUtc).TotalSeconds));
-                return isEn
+                parts.Add(isEn
                     ? $"{ago}s ago [{ev.Phase}] {ev.Summary}"
-                    : $"hace {ago}s [{ev.Phase}] {ev.Summary}";
-            }));
+                    : $"hace {ago}s [{ev.Phase}] {ev.Summary}");
+            }
+
+            return string.Join(" ; ", parts);
         }
     }
 
@@ -316,9 +340,9 @@ public sealed partial class InterventionMemory
     {
         while (_entries.First is not null && (nowUtc - _entries.First.Value.TimestampUtc) > _ttl)
             _entries.RemoveFirst();
-        while (_timeline.First is not null && (nowUtc - _timeline.First.Value.TimestampUtc) > TimeSpan.FromSeconds(90))
+        while (_timeline.First is not null && (nowUtc - _timeline.First.Value.TimestampUtc) > TimeSpan.FromMinutes(8))
             _timeline.RemoveFirst();
-        while (_chatHistory.First is not null && (nowUtc - _chatHistory.First.Value.TimestampUtc) > TimeSpan.FromSeconds(180))
+        while (_chatHistory.First is not null && (nowUtc - _chatHistory.First.Value.TimestampUtc) > TimeSpan.FromMinutes(8))
             _chatHistory.RemoveFirst();
     }
 

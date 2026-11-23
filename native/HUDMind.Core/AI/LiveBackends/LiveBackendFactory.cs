@@ -1,3 +1,4 @@
+using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 
 namespace HUDMind.Core.AI;
@@ -11,6 +12,7 @@ public interface ILiveRealtimeBackend : IAsyncDisposable
     string ProviderName { get; }
     string ActiveModelLabel { get; }
     bool IsConnected { get; }
+    bool SupportsMultiFrameTurn => false;
 
     string ResolveVoiceName(string? gender);
 
@@ -28,6 +30,13 @@ public interface ILiveRealtimeBackend : IAsyncDisposable
     Task SendVideoFrameAsync(byte[] jpegBytes, CancellationToken ct);
     Task SendMicAudio16kAsync(byte[] pcm16k, CancellationToken ct);
     Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct);
+    Task SendFrameSequenceAndPromptTurnAsync(
+        IReadOnlyList<TemporalFrameSample> frames,
+        string promptText,
+        CancellationToken ct) =>
+        frames.Count > 0
+            ? SendImageAndPromptTurnAsync(frames[^1].JpegBytes, promptText, ct)
+            : SendTextTurnAsync(promptText, ct);
     Task SendTextTurnAsync(string promptText, CancellationToken ct);
     ValueTask ResetSessionStateAsync() => ValueTask.CompletedTask;
 }

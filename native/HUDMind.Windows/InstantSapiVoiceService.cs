@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using HUDMind.Core.AI;
 using HUDMind.Core.Engine;
 
 namespace HUDMind.Windows;
@@ -35,8 +36,18 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
     private double _volume = 0.75;
     private int _sapiRate;
     private string _selectedVoiceName = "OneCore";
+    private long _speakingUntilTick;
 
     public string EngineName => _ready ? $"onecore-instant({_selectedVoiceName})" : "onecore-inactive";
+
+    public bool IsSpeaking
+    {
+        get
+        {
+            long until = Volatile.Read(ref _speakingUntilTick);
+            return until > 0 && Stopwatch.GetTimestamp() < until;
+        }
+    }
 
     public void SetSpeechRate(string? rate)
     {
@@ -126,16 +137,23 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         if (_disposed || string.IsNullOrWhiteSpace(text))
             return 0;
 
+        var cleanSpeech = CoachContentGuard.SanitizeForSpeech(text);
+        if (string.IsNullOrWhiteSpace(cleanSpeech))
+            return 0;
+
         if (!_ready && !_initFailed)
             WarmUp(_language, _volume, _gender);
         if (!_ready || _disposed)
             return 0;
 
         long t0 = Stopwatch.GetTimestamp();
+        double rateFactor = Math.Clamp(1.0 + _sapiRate * 0.12, 0.6, 1.8);
+        double estSeconds = Math.Clamp((cleanSpeech.Length / 13.5) / rateFactor + 0.35, 0.6, 18.0);
+        Volatile.Write(ref _speakingUntilTick, t0 + (long)(estSeconds * Stopwatch.Frequency));
         lock (_sync)
         {
             if (_disposed) return 0;
-            _pendingText = text.Trim();
+            _pendingText = cleanSpeech;
             _pendingStop = false;
             _signal.Set();
         }
@@ -144,6 +162,7 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
 
     public void StopSpeaking()
     {
+        Volatile.Write(ref _speakingUntilTick, 0);
         if (_disposed || !_ready) return;
         lock (_sync)
         {

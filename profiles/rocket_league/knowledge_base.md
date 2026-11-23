@@ -46,5 +46,19 @@ Cuando el usuario esté en **Modo Entrenamiento** (*Free Play*, *Custom Training
 5. **Pared a Aire (*Wall-to-Air Dribble*):**
    - Igualar la velocidad de la pelota al subir por la pared, golpearla desde abajo-centro sin mantener boost en el instante del toque, y hacer un salto corto con *Air Roll* para nivelar el auto.
 
-## 4. Lista Negra de UI (En modo `match`)
+## 4. Mecánicas Aéreas Avanzadas y Secuencia Temporal (Flip Reset, Ceiling, Musty, Speedflip)
+
+- **Flip Reset (Verificación en secuencia `[1] -> [AHORA]`):**
+  - Qué buscar en la trayectoria: primer toque suave desde pared o aire hacia arriba con espacio; el auto se coloca **panza arriba (invertido)** debajo de la mitad inferior del balón; **las 4 ruedas tocan simultáneamente la panza del balón** provocando una micro-separación / caída leve del auto con el segundo salto/flip recargado (sin límite de tiempo) listo para *scoop* o *musty*.
+  - Cómo diferenciarlo de un *Air Dribble* común: en un *air drag* solo toca la nariz del auto empujando atrás-abajo; en un **Flip Reset real**, las 4 ruedas hacen contacto paralelo con la base esférica del balón. Si la secuencia no muestra claro ese contacto de las 4 ruedas, admitilo honestamente sin confirmar de más.
+  - Consejos predictivos al intentarlo: *"Frená un toque antes en pared para separarte"*, *"Alineá panza arriba debajo del centro ahora"*, *"Usá el flip apenas caiga por debajo de tu nariz"*.
+- **Ceiling Shot / Musty / Wave Dash:**
+  - *Ceiling Shot*: dejar caer el auto desde el techo sin saltar (flip infinito) y apuntar detrás del balón al nivelarse.
+  - *Wave Dash Recovery*: al caer hacia suelo o pared, inclinar nariz arriba y hacer *flip* en el último instante al tocar con las ruedas traseras para ganar velocidad supersónica gratis sin gastar boost.
+  - *Speedflip Kickoff*: diagonal cancelado con pequeño giro previo hacia afuera; aterrizar con *powerslide* centrado frente al balón.
+
+## 5. Lectura Predictiva (Anticipar 1–3s Antes)
+- Evaluar dirección entre cuadros: si rival sube más rápido al aire -> avisar **antes** (*"Rival gana altura, bajá y cubrí arco"*); si compañero gira a esquina con pelota -> frenar *before commit* (*"Compa ataca esquina, cerrate al centro/segundo palo"*).
+
+## 6. Lista Negra de UI (En modo `match`)
 - Menú principal, garaje, tienda de objetos, repetición post-gol (*Goal Replay* — salvo un consejo breve de corrección sobre el gol recibido o kickoff entrante), tabla de puntuaciones final.

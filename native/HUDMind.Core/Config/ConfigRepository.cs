@@ -531,17 +531,24 @@ public sealed partial class ConfigRepository
                 if (!string.IsNullOrWhiteSpace(manifest.DisplayName) && manifest.DisplayName.Length > 64)
                     manifest.DisplayName = manifest.DisplayName[..64];
 
-                var customRules = ReadBoundedText(Path.Combine(fullDir, "custom_rules.md"), MaxCustomRulesChars);
-                var tacticalSummary = ExtractCompactTacticalSummary(
-                    Path.Combine(fullDir, "system_prompt.md"),
-                    manifest.Notes);
+                var customRules = AI.CoachContentGuard.SanitizeInstructionMarkdown(
+                    ReadBoundedText(Path.Combine(fullDir, "custom_rules.md"), MaxCustomRulesChars));
+                var diskSysPrompt = ReadBoundedText(Path.Combine(fullDir, "system_prompt.md"), 750);
+                var embeddedSysPrompt = ReadEmbeddedDefaultProfileText(manifest.GameId, "system_prompt.md", 750);
+                var bestSysPrompt = embeddedSysPrompt.Length > diskSysPrompt.Length ? embeddedSysPrompt : diskSysPrompt;
+                var tacticalSummary = CompactTacticalSummaryText(bestSysPrompt, manifest.Notes);
+
+                var diskKb = ReadBoundedText(Path.Combine(fullDir, "knowledge_base.md"), 7500);
+                var embeddedKb = ReadEmbeddedDefaultProfileText(manifest.GameId, "knowledge_base.md", 7500);
+                var knowledgeGuide = embeddedKb.Length > diskKb.Length ? embeddedKb : diskKb;
 
                 result.Add(new GameProfile
                 {
                     Manifest = manifest,
                     DirectoryPath = fullDir,
                     CustomRules = customRules,
-                    TacticalSummary = tacticalSummary
+                    TacticalSummary = tacticalSummary,
+                    KnowledgeGuide = knowledgeGuide
                 });
             }
             catch
@@ -560,6 +567,7 @@ public sealed partial class ConfigRepository
         var rules = ReadBoundedText(Path.Combine(universalDir, "custom_rules.md"), MaxCustomRulesChars);
         if (string.IsNullOrEmpty(rules))
             rules = ReadBoundedText(Path.Combine(profilesRoot, "custom_rules.md"), MaxCustomRulesChars);
+        rules = AI.CoachContentGuard.SanitizeInstructionMarkdown(rules);
 
         return new GameProfile
         {
@@ -625,6 +633,8 @@ public sealed partial class ConfigRepository
         var trimmed = (rulesText ?? string.Empty).Trim();
         if (trimmed.Length > MaxCustomRulesChars)
             throw new ArgumentException($"Las reglas personalizadas no pueden superar {MaxCustomRulesChars} caracteres.");
+        if (AI.CoachContentGuard.ContainsUnsafeInstruction(trimmed))
+            throw new ArgumentException("Las reglas no pueden incluir insultos, temas sexuales/ilegales ni pedidos fuera del coaching gamer.");
 
         var (fullProfileDir, fullTarget) = ValidateProfileSubpath(profile, "custom_rules.md");
 
@@ -1049,7 +1059,7 @@ public sealed partial class ConfigRepository
         if (File.Exists(fullTarget) && (File.GetAttributes(fullTarget) & FileAttributes.ReparsePoint) != 0)
             throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en archivos config.");
 
-        var cleaned = SecretRedactor.Redact((rawContent ?? string.Empty).Trim());
+        var cleaned = SecretRedactor.Redact(AI.CoachContentGuard.SanitizeInstructionMarkdown((rawContent ?? string.Empty).Trim()));
         if (cleaned.Length > MaxMarkdownProfileChars)
             cleaned = cleaned[..MaxMarkdownProfileChars];
         AtomicWrite(fullTarget, string.IsNullOrEmpty(cleaned) ? string.Empty : cleaned + Environment.NewLine);
@@ -1094,15 +1104,41 @@ public sealed partial class ConfigRepository
         return text.Length <= maxChars ? text : text[..maxChars];
     }
 
-    private static string ExtractCompactTacticalSummary(string systemPromptPath, string fallbackNotes)
+    private static string CompactTacticalSummaryText(string raw, string fallbackNotes)
     {
-        var raw = ReadBoundedText(systemPromptPath, 240);
         if (!string.IsNullOrWhiteSpace(raw))
         {
-            var singleLine = string.Join(' ', raw.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()));
-            return singleLine.Length <= 220 ? singleLine : singleLine[..220];
+            var compact = string.Join(' ', raw
+                .Replace('#', ' ')
+                .Replace("**", string.Empty, StringComparison.Ordinal)
+                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim().TrimStart('-', '*')));
+            return compact.Length <= 380 ? compact : compact[..380];
         }
         return (fallbackNotes ?? string.Empty).Trim();
+    }
+
+    private static string ExtractCompactTacticalSummary(string systemPromptPath, string fallbackNotes) =>
+        CompactTacticalSummaryText(ReadBoundedText(systemPromptPath, 750), fallbackNotes);
+
+    private static string ReadEmbeddedDefaultProfileText(string gameId, string fileName, int maxChars)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+            return string.Empty;
+
+        var expected = $"HUDMind.DefaultProfiles/{gameId.Trim().ToLowerInvariant()}/{fileName}";
+        var asm = typeof(ConfigRepository).Assembly;
+        var match = asm.GetManifestResourceNames()
+            .FirstOrDefault(n => string.Equals(n.Replace('\\', '/'), expected, StringComparison.OrdinalIgnoreCase));
+        if (match is null)
+            return string.Empty;
+
+        using var stream = asm.GetManifestResourceStream(match);
+        if (stream is null)
+            return string.Empty;
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        var text = reader.ReadToEnd().Trim();
+        return text.Length <= maxChars ? text : text[..maxChars];
     }
 
     private static void BackupCorruptFile(string path)
