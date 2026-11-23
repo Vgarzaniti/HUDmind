@@ -50,17 +50,6 @@ public partial class OverlayWindow : Window, IOverlayOutputService
     [DllImport("shcore.dll")]
     private static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
 
-    private static readonly SolidColorBrush HighBrush = CreateFrozenBrush(0xEF, 0x44, 0x44);
-    private static readonly SolidColorBrush MedBrush = CreateFrozenBrush(0xF5, 0x9E, 0x0B);
-    private static readonly SolidColorBrush LowBrush = CreateFrozenBrush(0x38, 0xBD, 0xF8);
-
-    private static SolidColorBrush CreateFrozenBrush(byte r, byte g, byte b)
-    {
-        var br = new SolidColorBrush(MediaColor.FromRgb(r, g, b));
-        br.Freeze();
-        return br;
-    }
-
     private readonly DispatcherTimer _hideTimer;
     private MonitorBoundsRect[] _cachedWorkingAreas = [];
     private bool _screensDirty = true;
@@ -74,6 +63,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
     public OverlayWindow()
     {
         InitializeComponent();
+        OverlayWave.SetBarHeightScale(18);
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
         _hideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
@@ -111,6 +101,19 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         }
     }
 
+    public void SetHotkeyHints(string pauseKey, string analyzeKey)
+    {
+        if (_closed) return;
+        var p = string.IsNullOrWhiteSpace(pauseKey) ? "F9" : pauseKey.Trim().ToUpperInvariant();
+        var a = string.IsNullOrWhiteSpace(analyzeKey) ? "F10" : analyzeKey.Trim().ToUpperInvariant();
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_closed) return;
+            TxtPauseChip.Text = $"{p} PAUSA";
+            TxtAnalyzeChip.Text = $"{a} IA";
+        });
+    }
+
     public void Configure(
         string position,
         int width,
@@ -126,15 +129,21 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             _position = string.IsNullOrWhiteSpace(position) ? "top-right" : position.ToLowerInvariant();
             _monitorIndex = Math.Max(1, monitorIndex);
             double s = Math.Clamp(scale, 0.75, 1.45);
-            double baseW = compact ? Math.Max(300, width * 0.85) : width;
+            double baseW = compact ? Math.Max(300, width * 0.85) : Math.Max(width, 456);
             Width = Math.Clamp(baseW * s, 260, 760);
             _targetOpacity = Math.Clamp(opacity, 0.35, 1.0);
 
-            CardBorder.Padding = compact ? new Thickness(10, 6, 10, 6) : new Thickness(12, 10, 12, 10);
-            TitleBlock.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
-            TitleBlock.FontSize = 11.0 * s;
+            var chromeVis = compact ? Visibility.Collapsed : Visibility.Visible;
+            CardBorder.Padding = compact ? new Thickness(10, 7, 10, 7) : new Thickness(13, 11, 13, 11);
+            IconBadge.Visibility = chromeVis;
+            TitleBlock.Visibility = chromeVis;
+            StatusTagBorder.Visibility = chromeVis;
+            FooterDock.Visibility = chromeVis;
+            TitleBlock.FontSize = 10.5 * s;
             MessageBlock.FontSize = (compact ? 13.5 : 14.5) * s;
-            MessageBlock.Margin = compact ? new Thickness(0) : new Thickness(0, 3, 0, 0);
+            MessageBlock.Margin = compact ? new Thickness(0) : new Thickness(0, 2, 0, 0);
+            if (!compact)
+                OverlayWave.SetBarHeightScale(Math.Round(18.0 * s));
 
             if (IsVisible)
             {
@@ -163,16 +172,17 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         Dispatcher.BeginInvoke(() =>
         {
             if (_closed) return;
-            var brush = urgency switch
-            {
-                UrgencyLevel.High => HighBrush,
-                UrgencyLevel.Medium => MedBrush,
-                _ => LowBrush
-            };
-            UrgencyBar.Background = brush;
-            CardBorder.BorderBrush = brush;
+            var visual = HudVisualPalette.ResolveUrgency(urgency);
+            UrgencyBar.Background = visual.AccentBarBrush;
+            CardBorder.BorderBrush = visual.BorderBrush;
+            StatusTagBorder.Background = visual.BadgeBackgroundBrush;
+            StatusTagBorder.BorderBrush = visual.BadgeBorderBrush;
+            StatusTagText.Foreground = visual.TagForegroundBrush;
+            StatusTagText.Text = visual.TagText;
 
-            TitleBlock.Text = string.IsNullOrWhiteSpace(title) ? "HUDMind · Coach" : $"HUDMind · {title}";
+            TitleBlock.Text = string.IsNullOrWhiteSpace(title)
+                ? "AI COPILOT · HUDMIND"
+                : $"AI COPILOT · {title.ToUpperInvariant()}";
             MessageBlock.Text = text;
 
             bool wasVisible = IsVisible;

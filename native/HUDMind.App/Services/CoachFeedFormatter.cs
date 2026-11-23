@@ -132,9 +132,9 @@ public static partial class CoachFeedFormatter
                 Timestamp = timestamp,
                 Author = "Vos",
                 Message = userMatch.Groups[1].Value.Trim(),
-                AccentHex = "#6366F1",
-                CardBackgroundHex = "#1E1B4B",
-                AuthorForegroundHex = "#A5B4FC"
+                AccentHex = "#22D3EE",
+                CardBackgroundHex = "#0B202C",
+                AuthorForegroundHex = "#67E8F9"
             };
         }
 
@@ -147,7 +147,7 @@ public static partial class CoachFeedFormatter
                 Author = "🎙 Coach",
                 Message = coachChat.Groups[1].Value.Trim(),
                 AccentHex = "#38BDF8",
-                CardBackgroundHex = "#0F172A",
+                CardBackgroundHex = "#0B1522",
                 AuthorForegroundHex = "#38BDF8"
             };
         }
@@ -165,7 +165,7 @@ public static partial class CoachFeedFormatter
                     Author = "🔥 Coach · Urgente",
                     Message = text,
                     AccentHex = "#EF4444",
-                    CardBackgroundHex = "#1F1218",
+                    CardBackgroundHex = "#1E1016",
                     AuthorForegroundHex = "#FCA5A5"
                 },
                 "MEDIUM" => new CoachFeedItem
@@ -174,7 +174,7 @@ public static partial class CoachFeedFormatter
                     Author = "⚡ Coach · Consejo",
                     Message = text,
                     AccentHex = "#F59E0B",
-                    CardBackgroundHex = "#1C1917",
+                    CardBackgroundHex = "#1A160D",
                     AuthorForegroundHex = "#FCD34D"
                 },
                 _ => new CoachFeedItem
@@ -182,9 +182,9 @@ public static partial class CoachFeedFormatter
                     Timestamp = timestamp,
                     Author = "💡 Coach · Tip",
                     Message = text,
-                    AccentHex = "#38BDF8",
-                    CardBackgroundHex = "#0F172A",
-                    AuthorForegroundHex = "#7DD3FC"
+                    AccentHex = "#22D3EE",
+                    CardBackgroundHex = "#0B1622",
+                    AuthorForegroundHex = "#67E8F9"
                 }
             };
         }
@@ -199,7 +199,7 @@ public static partial class CoachFeedFormatter
                 Author = "Aviso",
                 Message = msg,
                 AccentHex = msg.StartsWith("⚠", StringComparison.Ordinal) ? "#F59E0B" : "#EF4444",
-                CardBackgroundHex = "#1A1416",
+                CardBackgroundHex = "#171115",
                 AuthorForegroundHex = msg.StartsWith("⚠", StringComparison.Ordinal) ? "#FCD34D" : "#FCA5A5"
             };
         }
@@ -226,7 +226,7 @@ public static partial class CoachFeedFormatter
                 Author = "Estado",
                 Message = friendly,
                 AccentHex = "#10B981",
-                CardBackgroundHex = "#0B1F1C",
+                CardBackgroundHex = "#081C19",
                 AuthorForegroundHex = "#6EE7B7"
             };
         }

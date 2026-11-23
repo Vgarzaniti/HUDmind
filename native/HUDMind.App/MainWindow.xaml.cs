@@ -51,6 +51,7 @@ public partial class MainWindow : Window
     private readonly OverlayWindow _overlay = new();
     private readonly HybridVoiceService _sharedVoice;
     private readonly GitHubReleaseUpdateService _updateService = new();
+    private readonly HudNavigationMediator _navMediator;
     private Win32TrayIcon? _trayIcon;
     private DispatcherTimer? _updateTimer;
     private CancellationTokenSource? _updateCts;
@@ -83,16 +84,18 @@ public partial class MainWindow : Window
         }
 
         InitializeComponent();
+        _navMediator = new HudNavigationMediator(MainTabs, [NavCoach, NavAccounts, NavGames, NavSettings]);
+        SettingsVoiceWave.SetBarHeightScale(26);
         LstCoachFeed.ItemsSource = _feedEntries;
         LstLiveLogs.ItemsSource = _logEntries;
         _feedEntries.Add(new CoachFeedItem
         {
             Timestamp = DateTime.Now.ToString("HH:mm"),
             Author = "HUDMind",
-            Message = "Listo para acompañarte. Elegí tu juego (o dejalo en Automático) y tocá Iniciar Coach.",
+            Message = "Listo para acompañarte. Elegí tu juego (o dejalo en Automático) y tocá Activar Coach.",
             AccentHex = "#10B981",
-            CardBackgroundHex = "#151D2C",
-            AuthorForegroundHex = "#34D399"
+            CardBackgroundHex = "#081C19",
+            AuthorForegroundHex = "#6EE7B7"
         });
 
         _sharedVoice = new HybridVoiceService(_repo.WorkspaceRoot);
@@ -252,6 +255,7 @@ public partial class MainWindow : Window
         RefreshOnboardingBanner();
         RefreshRollingMemoryUi();
         UpdateLatencyCardHeaders(isLive: false);
+        ResetStatsCards();
 
         if (!string.IsNullOrWhiteSpace(_repo.LastLoadWarning))
             AppendLog($"⚠ AVISO: {_repo.LastLoadWarning}");
@@ -282,7 +286,9 @@ public partial class MainWindow : Window
             CmbSpeakerDevice.Items.Add(new ComboBoxItem { Content = dev, Tag = dev });
     }
 
-    private void ConfigureOverlayFromCurrentConfig() =>
+    private void ConfigureOverlayFromCurrentConfig()
+    {
+        _overlay.SetHotkeyHints(_config.HotkeyTogglePause, _config.HotkeyAnalyzeNow);
         _overlay.Configure(
             _config.OverlayPosition,
             _config.OverlayWidth,
@@ -290,6 +296,7 @@ public partial class MainWindow : Window
             _config.CaptureMonitor,
             _config.OverlayScale,
             _config.OverlayCompact);
+    }
 
     private void RefreshOnboardingBanner()
     {
@@ -312,20 +319,54 @@ public partial class MainWindow : Window
         BtnPause.Content = _coordinator.IsPaused
             ? $"▶ Reanudar ({_config.HotkeyTogglePause})"
             : $"⏸ Pausar ({_config.HotkeyTogglePause})";
+        _overlay.SetHotkeyHints(_config.HotkeyTogglePause, _config.HotkeyAnalyzeNow);
     }
 
-    private void UpdateLatencyCardHeaders(bool isLive)
+    private void UpdateLatencyCardHeaders(bool isLive) =>
+        ActiveBanner.UpdateHeaders(isLive);
+
+    private string BuildActiveBannerSubtitle()
     {
-        LblAiCardTitle.Text = isLive ? "RESPUESTA EN VIVO" : "VELOCIDAD DE RESPUESTA";
-        LblVoiceCardTitle.Text = isLive ? "VOZ Y MICRÓFONO" : "VOZ DEL COACH";
+        var engine = _coordinator.IsRunning
+            ? (_coordinator.SupportsLiveMic ? "Live WebSocket Audio+Video" : "Turnos Multi-IA")
+            : (_config.UseLiveConversational ? "Live listo · Auto-Detectar" : "Turnos listo · Auto-Detectar");
+        var style = _config.CoachStyle switch
+        {
+            "honest" => "Sincero",
+            "tactical" => "Táctico",
+            "strict" => "Torneo",
+            _ => "Amigable"
+        };
+        return $"{engine} · Estilo {style} · 0% GPU pasivo";
+    }
+
+    private (string Label, bool Highlighted) ResolveContextBadge()
+    {
+        bool hasMemoryOrSoul = !string.IsNullOrWhiteSpace(_config.PreviousMatchFocus) ||
+                               !string.IsNullOrWhiteSpace(_config.CoachSoulSummary);
+        if (_coordinator.IsRunning)
+            return hasMemoryOrSoul ? ("Memoria & Contexto: ACTIVO", true) : ("Observación en vivo: ACTIVA", true);
+        return hasMemoryOrSoul ? ("Memoria .md: CARGADA", false) : ("Memoria .md: LISTO", false);
+    }
+
+    private void ApplyRunStateVisual(HudRunState state)
+    {
+        var v = HudVisualPalette.ResolveRunState(state);
+        StatusDot.Fill = v.DotBrush;
+        StatusPillBorder.Background = v.PillBackgroundBrush;
+        StatusPillBorder.BorderBrush = v.PillBorderBrush;
+        HeaderStatusText.Foreground = v.TextBrush;
+        BtnStartStop.Background = v.PrimaryButtonBackgroundBrush;
+        BtnStartStop.BorderBrush = v.PrimaryButtonBorderBrush;
+        BtnStartStop.Content = v.PrimaryButtonLabel;
     }
 
     private void ResetStatsCards()
     {
-        StatActiveGame.Text = "Esperando juego";
-        StatAiMs.Text = "—";
-        StatVoiceMs.Text = _config.IsTextOnlyMode ? "Silencio" : "Listo";
-        StatInterventions.Text = "0";
+        ActiveBanner.Reset(_config.IsTextOnlyMode, BuildActiveBannerSubtitle());
+        var (ctxLabel, ctxActive) = ResolveContextBadge();
+        ActiveBanner.SetContextStatus(ctxLabel, ctxActive);
+        ApplyRunStateVisual(HudRunState.Idle);
     }
 
     private void SetRunningControlLocks(bool running)
@@ -381,26 +422,29 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke(() =>
         {
             if (_shutdownComplete || !_coordinator.IsRunning) return;
-            StatActiveGame.Text = string.IsNullOrWhiteSpace(stats.ActiveGame) || stats.ActiveGame == "-"
-                ? "Detectando..."
-                : stats.ActiveGame;
-            StatAiMs.Text = stats.LastAiMs <= 0
-                ? "—"
-                : (stats.LastAiMs >= 1000 ? $"{stats.LastAiMs / 1000.0:0.0} s" : $"{stats.LastAiMs:F0} ms");
-            StatVoiceMs.Text = _config.IsTextOnlyMode
+            var voiceStatus = _config.IsTextOnlyMode
                 ? "Silencio"
                 : (_coordinator.SupportsLiveMic
                     ? (_config.IsMicActive
                         ? (_config.IsPushToTalkMode ? $"PTT ({_config.PushToTalkKey})" : "Mic activo")
                         : "Solo voz coach")
                     : "Voz activa");
-            StatInterventions.Text = stats.Interventions.ToString(CultureInfo.InvariantCulture);
+            var (ctxLabel, ctxActive) = ResolveContextBadge();
+            ActiveBanner.UpdateMetrics(
+                stats.ActiveGame,
+                BuildActiveBannerSubtitle(),
+                stats.LastAiMs,
+                voiceStatus,
+                stats.Interventions,
+                ctxLabel,
+                ctxActive);
             var provLabel = string.IsNullOrWhiteSpace(stats.ActiveProvider) || stats.ActiveProvider == "-"
                 ? "IA"
                 : (stats.ActiveProvider.Contains(' ') ? stats.ActiveProvider : CoachFeedFormatter.FriendlyShortProvider(stats.ActiveProvider));
             HeaderStatusText.Text = stats.IsPaused
                 ? $"Pausado · {provLabel}"
                 : $"En partida · {provLabel}";
+            ApplyRunStateVisual(stats.IsPaused ? HudRunState.Paused : HudRunState.Active);
             PauseBadge.Visibility = stats.IsPaused ? Visibility.Visible : Visibility.Collapsed;
             _trayIcon?.UpdateTooltip($"HUDMind · {HeaderStatusText.Text}");
             RefreshMatchReviewButtonState();
@@ -417,6 +461,7 @@ public partial class MainWindow : Window
         {
             if (_shutdownComplete || !_coordinator.IsRunning) return;
             PauseBadge.Visibility = paused ? Visibility.Visible : Visibility.Collapsed;
+            ApplyRunStateVisual(paused ? HudRunState.Paused : HudRunState.Active);
             RefreshHotkeyButtonLabels();
         });
     }
@@ -507,7 +552,9 @@ public partial class MainWindow : Window
                 UpdateLatencyCardHeaders(isLive: _coordinator.SupportsLiveMic);
                 TxtHeaderBadge.Text = result.Badge;
                 HeaderStatusText.Text = result.Status;
-                BtnStartStop.Content = "⏹ Detener Coach";
+                ApplyRunStateVisual(HudRunState.Active);
+                var (ctxLabel, ctxActive) = ResolveContextBadge();
+                ActiveBanner.SetContextStatus(ctxLabel, ctxActive);
                 SetRunningControlLocks(true);
                 PauseBadge.Visibility = Visibility.Collapsed;
                 RefreshHotkeyButtonLabels();
@@ -577,7 +624,6 @@ public partial class MainWindow : Window
     private void ApplyStoppedUiState()
     {
         _overlay.HideImmediately();
-        BtnStartStop.Content = "▶ Iniciar Coach";
         SetRunningControlLocks(false);
         ResetStatsCards();
         RefreshMatchReviewButtonState();
@@ -1346,10 +1392,10 @@ public partial class MainWindow : Window
     }
 
     private void BtnGoAccounts_Click(object sender, RoutedEventArgs e) =>
-        MainTabs.SelectedIndex = 1;
+        _navMediator.SelectTab(1);
 
     private void BtnGoSettings_Click(object sender, RoutedEventArgs e) =>
-        MainTabs.SelectedIndex = 3;
+        _navMediator.SelectTab(3);
 
     private void BtnDismissOnboarding_Click(object sender, RoutedEventArgs e)
     {
