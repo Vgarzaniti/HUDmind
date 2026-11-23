@@ -17,7 +17,7 @@ This file provides immediate architectural, security, testing, and workflow cont
 ## Non-Negotiable Rules
 1. **0% GPU & Zero NuGet:** Keep `RenderMode.SoftwareOnly`; never add external NuGet dependencies or WPF GPU effects.
 2. **100% Passive / Anti-Cheat Safe:** Never inject DLLs, read/write game memory, or install `WH_KEYBOARD_LL` / `WH_MOUSE_LL` hooks.
-3. **Security Boundaries:** Preserve `BaseUrlSecurityValidator` (SSRF/HTTPS), `SecretRedactor`, `ConfigRepository` (CWE-22 + symlink checks + atomic writes), `CoachingPersonaBuilder.SanitizeField`, and `GitHubReleaseUpdateService` (GitHub HTTPS redirect allowlist + SHA-256).
+3. **Security Boundaries:** Preserve `BaseUrlSecurityValidator` (SSRF/HTTPS), `SecretRedactor`, `ConfigRepository` (CWE-22 + symlink checks + atomic writes), `CoachingPersonaBuilder.SanitizeField`, and `GitHubReleaseUpdateService` (GitHub HTTPS redirect allowlist + `SHA-256` verification against `SHA256SUMS.txt` when present and listing the asset).
 4. **Keep `HUDMind.Core` Cross-Platform (`net9.0`):** Never reference Windows/WPF/WinForms inside `HUDMind.Core`. Do not edit `archive/legacy_python/`.
 5. **Bilingual Docs (`*.es.md` + `*.en.md`):** Every documentation `.md` in root or `docs/` must maintain both Spanish and English versions with top cross-links.
 6. **Never Commit Secrets or Build Outputs:** Never stage `.env`, `config/*.json`, `profiles/*/custom_rules.md`, `logs/`, `dist/`, `bin/`, or `obj/`.
@@ -27,7 +27,8 @@ This file provides immediate architectural, security, testing, and workflow cont
 dotnet build native/HUDMind.sln -c Release
 dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
-.\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe --smoke-startup
+$p = Start-Process -FilePath ".\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe" -ArgumentList "--smoke-startup" -Wait -PassThru
+if ($p.ExitCode -ne 0) { throw "WPF --smoke-startup failed with exit code $($p.ExitCode)" }
 ```
 
 ## Git & Pull Request Rules

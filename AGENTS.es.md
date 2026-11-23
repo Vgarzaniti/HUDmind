@@ -20,7 +20,7 @@ Leé este documento primero antes de modificar código, pruebas, documentación,
    - **NUNCA** inyectes DLLs, leas/escribas memoria de juegos ni instales hooks globales (`WH_KEYBOARD_LL`, `WH_MOUSE_LL`).
 4. **Fronteras Estrictas de Seguridad:**
    - **SSRF / Texto claro (`BaseUrlSecurityValidator` y `SharedHttpFactory`):** Exigir HTTPS remoto (HTTP en loopback permitido solo para Ollama local), mantener `AllowAutoRedirect = false` y bloquear rangos privados/CGNAT/NAT64/Teredo/6to4/metadata.
-   - **Actualizaciones GitHub (`GitHubReleaseUpdateService`):** Permitir redirecciones HTTPS (`<= 5` saltos) **solo** hacia `github.com` / `.githubusercontent.com`, limitar tamaño de respuestas y validar `SHA-256` contra `SHA256SUMS.txt`.
+   - **Actualizaciones GitHub (`GitHubReleaseUpdateService`):** Permitir redirecciones HTTPS (`<= 5` saltos) **solo** hacia `github.com` / `.githubusercontent.com`, limitar tamaño de respuestas y validar `SHA-256` contra `SHA256SUMS.txt` cuando el archivo de checksums existe, es legible y lista el binario descargado (fallando y borrando el archivo si no coincide). Si falta `SHA256SUMS.txt` o no lista el archivo, la descarga finaliza sin verificación y la opción para abrirlo sigue habilitada en `MainWindow`.
    - **Path Traversal (`ConfigRepository` y `LoopbackGsiService`):** Validar IDs (`^[a-z0-9_\-]{1,64}$`), bloquear `..`, rutas UNC y symlinks (`ReparsePoint`); escribir configuraciones de forma atómica (`AtomicWrite`).
    - **Secretos (`SecretRedactor`):** Enmascarar API keys/tokens en logs, errores, backups corruptos y resúmenes Markdown.
    - **Sanitización de prompts (`CoachingPersonaBuilder.SanitizeField`):** Limpiar delimitadores (`|`) y tags XML (`<...>`) provenientes de OCR o telemetría antes de inyectarlos al prompt.
@@ -57,7 +57,7 @@ Leé este documento primero antes de modificar código, pruebas, documentación,
 ## 3. Cómo Funciona en Tiempo de Ejecución
 
 1. **Arranque y Persistencia:** `App.OnStartup` fija `RenderMode.SoftwareOnly`, protege instancia única con Mutex (`--smoke-startup` lo omite y cierra limpio en `MainWindow_Loaded`), inicializa `ConfigRepository` (`%LocalAppData%\HUDMind` cuando corre standalone, o `profiles/`+`config/` del repo en dev) y extrae los 7 perfiles embebidos si faltan.
-2. **Actualizaciones In-App:** Con `CheckUpdatesOnStartup` activo, `MainWindow` consulta `https://api.github.com/repos/Vgarzaniti/HUDmind/releases/latest` al abrir y cada 60 min en reposo (`!_coordinator.IsRunning`). Si hay versión estable mayor, muestra `UpdateBanner` con **⬇ Descargar actualización**, elige `Standalone` o compacto según `IsRunningSelfContained()`, valida `SHA-256` y libera el mutex antes de lanzar el nuevo `.exe`.
+2. **Actualizaciones In-App:** Con `CheckUpdatesOnStartup` activo, `MainWindow` consulta `https://api.github.com/repos/Vgarzaniti/HUDmind/releases/latest` al abrir y cada 60 min en reposo (`!_coordinator.IsRunning`). Si hay versión estable mayor, muestra `UpdateBanner` con **⬇ Descargar actualización**, elige `Standalone` o compacto según `IsRunningSelfContained()`, valida `SHA-256` cuando `SHA256SUMS.txt` existe y lista el archivo (si no, finaliza con `Sha256Verified = false`) y libera el mutex antes de lanzar el nuevo `.exe`.
 3. **Selección Polimórfica de Motor (`CoachEngineCoordinator`):**
    - **Live Conversacional (`RealtimeLiveCoachOrchestrator`):** Envía audio de micrófono 16kHz (con supresión de eco o PTT) + frames GDI periódicos por WebSocket (`GeminiLiveBackend` / `OpenAIRealtimeBackend`) y reproduce voz PCM 24kHz + texto en overlay con *barge-in*.
    - **Turnos Multi-IA (`CoachOrchestrator`):** Captura vía `FastScreenCapture`, filtra estáticos por dHash 64-bit, alimenta un canal `DropOldest` de capacidad 1 (despertar inmediato con `F10`), enruta con `ProviderFailoverRouter` (*Hedged Vision* o `TextOnlySensorService` WinRT OCR + sensores pasivos en modelos sin visión), parsea `CompactWireProtocol`, evita repetidos en `InterventionMemory` y muestra en `OverlayWindow` + `HybridVoiceService`.
@@ -75,11 +75,15 @@ dotnet build native/HUDMind.sln -c Release
 dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
 
-# 3. Smoke test WPF real (debe salir con código 0)
-.\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe --smoke-startup
+# 3. Smoke test WPF real (debe salir con código 0; usar Start-Process -Wait -PassThru porque es WinExe)
+$p = Start-Process -FilePath ".\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe" -ArgumentList "--smoke-startup" -Wait -PassThru
+if ($p.ExitCode -ne 0) { throw "WPF --smoke-startup failed with exit code $($p.ExitCode)" }
 
-# 4. Publicar binario single-file x64 (usar --self-contained true para portable)
+# 4. Publicar binario single-file x64:
+#    a) Dependiente de framework (requiere .NET 9 Desktop Runtime en la PC destino)
 dotnet publish native/HUDMind.App/HUDMind.App.csproj -c Release -r win-x64 --no-self-contained -p:PublishSingleFile=true -p:DebugType=None -o dist/native
+#    b) Portable standalone (no requiere instalar .NET 9 Desktop Runtime en la PC destino)
+dotnet publish native/HUDMind.App/HUDMind.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -o dist/native-standalone
 ```
 
 ---
