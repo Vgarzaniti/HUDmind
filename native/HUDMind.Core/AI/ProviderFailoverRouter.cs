@@ -145,7 +145,10 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
                 attemptedIds, frameCts.Token);
 
             if (hedged.Handled)
-                return (hedged.Response, hedged.LatencyMs, hedged.Model);
+            {
+                bool isEn = CoachingPersonaBuilder.IsEnglish(config);
+                return (CoachContentGuard.SanitizeCoachResponse(hedged.Response, isEn), hedged.LatencyMs, hedged.Model);
+            }
         }
 
         HudSensorSnapshot? lazySensor = null;
@@ -206,7 +209,11 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
             {
                 RecordSuccess(prov.Account.Id);
                 Volatile.Write(ref _activeIndex, idx);
-                return (ApplyFreshnessDeadline(res.Response, ms, forceAdvice, prov.Account.Model), ms, prov.Account.Model);
+                bool isEn = CoachingPersonaBuilder.IsEnglish(config);
+                var safeResp = CoachContentGuard.SanitizeCoachResponse(
+                    ApplyFreshnessDeadline(res.Response, ms, forceAdvice, prov.Account.Model),
+                    isEn);
+                return (safeResp, ms, prov.Account.Model);
             }
 
             // On HTTP 422 (malformed output), continue failover to backup without penalizing cooldown!
@@ -229,6 +236,11 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         string recentChatHistory = "",
         CancellationToken ct = default)
     {
+        bool isEnText = CoachingPersonaBuilder.IsEnglish(config, preferTextLang: true);
+        var inputGuard = CoachContentGuard.EvaluateUserInput(userQuestion, isEnText);
+        if (!inputGuard.IsAllowed)
+            return (inputGuard.SafeRedirectReply, 0, "safety-guard");
+
         if (_providers.Count == 0)
             return (null, 0, "none");
 
@@ -274,7 +286,8 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
             {
                 RecordSuccess(prov.Account.Id);
                 Volatile.Write(ref _activeIndex, idx);
-                return (res.Response.OverlayText.Trim(), sw.Elapsed.TotalMilliseconds, prov.Account.Model);
+                var outGuard = CoachContentGuard.InspectAndCleanModelOutput(res.Response.OverlayText.Trim(), isEnText);
+                return (outGuard.IsSafe ? outGuard.CleanText : outGuard.FallbackReplacement, sw.Elapsed.TotalMilliseconds, prov.Account.Model);
             }
 
             if (res.ErrorCode is not (422 or 501))
@@ -294,6 +307,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         if (_providers.Count == 0 || string.IsNullOrWhiteSpace(sessionDigest))
             return (null, 0, "none");
 
+        bool isEnText = CoachingPersonaBuilder.IsEnglish(config, preferTextLang: true);
         var prompt = CoachingPersonaBuilder.BuildPostMatchReviewPrompt(gameDisplayName, sessionDigest, config, profile);
         var now = DateTimeOffset.UtcNow;
         var candidates = _providers
@@ -322,7 +336,8 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
             {
                 RecordSuccess(prov.Account.Id);
                 Volatile.Write(ref _activeIndex, idx);
-                return (res.Response.OverlayText.Trim(), sw.Elapsed.TotalMilliseconds, prov.Account.Model);
+                var outGuard = CoachContentGuard.InspectAndCleanModelOutput(res.Response.OverlayText.Trim(), isEnText);
+                return (outGuard.IsSafe ? outGuard.CleanText : outGuard.FallbackReplacement, sw.Elapsed.TotalMilliseconds, prov.Account.Model);
             }
 
             if (res.ErrorCode is not (422 or 501))

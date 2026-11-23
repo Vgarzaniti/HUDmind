@@ -92,7 +92,7 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
             {
                 automaticActivityDetection = new
                 {
-                    startOfSpeechSensitivity = "START_SENSITIVITY_HIGH",
+                    startOfSpeechSensitivity = "START_SENSITIVITY_LOW",
                     endOfSpeechSensitivity = "END_SENSITIVITY_HIGH",
                     silenceDurationMs = 250
                 }

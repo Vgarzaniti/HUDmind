@@ -531,7 +531,8 @@ public sealed partial class ConfigRepository
                 if (!string.IsNullOrWhiteSpace(manifest.DisplayName) && manifest.DisplayName.Length > 64)
                     manifest.DisplayName = manifest.DisplayName[..64];
 
-                var customRules = ReadBoundedText(Path.Combine(fullDir, "custom_rules.md"), MaxCustomRulesChars);
+                var customRules = AI.CoachContentGuard.SanitizeInstructionMarkdown(
+                    ReadBoundedText(Path.Combine(fullDir, "custom_rules.md"), MaxCustomRulesChars));
                 var diskSysPrompt = ReadBoundedText(Path.Combine(fullDir, "system_prompt.md"), 750);
                 var embeddedSysPrompt = ReadEmbeddedDefaultProfileText(manifest.GameId, "system_prompt.md", 750);
                 var bestSysPrompt = embeddedSysPrompt.Length > diskSysPrompt.Length ? embeddedSysPrompt : diskSysPrompt;
@@ -566,6 +567,7 @@ public sealed partial class ConfigRepository
         var rules = ReadBoundedText(Path.Combine(universalDir, "custom_rules.md"), MaxCustomRulesChars);
         if (string.IsNullOrEmpty(rules))
             rules = ReadBoundedText(Path.Combine(profilesRoot, "custom_rules.md"), MaxCustomRulesChars);
+        rules = AI.CoachContentGuard.SanitizeInstructionMarkdown(rules);
 
         return new GameProfile
         {
@@ -631,6 +633,8 @@ public sealed partial class ConfigRepository
         var trimmed = (rulesText ?? string.Empty).Trim();
         if (trimmed.Length > MaxCustomRulesChars)
             throw new ArgumentException($"Las reglas personalizadas no pueden superar {MaxCustomRulesChars} caracteres.");
+        if (AI.CoachContentGuard.ContainsUnsafeInstruction(trimmed))
+            throw new ArgumentException("Las reglas no pueden incluir insultos, temas sexuales/ilegales ni pedidos fuera del coaching gamer.");
 
         var (fullProfileDir, fullTarget) = ValidateProfileSubpath(profile, "custom_rules.md");
 
@@ -1055,7 +1059,7 @@ public sealed partial class ConfigRepository
         if (File.Exists(fullTarget) && (File.GetAttributes(fullTarget) & FileAttributes.ReparsePoint) != 0)
             throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en archivos config.");
 
-        var cleaned = SecretRedactor.Redact((rawContent ?? string.Empty).Trim());
+        var cleaned = SecretRedactor.Redact(AI.CoachContentGuard.SanitizeInstructionMarkdown((rawContent ?? string.Empty).Trim()));
         if (cleaned.Length > MaxMarkdownProfileChars)
             cleaned = cleaned[..MaxMarkdownProfileChars];
         AtomicWrite(fullTarget, string.IsNullOrEmpty(cleaned) ? string.Empty : cleaned + Environment.NewLine);

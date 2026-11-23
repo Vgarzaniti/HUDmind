@@ -74,7 +74,7 @@ public sealed class OpenAIRealtimeBackend : ILiveRealtimeBackend
             ["turn_detection"] = new
             {
                 type = "server_vad",
-                threshold = 0.55,
+                threshold = 0.62,
                 prefix_padding_ms = 200,
                 silence_duration_ms = 260
             }

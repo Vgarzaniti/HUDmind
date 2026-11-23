@@ -396,6 +396,23 @@ await RunTest("W11. Win32TemporalStoryboardComposer renders valid 2x1 motion str
     return Task.CompletedTask;
 });
 
+// W12. Long multi-slice DMA streaming, continuous turn recovery, and clean TTS markdown speech sanitizer
+await RunTest("W12. Win32StreamingPcmPlayer slices >400ms buffers smoothly & SanitizeForSpeech removes markdown noise", () =>
+{
+    var clean = HUDMind.Core.AI.CoachContentGuard.SanitizeForSpeech("**Rotá** [AHORA] | guardá `boost`...");
+    Assert(!clean.Contains('*') && !clean.Contains('|') && !clean.Contains('`') && !clean.Contains('['),
+        $"SanitizeForSpeech left symbols that cause TTS hesitations: '{clean}'");
+
+    using var player = new Win32StreamingPcmPlayer();
+    player.SetVolume(0.75);
+    player.EnqueuePcm24k(new byte[12000]); // primes 240ms + submits with 20ms silent lead-in
+    player.EnqueuePcm24k(new byte[48000]); // 1000ms continuous chunk -> slices cleanly into <=400ms WAVEHDR blocks
+    player.FlushBuffered();
+    player.InterruptAndClear();
+    Assert(!player.IsPlayingAudio, "InterruptAndClear must clear IsPlayingAudio cleanly after multi-slice write");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

@@ -344,6 +344,23 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             return false;
         }
 
+        bool isEnMsg = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+        var inputGuard = CoachContentGuard.EvaluateUserInput(msg, isEnMsg);
+        if (!inputGuard.IsAllowed)
+        {
+            _onLog?.Invoke($"💬 Vos: \"{msg}\"");
+            _onLog?.Invoke($"🛡️ Coach [safety-guard]: \"{inputGuard.SafeRedirectReply}\"");
+            if (_config.EnableOverlay && !_userPaused)
+            {
+                _overlay.ShowCallout(
+                    inputGuard.SafeRedirectReply,
+                    UrgencyLevel.Low,
+                    _activeProfile?.Manifest.DisplayName ?? "HUDMind Live",
+                    Math.Min(_config.OverlayDurationSeconds, 3.5));
+            }
+            return true;
+        }
+
         var runCt = CurrentRunToken();
         if (runCt.IsCancellationRequested || callerCt.IsCancellationRequested)
             return false;
@@ -650,6 +667,24 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     {
         if (string.IsNullOrWhiteSpace(currentLine) || Volatile.Read(ref _profileEpoch) != sessionEpoch) return;
 
+        bool isEnOut = CoachingPersonaBuilder.IsEnglish(_config);
+        var outGuard = CoachContentGuard.InspectAndCleanModelOutput(currentLine, isEnOut);
+        if (!outGuard.IsSafe)
+        {
+            lock (_audioStateLock)
+            {
+                _suppressCurrentTurnAudio = true;
+                _modelSpeaking = false;
+                _pcmPlayer.InterruptAndClear();
+            }
+            if (_config.EnableOverlay && !_userPaused)
+            {
+                var title = (sessionProfile ?? _activeProfile)?.Manifest.DisplayName ?? "HUDMind Live";
+                _overlay.ShowCallout(outGuard.FallbackReplacement, UrgencyLevel.Low, title, 3.0);
+            }
+            return;
+        }
+
         if (_config.IsTextOnlyMode && Interlocked.Exchange(ref _waitingFirstAudioInt, 0) == 1)
         {
             long reqTick = Volatile.Read(ref _lastTurnRequestTick);
@@ -677,10 +712,13 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private void HandleTurnComplete(long sessionEpoch, GameProfile? sessionProfile, string spoken)
     {
         bool staleEpoch = Volatile.Read(ref _profileEpoch) != sessionEpoch;
+        bool isEnOut = CoachingPersonaBuilder.IsEnglish(_config);
+        var outGuard = CoachContentGuard.InspectAndCleanModelOutput(spoken, isEnOut);
+
         bool allowFlush;
         lock (_audioStateLock)
         {
-            allowFlush = !staleEpoch && _config.IsCoachVoiceActive && !_userPaused && !_bargeInMuted && !_suppressCurrentTurnAudio;
+            allowFlush = !staleEpoch && outGuard.IsSafe && _config.IsCoachVoiceActive && !_userPaused && !_bargeInMuted && !_suppressCurrentTurnAudio;
             if (allowFlush)
                 _pcmPlayer.FlushBuffered();
             else
@@ -696,6 +734,23 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         if (!staleEpoch && !string.IsNullOrWhiteSpace(spoken))
         {
             var prof = sessionProfile ?? _activeProfile;
+            if (!outGuard.IsSafe)
+            {
+                if (_config.EnableOverlay && !_userPaused)
+                {
+                    _overlay.ShowCallout(
+                        outGuard.FallbackReplacement,
+                        UrgencyLevel.Low,
+                        prof?.Manifest.DisplayName ?? "HUDMind Live",
+                        3.5);
+                }
+                _onLog?.Invoke($"🛡️ Coach [safety-filter]: \"{outGuard.FallbackReplacement}\"");
+                if (outGuard.Category == SafetyCategory.SevereSexualOrIllegal)
+                    _ = _backend.ResetSessionStateAsync();
+                EmitStats();
+                return;
+            }
+
             _memory.RecordObservation("LIVE", spoken);
             _memory.RecordMatchEvent(
                 prof?.Manifest.GameId ?? string.Empty,
@@ -1088,7 +1143,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             }
                         }
 
-                        if (!sentAsTurn)
+                        // Pause passive upstream JPEG heartbeats while Gemini is streaming PCM so audio chunks flow glitch-free
+                        if (!sentAsTurn && !_modelSpeaking)
                             await _backend.SendVideoFrameAsync(jpeg, ct);
 
                         EmitStats();

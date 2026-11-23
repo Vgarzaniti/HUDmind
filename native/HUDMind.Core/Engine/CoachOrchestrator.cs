@@ -256,6 +256,27 @@ public sealed class CoachOrchestrator : ICoachEngine
 
         long chatEpoch = Volatile.Read(ref _profileEpoch);
         _onLog?.Invoke($"💬 Vos: \"{msg}\"");
+
+        bool isEnMsg = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+        var inputGuard = CoachContentGuard.EvaluateUserInput(msg, isEnMsg);
+        if (!inputGuard.IsAllowed)
+        {
+            if (_config.EnableOverlay)
+                _overlay.ShowCallout(inputGuard.SafeRedirectReply, UrgencyLevel.Low, profile.Manifest.DisplayName, Math.Min(_config.OverlayDurationSeconds, 3.5));
+            double guardVoiceMs = 0;
+            lock (_voiceGate)
+            {
+                if (_config.IsCoachVoiceActive && !_userPaused)
+                {
+                    guardVoiceMs = _voice.SpeakInstant(CoachContentGuard.SanitizeForSpeech(inputGuard.SafeRedirectReply));
+                    Interlocked.Exchange(ref _lastChatSpeechUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
+                }
+            }
+            Volatile.Write(ref _lastVoiceMs, guardVoiceMs);
+            _onLog?.Invoke($"🛡️ Coach [safety-guard]: \"{inputGuard.SafeRedirectReply}\"");
+            EmitStats();
+            return true;
+        }
         int taskId = Interlocked.Increment(ref _chatSeq);
         CancellationTokenSource? linkedCts = null;
         try
@@ -331,7 +352,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                     {
                         if (_config.IsCoachVoiceActive && !_userPaused && !linkedCts.Token.IsCancellationRequested)
                         {
-                            voiceMs = _voice.SpeakInstant(reply);
+                            voiceMs = _voice.SpeakInstant(CoachContentGuard.SanitizeForSpeech(reply));
                             Interlocked.Exchange(ref _lastChatSpeechUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
                         }
                     }
@@ -734,7 +755,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                             {
                                 bool avoidMidSentenceCut = !forceNow && resp.Urgency != UrgencyLevel.High && _voice.IsSpeaking;
                                 if (!avoidMidSentenceCut && _config.IsCoachVoiceActive && !_userPaused && !ct.IsCancellationRequested && !string.IsNullOrWhiteSpace(resp.VoiceLine))
-                                    voiceMs = _voice.SpeakInstant(resp.VoiceLine);
+                                    voiceMs = _voice.SpeakInstant(CoachContentGuard.SanitizeForSpeech(resp.VoiceLine));
                             }
                         }
 
