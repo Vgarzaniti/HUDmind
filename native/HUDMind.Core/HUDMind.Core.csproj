@@ -6,7 +6,7 @@
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\HUDMind.Packer\HUDMind.Packer.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="../HUDMind.Packer/HUDMind.Packer.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
     <VaultSourceFile Include="../../profiles/**/*.json" />
     <VaultSourceFile Include="../../profiles/**/*.md" Exclude="../../profiles/**/custom_rules.md" />
     <VaultSourceFile Include="ProtectedAssets/vault_strings.json" />
@@ -14,12 +14,17 @@
   </ItemGroup>
   <Target Name="BuildAssetVault" BeforeTargets="AssignTargetPaths;PrepareResources;CoreResGen"
           Inputs="@(VaultSourceFile)" Outputs="$(IntermediateOutputPath)HUDMind.Vault.bin">
-    <MSBuild Projects="..\HUDMind.Packer\HUDMind.Packer.csproj"
+    <PropertyGroup>
+      <_VaultProfilesDir>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '..', '..', 'profiles'))</_VaultProfilesDir>
+      <_VaultStringsJson>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', 'ProtectedAssets', 'vault_strings.json'))</_VaultStringsJson>
+      <_VaultOutBin>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)HUDMind.Vault.bin'))</_VaultOutBin>
+    </PropertyGroup>
+    <MSBuild Projects="../HUDMind.Packer/HUDMind.Packer.csproj"
              Properties="Configuration=$(Configuration);RuntimeIdentifier="
              Targets="Build">
       <Output TaskParameter="TargetOutputs" PropertyName="_PackerAssemblyPath" />
     </MSBuild>
-    <Exec Command="dotnet &quot;$(_PackerAssemblyPath)&quot; &quot;$(MSBuildThisFileDirectory)..\..\profiles&quot; &quot;$(MSBuildThisFileDirectory)ProtectedAssets\vault_strings.json&quot; &quot;$(IntermediateOutputPath)HUDMind.Vault.bin&quot;" />
+    <Exec Command="dotnet &quot;$([MSBuild]::NormalizePath('$(_PackerAssemblyPath)'))&quot; &quot;$(_VaultProfilesDir)&quot; &quot;$(_VaultStringsJson)&quot; &quot;$(_VaultOutBin)&quot;" />
     <ItemGroup>
       <FileWrites Include="$(IntermediateOutputPath)HUDMind.Vault.bin" />
     </ItemGroup>
