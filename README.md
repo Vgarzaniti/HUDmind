@@ -27,6 +27,7 @@ Every documentation file is maintained in both languages with explicit filename 
 | Topic / Tema | 🇪🇸 Español | 🇺🇸 English |
 | :--- | :--- | :--- |
 | Main Guide / Guía Principal | [README.es.md](README.es.md) | [README.en.md](README.en.md) |
+| AI Agent Context / Guía para IAs | [AGENTS.es.md](AGENTS.es.md) | [AGENTS.en.md](AGENTS.en.md) |
 | How to Create a PR / Cómo Crear un PR | [docs/pull_request_guide.es.md](docs/pull_request_guide.es.md) | [docs/pull_request_guide.en.md](docs/pull_request_guide.en.md) |
 | Contributing / Contribuir | [CONTRIBUTING.es.md](CONTRIBUTING.es.md) | [CONTRIBUTING.en.md](CONTRIBUTING.en.md) |
 | Release Versioning (`vN.N.N`) | [docs/versioning_and_releases.es.md](docs/versioning_and_releases.es.md) | [docs/versioning_and_releases.en.md](docs/versioning_and_releases.en.md) |

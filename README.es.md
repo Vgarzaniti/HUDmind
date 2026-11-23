@@ -78,6 +78,7 @@ También podés iniciar directamente con [HUDMind.bat](HUDMind.bat).
 | Documento | Español (`.es.md`) | English (`.en.md`) |
 | :--- | :--- | :--- |
 | Guía Principal (README) | [README.es.md](README.es.md) | [README.en.md](README.en.md) |
+| Contexto para IAs (`AGENTS`/`CLAUDE`/`GEMINI`) | [AGENTS.es.md](AGENTS.es.md) | [AGENTS.en.md](AGENTS.en.md) |
 | Guía de Pull Requests y Contribución | [docs/pull_request_guide.es.md](docs/pull_request_guide.es.md) · [CONTRIBUTING.es.md](CONTRIBUTING.es.md) | [docs/pull_request_guide.en.md](docs/pull_request_guide.en.md) · [CONTRIBUTING.en.md](CONTRIBUTING.en.md) |
 | Nomenclatura `vN.N.N` y Releases | [docs/versioning_and_releases.es.md](docs/versioning_and_releases.es.md) | [docs/versioning_and_releases.en.md](docs/versioning_and_releases.en.md) |
 | Arquitectura Técnica (IEEE 42010) | [docs/architecture.es.md](docs/architecture.es.md) | [docs/architecture.en.md](docs/architecture.en.md) |
@@ -92,13 +93,16 @@ También podés iniciar directamente con [HUDMind.bat](HUDMind.bat).
 
 ```text
 .
+├── .cursor/rules/                  # Reglas automáticas para Cursor AI
 ├── .github/
 │   ├── ISSUE_TEMPLATE/             # Plantillas bilingües de Bug Report y Feature Request
 │   ├── PULL_REQUEST_TEMPLATE.md    # Plantilla obligatoria de PR (tipo, checks, SemVer, seguridad)
+│   ├── copilot-instructions.md     # Instrucciones automáticas para GitHub Copilot
 │   ├── dependabot.yml              # Actualizaciones mensuales de GitHub Actions
 │   └── workflows/
 │       ├── ci.yml                  # CI .NET 9 (ubuntu-latest core + windows-latest build/tests/smoke)
 │       └── release.yml             # Release automática Windows x64 (tags v*.*.* o manual + SHA256SUMS)
+├── AGENTS.md / CLAUDE.md / GEMINI.md # Contexto inmediato multi-IA (+ AGENTS.es.md / AGENTS.en.md)
 ├── .gitignore                      # Protege .env, config/*.json, custom_rules.md, logs/, bin/obj y dist/
 ├── HUDMind.bat                     # Lanzador Windows de la app nativa
 ├── native/
