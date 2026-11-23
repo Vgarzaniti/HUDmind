@@ -26,19 +26,19 @@ public sealed class Win32TemporalStoryboardComposer : ITemporalStoryboardCompose
         if (frames is null || frames.Count < 2)
             return null;
 
-        int take = Math.Min(4, frames.Count);
+        int take = Math.Min(6, frames.Count);
         var slice = frames.Skip(frames.Count - take).ToList();
         var latestUtc = slice[^1].CapturedAtUtc;
 
-        int cols = 2;
+        int cols = slice.Count >= 5 ? 3 : 2;
         int rows = slice.Count <= 2 ? 1 : 2;
-        int canvasW = Math.Clamp(targetWidth, 960, 1600);
+        int canvasW = Math.Clamp(targetWidth, 960, 1680);
         int canvasH = rows == 1
             ? Math.Clamp(targetHeight, 360, 540)
             : Math.Clamp(targetHeight, 640, 960);
 
         const int dividerPx = 4;
-        int tileW = (canvasW - dividerPx) / cols;
+        int tileW = (canvasW - (cols - 1) * dividerPx) / cols;
         int tileH = rows == 1 ? canvasH : (canvasH - dividerPx) / rows;
 
         var streams = new List<MemoryStream>(slice.Count);
@@ -102,7 +102,8 @@ public sealed class Win32TemporalStoryboardComposer : ITemporalStoryboardCompose
             }
 
             // Crisp dividers so Vision models see distinct tile boundaries unmistakably
-            g.FillRectangle(dividerBrush, tileW, 0, 2, canvasH);
+            for (int c = 1; c < cols; c++)
+                g.FillRectangle(dividerBrush, c * tileW + (c - 1) * dividerPx, 0, 2, canvasH);
             if (rows == 2)
                 g.FillRectangle(dividerBrush, 0, tileH, canvasW, 2);
 

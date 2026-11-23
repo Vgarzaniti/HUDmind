@@ -33,7 +33,7 @@ public sealed class CoachOrchestrator : ICoachEngine
 
     private readonly InterventionStateMachine _stateMachine = new();
     private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
-    private readonly RecentFrameRingBuffer _frameRingBuffer = new(maxFrames: 4, minSpacingMs: 250.0);
+    private readonly RecentFrameRingBuffer _frameRingBuffer = new(maxFrames: 10, minSpacingMs: 125.0);
     private readonly TacticalSignalTracker _tacticalTracker = new();
     private readonly BlackScreenDiagnostic _blackScreenDiagnostic = new();
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
@@ -305,22 +305,22 @@ public sealed class CoachOrchestrator : ICoachEngine
                         frameId: 0, lastAcceptedHash: null, phashThreshold: 0, isForced: true);
 
                     bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
-                    var (visualBytes, panelCount) = _frameRingBuffer.BuildTemporalPayload(
+                    var clip = _frameRingBuffer.BuildVisualClipPayload(
                         _storyboardComposer,
                         frame,
-                        maxFrames: 4,
-                        maxAgeSeconds: 3.5,
-                        jpegQuality: Math.Max(q, 85));
+                        maxFrames: 6,
+                        maxAgeSeconds: 2.5,
+                        jpegQuality: Math.Max(q, 84),
+                        isEn: isEn);
                     var timelineText = _memory.FormatVisualTimeline(isEn: isEn);
-                    if (panelCount >= 2)
+                    if (clip.PanelCount >= 2 && !string.IsNullOrWhiteSpace(clip.SequenceNote))
                     {
-                        var seqNote = isEn
-                            ? $"[Temporal sequence attached: {panelCount} panels from oldest [1] to [AHORA]]"
-                            : $"[Secuencia temporal adjunta: {panelCount} cuadros cronológicos de [1] a [AHORA]]";
-                        timelineText = string.IsNullOrWhiteSpace(timelineText) ? seqNote : $"{seqNote} ; {timelineText}";
+                        timelineText = string.IsNullOrWhiteSpace(timelineText)
+                            ? clip.SequenceNote
+                            : $"{clip.SequenceNote} ; {timelineText}";
                     }
-                    var (reply, aiMs, model) = await _router.AskQuestionAsync(
-                        visualBytes ?? frame?.JpegBytes,
+                    var (reply, aiMs, model) = await _router.AskQuestionSequenceAsync(
+                        clip,
                         msg,
                         profile,
                         _config,
@@ -468,9 +468,9 @@ public sealed class CoachOrchestrator : ICoachEngine
     private (int W, int H, int Quality) ResolveTargetResolution() =>
         _config.TokenEfficiencyMode.ToLowerInvariant() switch
         {
-            "eco" => (960, 540, Math.Max(_config.ImageCompressionQuality, 78)),
-            "balanced" => (1280, 720, Math.Max(_config.ImageCompressionQuality, 82)),
-            _ => (1600, 900, Math.Max(_config.ImageCompressionQuality, 86))
+            "eco" => (960, 540, Math.Max(_config.ImageCompressionQuality, 76)),
+            "high" => (1440, 810, Math.Max(_config.ImageCompressionQuality, 84)),
+            _ => (1280, 720, Math.Max(_config.ImageCompressionQuality, 80))
         };
 
     private double EffectiveCooldown(GameProfile profile)
@@ -582,8 +582,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                             _config.MinInferenceIntervalSeconds);
                         if (waitRem > TimeSpan.Zero)
                         {
-                            // Keep a local 0%-GPU temporal ring buffer of recent motion frames in RAM (~3.5Hz)
-                            // so chat questions ("did I get a flip reset?") and predictive reads see full trajectory!
+                            // Keep a local 0%-GPU temporal clip buffer in RAM (~7.4 Hz, 135ms polling)
+                            // so chat questions ("did I get a flip reset?") and predictive reads see fluid trajectory!
                             var (ringFrame, ringSkipped) = _capture.CaptureIfChanged(
                                 _config.CaptureMonitor,
                                 region,
@@ -601,8 +601,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                                 _frameRingBuffer.Record(ringFrame);
                             }
 
-                            var boundedWait = waitRem > TimeSpan.FromMilliseconds(280)
-                                ? TimeSpan.FromMilliseconds(280)
+                            var boundedWait = waitRem > TimeSpan.FromMilliseconds(135)
+                                ? TimeSpan.FromMilliseconds(135)
                                 : waitRem;
                             await WaitInterruptibleAsync(boundedWait, ct);
                             continue;
@@ -678,29 +678,26 @@ public sealed class CoachOrchestrator : ICoachEngine
                 Interlocked.Increment(ref _aiCalls);
                 bool isEn = CoachingPersonaBuilder.IsEnglish(_config);
                 var (_, _, cfgQuality) = ResolveTargetResolution();
-                var (payloadBytes, panelCount) = _frameRingBuffer.BuildTemporalPayload(
+                var clip = _frameRingBuffer.BuildVisualClipPayload(
                     _storyboardComposer,
                     frame,
-                    maxFrames: forceNow ? 4 : 2,
-                    maxAgeSeconds: forceNow ? 3.5 : 2.2,
-                    jpegQuality: Math.Max(cfgQuality, 82));
+                    maxFrames: forceNow ? 6 : 3,
+                    maxAgeSeconds: forceNow ? 2.5 : 1.8,
+                    jpegQuality: Math.Max(cfgQuality, 82),
+                    isEn: isEn);
 
                 var history = _memory.FormatCompactHistory();
                 var timeline = _memory.FormatVisualTimeline(isEn: isEn);
                 var fact = Volatile.Read(ref _latestDeterministicFact);
                 var contextParts = new List<string>(3);
-                if (panelCount >= 2)
-                {
-                    contextParts.Add(isEn
-                        ? $"MotionSequence({panelCount} chronological panels -> AHORA)"
-                        : $"SecuenciaMovimiento({panelCount} cuadros cronológicos -> AHORA)");
-                }
+                if (clip.PanelCount >= 2 && !string.IsNullOrWhiteSpace(clip.SequenceNote))
+                    contextParts.Add(clip.SequenceNote);
                 if (!string.IsNullOrWhiteSpace(fact)) contextParts.Add(fact);
                 if (!string.IsNullOrWhiteSpace(timeline)) contextParts.Add(timeline);
                 var combinedContext = string.Join(" | ", contextParts);
 
-                var (resp, aiMs, model) = await _router.AnalyzeFrameAsync(
-                    payloadBytes ?? frame.JpegBytes,
+                var (resp, aiMs, model) = await _router.AnalyzeFrameSequenceAsync(
+                    clip,
                     profile,
                     _config,
                     history,

@@ -393,6 +393,19 @@ await RunTest("W11. Win32TemporalStoryboardComposer renders valid 2x1 motion str
     {
         Assert(img4.Width == 1440 && img4.Height == 810, $"Expected 1440x810 2x2 storyboard, got {img4.Width}x{img4.Height}");
     }
+
+    var sixSamples = new List<TemporalFrameSample>(samples)
+    {
+        new(MakeTestJpeg(System.Drawing.Color.DarkMagenta), now.AddMilliseconds(200), 5UL),
+        new(MakeTestJpeg(System.Drawing.Color.DarkGoldenrod), now.AddMilliseconds(400), 6UL)
+    };
+    var strip6 = composer.ComposeSequenceJpeg(sixSamples, 1620, 720, 84);
+    Assert(strip6 is { Length: > 1000 }, "6-frame 3x2 filmstrip must produce valid JPEG bytes");
+    using (var ms6 = new MemoryStream(strip6!))
+    using (var img6 = System.Drawing.Image.FromStream(ms6))
+    {
+        Assert(img6.Width == 1620 && img6.Height == 720, $"Expected 1620x720 3x2 filmstrip, got {img6.Width}x{img6.Height}");
+    }
     return Task.CompletedTask;
 });
 

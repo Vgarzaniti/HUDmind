@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using HUDMind.Core.Config;
+using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 
 namespace HUDMind.Core.AI;
@@ -9,6 +10,9 @@ namespace HUDMind.Core.AI;
 public sealed class OpenAICompatibleProvider : IAIProvider
 {
     public ProviderAccount Account { get; }
+    public bool SupportsNativeMultiFrame =>
+        Account.SupportsVision &&
+        (Account.Provider ?? string.Empty).Trim().ToLowerInvariant() is "openai" or "xai";
     private readonly HttpClient _http;
 
     public OpenAICompatibleProvider(ProviderAccount account, HttpClient? httpClient = null)
@@ -82,8 +86,23 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         return dict;
     }
 
-    public async Task<ProviderCallResult> AnalyzeFrameAsync(
+    public Task<ProviderCallResult> AnalyzeFrameAsync(
         byte[] jpegBytes,
+        GameProfile profile,
+        UserConfig config,
+        string recentHistory,
+        bool forceAdvice,
+        string spatialTelemetry = "",
+        HudSensorSnapshot? sensorSnapshot = null,
+        CancellationToken ct = default) =>
+        AnalyzeFrameSequenceAsync(
+            new TemporalVisualPayload(
+                jpegBytes is { Length: > 0 } ? [new TemporalFrameSample(jpegBytes, DateTimeOffset.UtcNow, 0)] : [],
+                jpegBytes, jpegBytes is { Length: > 0 } ? 1 : 0, string.Empty),
+            profile, config, recentHistory, forceAdvice, spatialTelemetry, sensorSnapshot, ct);
+
+    public async Task<ProviderCallResult> AnalyzeFrameSequenceAsync(
+        TemporalVisualPayload visual,
         GameProfile profile,
         UserConfig config,
         string recentHistory,
@@ -105,13 +124,17 @@ public sealed class OpenAICompatibleProvider : IAIProvider
                 profile, config, sensorSnapshot, recentHistory,
                 visualTimeline: spatialTelemetry, forceAdvice: forceAdvice);
 
-            return await SendOpenAiRequestAsync(null, sensorPrompt, isChat: false, maxTokensOverride: 0, ct);
+            return await SendOpenAiRequestAsync([], sensorPrompt, isChat: false, maxTokensOverride: 0, ct);
         }
 
+        var combinedTimeline = string.IsNullOrWhiteSpace(visual.SequenceNote)
+            ? spatialTelemetry
+            : (string.IsNullOrWhiteSpace(spatialTelemetry) ? visual.SequenceNote : $"{visual.SequenceNote} | {spatialTelemetry}");
         var prompt = CompactWireProtocol.BuildRealtimePrompt(
             profile, config, recentHistory, forceAdvice,
-            visualTimeline: spatialTelemetry);
-        return await SendOpenAiRequestAsync(jpegBytes, prompt, isChat: false, maxTokensOverride: 0, ct);
+            visualTimeline: combinedTimeline);
+        var frames = SelectFrames(visual, maxFrames: forceAdvice ? 5 : 3);
+        return await SendOpenAiRequestAsync(frames, prompt, isChat: false, maxTokensOverride: 0, ct);
     }
 
     public Task<ProviderCallResult> AskQuestionAsync(
@@ -123,13 +146,33 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         string visualTimeline = "",
         HudSensorSnapshot? sensorSnapshot = null,
         string recentChatHistory = "",
+        CancellationToken ct = default) =>
+        AskQuestionSequenceAsync(
+            jpegBytes is { Length: > 0 }
+                ? new TemporalVisualPayload([new TemporalFrameSample(jpegBytes, DateTimeOffset.UtcNow, 0)], jpegBytes, 1, string.Empty)
+                : null,
+            userQuestion, profile, config, recentHistory, visualTimeline, sensorSnapshot, recentChatHistory, ct);
+
+    public Task<ProviderCallResult> AskQuestionSequenceAsync(
+        TemporalVisualPayload? visual,
+        string userQuestion,
+        GameProfile profile,
+        UserConfig config,
+        string recentHistory = "",
+        string visualTimeline = "",
+        HudSensorSnapshot? sensorSnapshot = null,
+        string recentChatHistory = "",
         CancellationToken ct = default)
     {
+        var combinedTimeline = visual is null || string.IsNullOrWhiteSpace(visual.SequenceNote)
+            ? visualTimeline
+            : (string.IsNullOrWhiteSpace(visualTimeline) ? visual.SequenceNote : $"{visual.SequenceNote} ; {visualTimeline}");
         var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(
-            profile, config, userQuestion, recentHistory, visualTimeline,
+            profile, config, userQuestion, recentHistory, combinedTimeline,
             Account.SupportsVision ? null : sensorSnapshot,
             recentChatHistory);
-        return SendOpenAiRequestAsync(jpegBytes, prompt, isChat: true, maxTokensOverride: 180, ct);
+        var frames = visual is null || !Account.SupportsVision ? Array.Empty<byte[]>() : SelectFrames(visual, maxFrames: 5);
+        return SendOpenAiRequestAsync(frames, prompt, isChat: true, maxTokensOverride: 180, ct);
     }
 
     public Task<ProviderCallResult> AskRawTextAsync(
@@ -137,10 +180,17 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         UserConfig config,
         int maxTokens = 320,
         CancellationToken ct = default) =>
-        SendOpenAiRequestAsync(null, prompt, isChat: true, maxTokensOverride: maxTokens, ct);
+        SendOpenAiRequestAsync([], prompt, isChat: true, maxTokensOverride: maxTokens, ct);
+
+    private IReadOnlyList<byte[]> SelectFrames(TemporalVisualPayload visual, int maxFrames)
+    {
+        if (SupportsNativeMultiFrame && visual.Frames.Count > 0)
+            return visual.Frames.TakeLast(maxFrames).Select(f => f.JpegBytes).Where(b => b.Length > 0).ToArray();
+        return visual.FallbackSingleJpeg is { Length: > 0 } single ? [single] : [];
+    }
 
     private async Task<ProviderCallResult> SendOpenAiRequestAsync(
-        byte[]? jpegBytes,
+        IReadOnlyList<byte[]> frames,
         string prompt,
         bool isChat,
         int maxTokensOverride,
@@ -155,13 +205,24 @@ public sealed class OpenAICompatibleProvider : IAIProvider
         var endpoint = ResolveChatCompletionsEndpoint(baseUrl);
         string targetModel = string.IsNullOrWhiteSpace(Account.Model) ? "openai-fast" : Account.Model;
 
-        object messageContent = Account.SupportsVision && jpegBytes is { Length: > 0 }
-            ? new object[]
+        object messageContent;
+        if (Account.SupportsVision && frames.Count > 0)
+        {
+            var parts = new List<object>(frames.Count + 1)
             {
-                new { type = "text", text = prompt },
-                new { type = "image_url", image_url = new { url = $"data:image/jpeg;base64,{Convert.ToBase64String(jpegBytes)}", detail = "auto" } }
+                new { type = "text", text = prompt }
+            };
+            foreach (var jpegBytes in frames)
+            {
+                if (jpegBytes is { Length: > 0 })
+                    parts.Add(new { type = "image_url", image_url = new { url = $"data:image/jpeg;base64,{Convert.ToBase64String(jpegBytes)}", detail = isChat ? "high" : "auto" } });
             }
-            : prompt;
+            messageContent = parts.ToArray();
+        }
+        else
+        {
+            messageContent = prompt;
+        }
 
         var payloadObj = BuildChatCompletionPayload(
             targetModel,

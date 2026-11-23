@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using HUDMind.Core.Config;
+using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 
 namespace HUDMind.Core.AI;
@@ -8,6 +9,7 @@ namespace HUDMind.Core.AI;
 public sealed class AnthropicClaudeProvider : IAIProvider
 {
     public ProviderAccount Account { get; }
+    public bool SupportsNativeMultiFrame => true;
     private readonly HttpClient _http;
 
     public AnthropicClaudeProvider(ProviderAccount account, HttpClient? httpClient = null)
@@ -44,10 +46,29 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         bool forceAdvice,
         string spatialTelemetry = "",
         HudSensorSnapshot? sensorSnapshot = null,
+        CancellationToken ct = default) =>
+        AnalyzeFrameSequenceAsync(
+            new TemporalVisualPayload(
+                jpegBytes is { Length: > 0 } ? [new TemporalFrameSample(jpegBytes, DateTimeOffset.UtcNow, 0)] : [],
+                jpegBytes, jpegBytes is { Length: > 0 } ? 1 : 0, string.Empty),
+            profile, config, recentHistory, forceAdvice, spatialTelemetry, sensorSnapshot, ct);
+
+    public Task<ProviderCallResult> AnalyzeFrameSequenceAsync(
+        TemporalVisualPayload visual,
+        GameProfile profile,
+        UserConfig config,
+        string recentHistory,
+        bool forceAdvice,
+        string spatialTelemetry = "",
+        HudSensorSnapshot? sensorSnapshot = null,
         CancellationToken ct = default)
     {
-        var prompt = CompactWireProtocol.BuildRealtimePrompt(profile, config, recentHistory, forceAdvice, visualTimeline: spatialTelemetry);
-        return SendMessagesAsync(jpegBytes, prompt, temperature: 0.35, maxTokens: 115, stopOnNewline: true, parseAsCompactWire: true, ct);
+        var combinedTimeline = string.IsNullOrWhiteSpace(visual.SequenceNote)
+            ? spatialTelemetry
+            : (string.IsNullOrWhiteSpace(spatialTelemetry) ? visual.SequenceNote : $"{visual.SequenceNote} | {spatialTelemetry}");
+        var prompt = CompactWireProtocol.BuildRealtimePrompt(profile, config, recentHistory, forceAdvice, visualTimeline: combinedTimeline);
+        var frames = SelectFrames(visual, forceAdvice ? 6 : 3);
+        return SendMessagesAsync(frames, prompt, temperature: 0.35, maxTokens: 115, stopOnNewline: true, parseAsCompactWire: true, ct);
     }
 
     public Task<ProviderCallResult> AskQuestionAsync(
@@ -59,11 +80,31 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         string visualTimeline = "",
         HudSensorSnapshot? sensorSnapshot = null,
         string recentChatHistory = "",
+        CancellationToken ct = default) =>
+        AskQuestionSequenceAsync(
+            jpegBytes is { Length: > 0 }
+                ? new TemporalVisualPayload([new TemporalFrameSample(jpegBytes, DateTimeOffset.UtcNow, 0)], jpegBytes, 1, string.Empty)
+                : null,
+            userQuestion, profile, config, recentHistory, visualTimeline, sensorSnapshot, recentChatHistory, ct);
+
+    public Task<ProviderCallResult> AskQuestionSequenceAsync(
+        TemporalVisualPayload? visual,
+        string userQuestion,
+        GameProfile profile,
+        UserConfig config,
+        string recentHistory = "",
+        string visualTimeline = "",
+        HudSensorSnapshot? sensorSnapshot = null,
+        string recentChatHistory = "",
         CancellationToken ct = default)
     {
+        var combinedTimeline = visual is null || string.IsNullOrWhiteSpace(visual.SequenceNote)
+            ? visualTimeline
+            : (string.IsNullOrWhiteSpace(visualTimeline) ? visual.SequenceNote : $"{visual.SequenceNote} ; {visualTimeline}");
         var prompt = CompactWireProtocol.BuildInteractiveChatPrompt(
-            profile, config, userQuestion, recentHistory, visualTimeline, sensorSnapshot, recentChatHistory);
-        return SendMessagesAsync(jpegBytes, prompt, temperature: 0.45, maxTokens: 180, stopOnNewline: false, parseAsCompactWire: false, ct);
+            profile, config, userQuestion, recentHistory, combinedTimeline, sensorSnapshot, recentChatHistory);
+        var frames = visual is null ? Array.Empty<byte[]>() : SelectFrames(visual, 6);
+        return SendMessagesAsync(frames, prompt, temperature: 0.45, maxTokens: 180, stopOnNewline: false, parseAsCompactWire: false, ct);
     }
 
     public Task<ProviderCallResult> AskRawTextAsync(
@@ -71,10 +112,17 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         UserConfig config,
         int maxTokens = 320,
         CancellationToken ct = default) =>
-        SendMessagesAsync(null, prompt, temperature: 0.45, maxTokens: maxTokens, stopOnNewline: false, parseAsCompactWire: false, ct);
+        SendMessagesAsync([], prompt, temperature: 0.45, maxTokens: maxTokens, stopOnNewline: false, parseAsCompactWire: false, ct);
+
+    private static IReadOnlyList<byte[]> SelectFrames(TemporalVisualPayload visual, int maxFrames)
+    {
+        if (visual.Frames.Count > 0)
+            return visual.Frames.TakeLast(maxFrames).Select(f => f.JpegBytes).Where(b => b.Length > 0).ToArray();
+        return visual.FallbackSingleJpeg is { Length: > 0 } s ? [s] : [];
+    }
 
     private async Task<ProviderCallResult> SendMessagesAsync(
-        byte[]? jpegBytes,
+        IReadOnlyList<byte[]> frames,
         string prompt,
         double temperature,
         int maxTokens,
@@ -90,9 +138,12 @@ public sealed class AnthropicClaudeProvider : IAIProvider
         if (!okUrl)
             return new ProviderCallResult(null, 400, errUrl);
 
-        var partsList = new List<object>();
-        if (jpegBytes is { Length: > 0 })
-            partsList.Add(new { type = "image", source = new { type = "base64", media_type = "image/jpeg", data = Convert.ToBase64String(jpegBytes) } });
+        var partsList = new List<object>(frames.Count + 1);
+        foreach (var jpegBytes in frames)
+        {
+            if (jpegBytes is { Length: > 0 })
+                partsList.Add(new { type = "image", source = new { type = "base64", media_type = "image/jpeg", data = Convert.ToBase64String(jpegBytes) } });
+        }
         partsList.Add(new { type = "text", text = prompt });
 
         var payloadObj = new Dictionary<string, object>

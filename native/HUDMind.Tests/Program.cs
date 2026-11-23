@@ -1903,6 +1903,142 @@ await RunTest("45. Content guard blocks profanity in any language, NSFW/moans/ph
     }
 });
 
+// 46. ~8 FPS Video-Like Clip Ring Buffer, Native Multi-Frame Vision Dispatch (Gemini/Claude/OpenAI) & Voice-Onset Sync
+await RunTest("46. High-FPS clip ring buffer, native multi-frame HTTP/Live payloads & voice-onset motion sync work cleanly", async () =>
+{
+    // 1) 10-frame ~125ms ring buffer samples densely and evenly distributes 6 chronological keyframes + 3x2 storyboard note
+    var ring = new RecentFrameRingBuffer(maxFrames: 10, minSpacingMs: 125.0);
+    var tBase = DateTimeOffset.UtcNow.AddMilliseconds(-1120);
+    for (int i = 0; i < 9; i++)
+        ring.Record(new CapturedFrameData([(byte)(i + 1), 0xD8, 0xFF], (ulong)(i + 1), i, 1, 1, tBase.AddMilliseconds(i * 140)));
+
+    Assert(ring.Count == 9, $"Expected 9 high-FPS ring frames, got {ring.Count}");
+    var composer = new StubStoryboardComposer();
+    var clip = ring.BuildVisualClipPayload(
+        composer,
+        new CapturedFrameData([0xAA, 0xD8, 0xFF], 99UL, 99, 1, 1, tBase.AddMilliseconds(1280)),
+        maxFrames: 6,
+        maxAgeSeconds: 2.5,
+        jpegQuality: 84,
+        isEn: false);
+    Assert(clip.Frames.Count == 6 && clip.PanelCount == 6 && composer.LastFrameCount == 6 &&
+           clip.SequenceNote.Contains("6 cuadros cronológicos") && clip.SequenceNote.Contains("[6:AHORA]"),
+        $"Expected 6-frame distributed clip + storyboard note (count={clip.Frames.Count}, note={clip.SequenceNote})");
+
+    // 2) GeminiFastProvider sends ALL 6 chronological inlineData frames + 1 prompt text natively
+    string? gemPayload = null;
+    await using var gemProv = new GeminiFastProvider(
+        new ProviderAccount { Label = "G", Provider = "gemini", ApiKey = "AIzaTest1234567890", Model = "gemini-2.5-flash" },
+        new HttpClient(new FakeHttpHandler(async req =>
+        {
+            gemPayload = await req.Content!.ReadAsStringAsync();
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Las 4 ruedas tocaron debajo del balón en el cuadro 4.\"}]}}]}")
+            };
+        })));
+    Assert(gemProv.SupportsNativeMultiFrame, "GeminiFastProvider must support native multi-frame turns");
+    var prof = ConfigRepository.CreateUniversalProfile(".");
+    var cfg = new UserConfig { VoiceLanguage = "es", TextLanguage = "es" };
+    var gemRes = await gemProv.AskQuestionSequenceAsync(clip, "¿Fue flip reset?", prof, cfg);
+    Assert(gemRes.Response is { ShouldIntervene: true } && gemPayload is not null, "Gemini multi-frame ask failed");
+    using (var gDoc = System.Text.Json.JsonDocument.Parse(gemPayload!))
+    {
+        var parts = gDoc.RootElement.GetProperty("contents")[0].GetProperty("parts");
+        Assert(parts.GetArrayLength() == 7, $"Expected 6 inlineData JPEG parts + 1 text prompt, got {parts.GetArrayLength()}");
+    }
+
+    // 3) AnthropicClaudeProvider sends ALL 6 image blocks + 1 text block natively
+    string? claudePayload = null;
+    await using var claudeProv = new AnthropicClaudeProvider(
+        new ProviderAccount { Label = "C", Provider = "claude", ApiKey = "sk-ant-test12345678", Model = "claude-sonnet-4-5" },
+        new HttpClient(new FakeHttpHandler(async req =>
+        {
+            claudePayload = await req.Content!.ReadAsStringAsync();
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"content\":[{\"type\":\"text\",\"text\":\"Tocaste panza arriba en cuadro 4.\"}]}")
+            };
+        })));
+    Assert(claudeProv.SupportsNativeMultiFrame, "AnthropicClaudeProvider must support native multi-frame turns");
+    var cRes = await claudeProv.AskQuestionSequenceAsync(clip, "¿Tocaron las 4 ruedas?", prof, cfg);
+    Assert(claudePayload is not null, $"Claude HTTP handler not hit: {cRes.ErrorCode} {cRes.ErrorMessage}");
+    using (var cDoc = System.Text.Json.JsonDocument.Parse(claudePayload!))
+    {
+        var cContent = cDoc.RootElement.GetProperty("messages")[0].GetProperty("content");
+        Assert(cContent.GetArrayLength() == 7, $"Claude expected 6 image blocks + 1 text block, got {cContent.GetArrayLength()}");
+    }
+
+    // 4) OpenAI sends native multi-image array (5 frames); Groq falls back safely to 1 composite storyboard image!
+    string? openAiPayload = null;
+    await using var openProv = new OpenAICompatibleProvider(
+        new ProviderAccount { Label = "O", Provider = "openai", ApiKey = "sk-test12345678", Model = "gpt-4o-mini" },
+        new HttpClient(new FakeHttpHandler(async req =>
+        {
+            openAiPayload = await req.Content!.ReadAsStringAsync();
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[{\"message\":{\"content\":\"Buen reset limpio.\"}}]}")
+            };
+        })));
+    Assert(openProv.SupportsNativeMultiFrame, "OpenAI provider must support native multi-frame");
+    var oRes = await openProv.AskQuestionSequenceAsync(clip, "¿Fue reset?", prof, cfg);
+    Assert(openAiPayload is not null, $"OpenAI HTTP handler not hit: {oRes.ErrorCode} {oRes.ErrorMessage}");
+    using (var oDoc = System.Text.Json.JsonDocument.Parse(openAiPayload!))
+    {
+        var oContent = oDoc.RootElement.GetProperty("messages")[0].GetProperty("content");
+        Assert(oContent.GetArrayLength() == 6, $"OpenAI expected 1 text + 5 HD image_url frames, got {oContent.GetArrayLength()}");
+    }
+
+    string? groqPayload = null;
+    await using var groqProv = new OpenAICompatibleProvider(
+        new ProviderAccount { Label = "G", Provider = "groq", ApiKey = "gsk_test12345678", Model = "meta-llama/llama-4-scout-17b-16e-instruct" },
+        new HttpClient(new FakeHttpHandler(async req =>
+        {
+            groqPayload = await req.Content!.ReadAsStringAsync();
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[{\"message\":{\"content\":\"Buen toque invertido.\"}}]}")
+            };
+        })));
+    Assert(!groqProv.SupportsNativeMultiFrame, "Groq must fall back cleanly to unified storyboard JPEG");
+    var gqRes = await groqProv.AskQuestionSequenceAsync(clip, "¿Fue reset?", prof, cfg);
+    Assert(groqPayload is not null, $"Groq HTTP handler not hit: {gqRes.ErrorCode} {gqRes.ErrorMessage}");
+    using (var qDoc = System.Text.Json.JsonDocument.Parse(groqPayload!))
+    {
+        var qContent = qDoc.RootElement.GetProperty("messages")[0].GetProperty("content");
+        Assert(qContent.GetArrayLength() == 2, $"Groq must send 1 text + 1 composite storyboard image, got {qContent.GetArrayLength()}");
+    }
+
+    // 5) Live Engine continuous 135ms ring loop feeds native multi-frame turn on text chat AND voice-onset motion sync!
+    var stubLive = new StubLiveBackend();
+    var stubPlayer = new StubStreamingPlayer();
+    var stubMic = new StubStreamingMic();
+    var liveCfg = new UserConfig { LiveAutoCoachSeconds = 0, VoiceLanguage = "es", TextLanguage = "es" };
+    liveCfg.SetCommunicationMode("conversation");
+    var rlProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "Rocket League", CaptureFps = 2.0, ProcessNames = ["RocketLeague.exe"] } };
+
+    await using var live = new RealtimeLiveCoachOrchestrator(
+        stubLive, liveCfg, [rlProf], new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), stubPlayer, stubMic, new RecordingOverlay(),
+        testMode: true, storyboardComposer: composer);
+    await live.StartAsync();
+    for (int i = 0; i < 40 && !stubMic.IsCapturing; i++) await Task.Delay(20);
+    await Task.Delay(480); // let 135ms continuous ring loop capture >= 3 motion frames
+
+    int framesBeforeVoice = stubLive.SentVideoFrames;
+    stubMic.PushChunk(MakeSinePcm16(samples: 1600, amplitude: 900));
+    for (int i = 0; i < 40 && stubLive.SentVideoFrames <= framesBeforeVoice; i++) await Task.Delay(25);
+    Assert(stubLive.SentVideoFrames > framesBeforeVoice,
+        $"Voice onset on mic must sync recent motion frames into Live context ({framesBeforeVoice}->{stubLive.SentVideoFrames})");
+
+    bool liveSent = await live.SendUserTextAsync("¿Eso fue un flip reset?", attachCurrentScreen: true);
+    Assert(liveSent && stubLive.LastMultiFrameTurnCount >= 3,
+        $"Live chat must attach multi-frame clip sequence (>=3 frames, got {stubLive.LastMultiFrameTurnCount})");
+
+    await live.StopAsync();
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -2060,10 +2196,13 @@ sealed class StubLiveBackend : ILiveRealtimeBackend
     public int SessionCount { get; private set; }
     public int SentMicChunks { get; private set; }
     public int SentTextTurns { get; private set; }
+    public int SentVideoFrames { get; private set; }
+    public int LastMultiFrameTurnCount { get; private set; }
     public GameProfile? LastProfile { get; private set; }
     public string ProviderName => "StubLive";
     public string ActiveModelLabel => "stub-live";
     public bool IsConnected { get; private set; }
+    public bool SupportsMultiFrameTurn => true;
     public string ResolveVoiceName(string? gender) => gender == "female" ? "Aoede" : "Fenrir";
 
     public async Task RunSessionLoopAsync(
@@ -2091,9 +2230,10 @@ sealed class StubLiveBackend : ILiveRealtimeBackend
     public void EmitIncomingAudio(byte[] pcm) => _onAudio?.Invoke(pcm);
     public void EmitPartialTranscript(string s) => _onPartial?.Invoke(s);
     public void EmitTurnComplete(string s) => _onTurn?.Invoke(s);
-    public Task SendVideoFrameAsync(byte[] jpegBytes, CancellationToken ct) => Task.CompletedTask;
+    public Task SendVideoFrameAsync(byte[] jpegBytes, CancellationToken ct) { SentVideoFrames++; return Task.CompletedTask; }
     public Task SendMicAudio16kAsync(byte[] pcm16k, CancellationToken ct) { SentMicChunks++; return Task.CompletedTask; }
-    public Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct) { SentTextTurns++; return Task.CompletedTask; }
+    public Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct) { SentTextTurns++; LastMultiFrameTurnCount = 1; return Task.CompletedTask; }
+    public Task SendFrameSequenceAndPromptTurnAsync(IReadOnlyList<TemporalFrameSample> frames, string promptText, CancellationToken ct) { SentTextTurns++; LastMultiFrameTurnCount = frames.Count; return Task.CompletedTask; }
     public Task SendTextTurnAsync(string promptText, CancellationToken ct) { SentTextTurns++; return Task.CompletedTask; }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

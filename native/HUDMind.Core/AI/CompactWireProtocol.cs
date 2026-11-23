@@ -197,7 +197,7 @@ public static class CompactWireProtocol
             sb.Append("You are a calm, sharp human eSports coach watching ").Append(gameLabel).Append(" live.\n");
             sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
             sb.Append(CoachContentGuard.BuildImmutableSafetyBlock(isEn: true, forLiveAudio: false)).Append('\n');
-            sb.Append("If the image contains chronological labeled frames `[1..-Xs] ... -> [NOW]`/`[AHORA]`, trace motion across EVERY panel in order before judging fast mechanics (e.g. flip reset 4-wheel contact, flicks, peeks). ");
+            sb.Append("If multiple chronological HD images or a labeled strip `[1:-Xs] ... -> [NOW]`/`[AHORA]` are attached, read the full motion clip in chronological order before judging fast mechanics (e.g. flip reset 4-wheel contact, flicks, peeks). ");
             sb.Append("Reply directly in 1-2 honest, concise sentences based ONLY on what is clearly visible—if contact or a detail isn't clearly visible in the frames, say so honestly instead of guessing yes. Plain text only, no markdown or pipes.\n");
         }
         else
@@ -205,7 +205,7 @@ public static class CompactWireProtocol
             sb.Append("Sos un coach humano de eSports mirando ").Append(gameLabel).Append(" en vivo.\n");
             sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
             sb.Append(CoachContentGuard.BuildImmutableSafetyBlock(isEn: false, forLiveAudio: false)).Append('\n');
-            sb.Append("Si la imagen trae cuadros cronológicos etiquetados `[1..-Xs] ... -> [AHORA]`, seguí la secuencia cuadro por cuadro antes de juzgar mecánicas rápidas (ej. si las 4 ruedas tocaron debajo de la pelota en un flip reset, un flick o un peek). ");
+            sb.Append("Si recibís múltiples imágenes HD o una tira cronológica `[1:-Xs] ... -> [AHORA]`, seguí la secuencia completa como un clip de video cuadro por cuadro antes de juzgar mecánicas rápidas (ej. si las 4 ruedas tocaron debajo de la pelota en un flip reset, un flick o un peek). ");
             sb.Append("Respondé en 1 o 2 oraciones claras y 100% honestas basándote SOLO en lo que se ve nítido: si algún contacto no se distingue en los cuadros, admitilo sin inventar ni confirmar por complacer. Solo texto plano, sin markdown ni barras '|'.\n");
         }
 

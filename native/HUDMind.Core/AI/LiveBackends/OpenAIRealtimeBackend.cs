@@ -3,6 +3,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using HUDMind.Core.Config;
+using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 
 namespace HUDMind.Core.AI.LiveBackends;
@@ -29,6 +30,7 @@ public sealed class OpenAIRealtimeBackend : ILiveRealtimeBackend
     public string ProviderName => _provider.Equals("xai", StringComparison.OrdinalIgnoreCase) ? "xAI Grok Live" : "OpenAI Realtime";
     public string ActiveModelLabel => _model;
     public bool IsConnected => _connected && _ws is { State: WebSocketState.Open };
+    public bool SupportsMultiFrameTurn => true;
 
     public OpenAIRealtimeBackend(string provider, string apiKey, string? model = null)
     {
@@ -209,12 +211,23 @@ public sealed class OpenAIRealtimeBackend : ILiveRealtimeBackend
         await SendRawBytesAsync(ws, buf.WrittenMemory, ct);
     }
 
-    public async Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct)
+    public Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct) =>
+        SendFrameSequenceAndPromptTurnAsync(
+            jpegBytes is { Length: > 0 } ? [new TemporalFrameSample(jpegBytes, DateTimeOffset.UtcNow, 0)] : [],
+            promptText,
+            ct);
+
+    public async Task SendFrameSequenceAndPromptTurnAsync(
+        IReadOnlyList<TemporalFrameSample> frames,
+        string promptText,
+        CancellationToken ct)
     {
         var ws = _ws;
         if (ws is null || ws.State != WebSocketState.Open) return;
 
-        var itemBuf = new ArrayBufferWriter<byte>(jpegBytes.Length * 4 / 3 + 512);
+        var validFrames = frames.Where(f => f.JpegBytes is { Length: > 0 }).TakeLast(5).ToArray();
+        int totalBytes = validFrames.Sum(f => f.JpegBytes.Length);
+        var itemBuf = new ArrayBufferWriter<byte>(totalBytes * 4 / 3 + 512);
         using (var w = new Utf8JsonWriter(itemBuf))
         {
             w.WriteStartObject();
@@ -225,10 +238,13 @@ public sealed class OpenAIRealtimeBackend : ILiveRealtimeBackend
             w.WriteString("role", "user");
             w.WritePropertyName("content");
             w.WriteStartArray();
-            w.WriteStartObject();
-            w.WriteString("type", "input_image");
-            w.WriteString("image_url", $"data:image/jpeg;base64,{Convert.ToBase64String(jpegBytes)}");
-            w.WriteEndObject();
+            foreach (var sample in validFrames)
+            {
+                w.WriteStartObject();
+                w.WriteString("type", "input_image");
+                w.WriteString("image_url", $"data:image/jpeg;base64,{Convert.ToBase64String(sample.JpegBytes)}");
+                w.WriteEndObject();
+            }
             w.WriteStartObject();
             w.WriteString("type", "input_text");
             w.WriteString("text", promptText);

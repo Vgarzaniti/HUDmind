@@ -3,6 +3,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using HUDMind.Core.Config;
+using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 
 namespace HUDMind.Core.AI.LiveBackends;
@@ -37,6 +38,7 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
     public string ProviderName => "Gemini Live";
     public string ActiveModelLabel => _activeModel.Replace("models/", "", StringComparison.OrdinalIgnoreCase);
     public bool IsConnected => _connected && _ws is { State: WebSocketState.Open };
+    public bool SupportsMultiFrameTurn => true;
 
     public GeminiLiveBackend(string apiKey, string? preferredModel = null)
     {
@@ -323,12 +325,23 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
         try { await SendRawBytesAsync(ws, buf.WrittenMemory, ct); } catch { /* transient */ }
     }
 
-    public async Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct)
+    public Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct) =>
+        SendFrameSequenceAndPromptTurnAsync(
+            jpegBytes is { Length: > 0 } ? [new TemporalFrameSample(jpegBytes, DateTimeOffset.UtcNow, 0)] : [],
+            promptText,
+            ct);
+
+    public async Task SendFrameSequenceAndPromptTurnAsync(
+        IReadOnlyList<TemporalFrameSample> frames,
+        string promptText,
+        CancellationToken ct)
     {
         var ws = _ws;
         if (ws is null || ws.State != WebSocketState.Open) return;
 
-        var buf = new ArrayBufferWriter<byte>(jpegBytes.Length * 4 / 3 + 512);
+        var validFrames = frames.Where(f => f.JpegBytes is { Length: > 0 }).TakeLast(6).ToArray();
+        int totalBytes = validFrames.Sum(f => f.JpegBytes.Length);
+        var buf = new ArrayBufferWriter<byte>(totalBytes * 4 / 3 + 512);
         using (var w = new Utf8JsonWriter(buf))
         {
             w.WriteStartObject();
@@ -340,13 +353,16 @@ public sealed class GeminiLiveBackend : ILiveRealtimeBackend
             w.WriteString("role", "user");
             w.WritePropertyName("parts");
             w.WriteStartArray();
-            w.WriteStartObject();
-            w.WritePropertyName("inlineData");
-            w.WriteStartObject();
-            w.WriteString("mimeType", "image/jpeg");
-            w.WriteBase64String("data", jpegBytes);
-            w.WriteEndObject();
-            w.WriteEndObject();
+            foreach (var sample in validFrames)
+            {
+                w.WriteStartObject();
+                w.WritePropertyName("inlineData");
+                w.WriteStartObject();
+                w.WriteString("mimeType", "image/jpeg");
+                w.WriteBase64String("data", sample.JpegBytes);
+                w.WriteEndObject();
+                w.WriteEndObject();
+            }
             w.WriteStartObject();
             w.WriteString("text", promptText);
             w.WriteEndObject();

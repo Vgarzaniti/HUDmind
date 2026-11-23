@@ -104,8 +104,25 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         }
     }
 
-    public async Task<(CoachResponse? Response, double LatencyMs, string ProviderModel)> AnalyzeFrameAsync(
+    public Task<(CoachResponse? Response, double LatencyMs, string ProviderModel)> AnalyzeFrameAsync(
         byte[] jpegBytes,
+        GameProfile profile,
+        UserConfig config,
+        string recentHistory,
+        bool forceAdvice,
+        string spatialTelemetry = "",
+        CancellationToken ct = default)
+    {
+        var singleVisual = new TemporalVisualPayload(
+            jpegBytes is { Length: > 0 } ? [new TemporalFrameSample(jpegBytes, DateTimeOffset.UtcNow, 0)] : [],
+            jpegBytes,
+            jpegBytes is { Length: > 0 } ? 1 : 0,
+            string.Empty);
+        return AnalyzeFrameSequenceAsync(singleVisual, profile, config, recentHistory, forceAdvice, spatialTelemetry, ct);
+    }
+
+    public async Task<(CoachResponse? Response, double LatencyMs, string ProviderModel)> AnalyzeFrameSequenceAsync(
+        TemporalVisualPayload visual,
         GameProfile profile,
         UserConfig config,
         string recentHistory,
@@ -141,7 +158,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         {
             var hedged = await TryHedgedPairAsync(
                 candidates[0], candidates[1],
-                jpegBytes, profile, config, recentHistory, forceAdvice, spatialTelemetry,
+                visual, profile, config, recentHistory, forceAdvice, spatialTelemetry,
                 attemptedIds, frameCts.Token);
 
             if (hedged.Handled)
@@ -153,6 +170,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
 
         HudSensorSnapshot? lazySensor = null;
         bool sensorExtracted = false;
+        byte[] sensorBytes = visual.FallbackSingleJpeg ?? [];
 
         foreach (var (idx, prov) in candidates)
         {
@@ -170,7 +188,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
                 if (!sensorExtracted)
                 {
                     sensorExtracted = true;
-                    lazySensor = await _textOnlySensor.ExtractAsync(jpegBytes, profile, frameCts.Token);
+                    lazySensor = await _textOnlySensor.ExtractAsync(sensorBytes, profile, frameCts.Token);
                 }
 
                 if (lazySensor is not null)
@@ -193,8 +211,8 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
             ProviderCallResult res;
             try
             {
-                res = await prov.AnalyzeFrameAsync(
-                    jpegBytes, profile, config, recentHistory, forceAdvice, spatialTelemetry,
+                res = await prov.AnalyzeFrameSequenceAsync(
+                    visual, profile, config, recentHistory, forceAdvice, spatialTelemetry,
                     sensorSnapshot: prov.Account.SupportsVision ? null : lazySensor,
                     ct: frameCts.Token);
             }
@@ -226,8 +244,24 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         return (null, 0, "all-failed");
     }
 
-    public async Task<(string? Reply, double LatencyMs, string ProviderModel)> AskQuestionAsync(
+    public Task<(string? Reply, double LatencyMs, string ProviderModel)> AskQuestionAsync(
         byte[]? jpegBytes,
+        string userQuestion,
+        GameProfile profile,
+        UserConfig config,
+        string recentHistory = "",
+        string visualTimeline = "",
+        string recentChatHistory = "",
+        CancellationToken ct = default)
+    {
+        TemporalVisualPayload? singleVisual = jpegBytes is { Length: > 0 }
+            ? new TemporalVisualPayload([new TemporalFrameSample(jpegBytes, DateTimeOffset.UtcNow, 0)], jpegBytes, 1, string.Empty)
+            : null;
+        return AskQuestionSequenceAsync(singleVisual, userQuestion, profile, config, recentHistory, visualTimeline, recentChatHistory, ct);
+    }
+
+    public async Task<(string? Reply, double LatencyMs, string ProviderModel)> AskQuestionSequenceAsync(
+        TemporalVisualPayload? visual,
         string userQuestion,
         GameProfile profile,
         UserConfig config,
@@ -255,23 +289,24 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
 
         HudSensorSnapshot? lazySensor = null;
         bool sensorExtracted = false;
+        byte[]? sensorBytes = visual?.FallbackSingleJpeg;
 
         foreach (var (idx, prov) in candidates)
         {
             if (ct.IsCancellationRequested) break;
 
-            if (!prov.Account.SupportsVision && jpegBytes is { Length: > 0 } && _textOnlySensor is not null && !sensorExtracted)
+            if (!prov.Account.SupportsVision && sensorBytes is { Length: > 0 } && _textOnlySensor is not null && !sensorExtracted)
             {
                 sensorExtracted = true;
-                lazySensor = await _textOnlySensor.ExtractAsync(jpegBytes, profile, ct);
+                lazySensor = await _textOnlySensor.ExtractAsync(sensorBytes, profile, ct);
             }
 
             var sw = Stopwatch.StartNew();
             ProviderCallResult res;
             try
             {
-                res = await prov.AskQuestionAsync(
-                    jpegBytes, userQuestion, profile, config, recentHistory, visualTimeline,
+                res = await prov.AskQuestionSequenceAsync(
+                    visual, userQuestion, profile, config, recentHistory, visualTimeline,
                     sensorSnapshot: prov.Account.SupportsVision ? null : lazySensor,
                     recentChatHistory: recentChatHistory,
                     ct: ct);
@@ -350,7 +385,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
     private async Task<(bool Handled, CoachResponse? Response, double LatencyMs, string Model)> TryHedgedPairAsync(
         (int idx, IAIProvider prov) first,
         (int idx, IAIProvider prov) second,
-        byte[] jpegBytes,
+        TemporalVisualPayload visual,
         GameProfile profile,
         UserConfig config,
         string recentHistory,
@@ -367,8 +402,8 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
             var sw = Stopwatch.StartNew();
             try
             {
-                var r = await item.prov.AnalyzeFrameAsync(
-                    jpegBytes, profile, config, recentHistory, forceAdvice, spatialTelemetry, null, raceCts.Token);
+                var r = await item.prov.AnalyzeFrameSequenceAsync(
+                    visual, profile, config, recentHistory, forceAdvice, spatialTelemetry, null, raceCts.Token);
                 sw.Stop();
                 return (item.idx, item.prov, r, sw.Elapsed.TotalMilliseconds);
             }
