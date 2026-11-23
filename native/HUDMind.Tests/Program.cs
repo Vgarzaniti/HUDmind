@@ -1648,6 +1648,117 @@ await RunTest("43. Audio DSP smoothing, sustained open-mic barge-in & TtsRate/Is
     await cls.StopAsync();
 });
 
+// 44. Predictive Coaching, Temporal Ring Buffer Sequence, Game Knowledge Compiler & Full-Match Memory
+await RunTest("44. Predictive prompts, temporal motion ring buffer, game knowledge compiler & match-wide context work cleanly", async () =>
+{
+    // 1) Embedded KnowledgeBase loading & fallback sync even if older profile dir exists without knowledge_base.md
+    var tmp = Path.Combine(Path.GetTempPath(), $"hudmind_t44_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmp);
+    try
+    {
+        var repo = new ConfigRepository(tmp);
+        repo.EnsureDefaultProfilesSeeded();
+        // Simulate legacy LoL/Dota2 dir missing knowledge_base.md on disk -> LoadProfiles still resolves embedded guide!
+        var lolKbDisk = Path.Combine(repo.ProfilesDir, "league_of_legends", "knowledge_base.md");
+        if (File.Exists(lolKbDisk)) File.Delete(lolKbDisk);
+
+        var loaded = repo.LoadProfiles();
+        var rl = loaded.FirstOrDefault(p => p.Manifest.GameId == "rocket_league");
+        var lol = loaded.FirstOrDefault(p => p.Manifest.GameId == "league_of_legends");
+        var dota = loaded.FirstOrDefault(p => p.Manifest.GameId == "dota2");
+        Assert(rl is not null && rl.KnowledgeGuide.Contains("Flip Reset", StringComparison.OrdinalIgnoreCase) &&
+               !string.IsNullOrWhiteSpace(rl.TacticalSummary),
+            "Rocket League must load rich Flip Reset KnowledgeGuide & TacticalSummary");
+        Assert(lol is not null && !string.IsNullOrWhiteSpace(lol.KnowledgeGuide) &&
+               dota is not null && !string.IsNullOrWhiteSpace(dota.KnowledgeGuide),
+            "LoL & Dota 2 must expose KnowledgeGuide even when missing on legacy disk directory");
+
+        // Topic-aware GameKnowledgeCompiler must pull Flip Reset rules when asked!
+        var topicBlock = GameKnowledgeCompiler.CompileForQuestion(rl!, "¿Esto fue un flip reset con las 4 ruedas?");
+        Assert(topicBlock.Contains("Flip Reset", StringComparison.OrdinalIgnoreCase) && topicBlock.Contains("4 ruedas"),
+            $"Topic compiler missed Flip Reset guidance: {topicBlock}");
+
+        var cfg = new UserConfig { VoiceLanguage = "es", TextLanguage = "es", CoachMode = "training" };
+        var chatPrompt = CompactWireProtocol.BuildInteractiveChatPrompt(rl!, cfg, "¿Esto fue un flip reset?");
+        Assert(chatPrompt.Contains("Flip Reset", StringComparison.OrdinalIgnoreCase) &&
+               chatPrompt.Contains("cuadro por cuadro", StringComparison.OrdinalIgnoreCase) &&
+               chatPrompt.Contains("admitilo sin inventar", StringComparison.OrdinalIgnoreCase),
+            $"Interactive chat prompt must connect game knowledge + temporal check + anti-hallucination: {chatPrompt}");
+
+        var liveSys = CoachingPersonaBuilder.BuildLiveSystemInstruction(cfg, rl!);
+        Assert(liveSys.Contains("PREDICTIVO", StringComparison.OrdinalIgnoreCase) &&
+               liveSys.Contains("CERO ALUCINACIONES", StringComparison.OrdinalIgnoreCase),
+            $"Live system instruction must enforce predictive + anti-hallucination guidance: {liveSys}");
+    }
+    finally
+    {
+        if (Directory.Exists(tmp)) Directory.Delete(tmp, true);
+    }
+
+    // 2) Full-match Intra-Match Working Memory retains progression past 90s while spam TTL still expires at 75s
+    var mem = new InterventionMemory(maxItems: 6, ttlSeconds: 75.0);
+    var tStart = DateTimeOffset.UtcNow.AddMinutes(-5);
+    mem.UpdateMatchAnchor("RL: 1-2 quedan 2:10 Boost=28");
+    mem.RecordObservation("PLAY", "Rival presiona alto por pared derecha", tStart);
+    var later = tStart.AddMinutes(3);
+    var timelineAfter3Min = mem.FormatVisualTimeline(later, maxEvents: 4, isEn: false);
+    Assert(timelineAfter3Min.Contains("EstadoVivo: RL: 1-2") && timelineAfter3Min.Contains("pared derecha"),
+        $"Match timeline & live anchor must survive >3 min inside active match: {timelineAfter3Min}");
+    mem.Clear(clearMatchLog: true);
+    Assert(string.IsNullOrWhiteSpace(mem.FormatVisualTimeline(later)), "New match clear must reset match anchor & timeline");
+
+    // 3) Temporal ring buffer + storyboard composition forwards multi-frame motion to AI on SendUserTextAsync
+    var ring = new RecentFrameRingBuffer(maxFrames: 4, minSpacingMs: 220.0);
+    var t0 = DateTimeOffset.UtcNow.AddSeconds(-2);
+    ring.Record(new CapturedFrameData([1, 2, 3, 4], 1UL, 1, 1, 1, t0));
+    ring.Record(new CapturedFrameData([5, 6, 7, 8], 2UL, 2, 1, 1, t0.AddMilliseconds(80)));   // too close -> skipped
+    ring.Record(new CapturedFrameData([9, 10, 11, 12], 3UL, 3, 1, 1, t0.AddMilliseconds(350)));
+    ring.Record(new CapturedFrameData([13, 14, 15, 16], 4UL, 4, 1, 1, t0.AddMilliseconds(700)));
+    Assert(ring.Count == 3, $"Min spacing guard should retain 3 distinct timestamps, got {ring.Count}");
+
+    var composer = new StubStoryboardComposer();
+    var (seqJpeg, panels) = ring.BuildTemporalPayload(
+        composer,
+        new CapturedFrameData([20, 21, 22, 23], 5UL, 5, 1, 1, t0.AddMilliseconds(1050)),
+        maxFrames: 4, maxAgeSeconds: 5.0, jpegQuality: 85);
+    Assert(panels == 4 && composer.LastFrameCount == 4 && seqJpeg is { Length: > 0 },
+        $"Expected 4-panel temporal sequence, got panels={panels}, composer={composer.LastFrameCount}");
+
+    // 4) Orchestrator collects background motion frames during cooldown & sends temporal storyboard on chat question!
+    string? seenChatPromptTimeline = null;
+    byte[]? seenChatBytes = null;
+    var rlProf = new GameProfile
+    {
+        DirectoryPath = ".",
+        Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League", CaptureFps = 4.0, CooldownSeconds = 30.0 },
+        KnowledgeGuide = "## Mecánicas: Flip Reset: 4 ruedas debajo del balón."
+    };
+    var router = new ProviderFailoverRouter(
+        [new ProviderAccount { Label = "V", Provider = "gemini", ApiKey = "AIzaSyTest1234567890", Model = "gemini-2.5-flash", Priority = 1 }],
+        acc => new CallbackQuestionProvider(acc, (jpeg, q, timeline) =>
+        {
+            seenChatBytes = jpeg;
+            seenChatPromptTimeline = timeline;
+            return new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Medium, "No llegaron a tocar las 4 ruedas debajo", "No llegaron a tocar las 4 ruedas"));
+        }));
+
+    var clsCfg = new UserConfig { TokenEfficiencyMode = "eco", MinInferenceIntervalSeconds = 10.0 };
+    clsCfg.SetCommunicationMode("text_only");
+    await using var orch = new CoachOrchestrator(
+        clsCfg, [rlProf], router, new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), new RecordingVoice(), new RecordingOverlay(),
+        testMode: true, forcedGameId: "rl", storyboardComposer: composer);
+
+    await orch.StartAsync();
+    await Task.Delay(700); // allow >=2 background motion samples during 10s cooldown
+    bool sent = await orch.SendUserTextAsync("¿Esto fue un flip reset?");
+    Assert(sent && seenChatBytes is not null && seenChatPromptTimeline is not null &&
+           seenChatPromptTimeline.Contains("cuadros cronológicos", StringComparison.OrdinalIgnoreCase),
+        $"Chat question must attach temporal motion sequence (sent={sent}, timeline={seenChatPromptTimeline})");
+
+    await orch.StopAsync();
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -1836,5 +1947,29 @@ sealed class StubLiveBackend : ILiveRealtimeBackend
     public Task SendMicAudio16kAsync(byte[] pcm16k, CancellationToken ct) { SentMicChunks++; return Task.CompletedTask; }
     public Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct) => Task.CompletedTask;
     public Task SendTextTurnAsync(string promptText, CancellationToken ct) => Task.CompletedTask;
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+sealed class StubStoryboardComposer : ITemporalStoryboardComposer
+{
+    public int LastFrameCount { get; private set; }
+    public byte[]? ComposeSequenceJpeg(IReadOnlyList<TemporalFrameSample> frames, int targetWidth, int targetHeight, int jpegQuality)
+    {
+        LastFrameCount = frames.Count;
+        return frames.Count >= 2 ? [0xFF, 0xD8, (byte)frames.Count, 0xFF, 0xD9] : null;
+    }
+}
+
+sealed class CallbackQuestionProvider(
+    ProviderAccount account,
+    Func<byte[]?, string, string, ProviderCallResult> onQuestion) : IAIProvider
+{
+    public ProviderAccount Account { get; } = account;
+    public Task PrewarmAsync(CancellationToken ct = default) => Task.CompletedTask;
+    public Task<ProviderCallResult> AnalyzeFrameAsync(byte[] jpegBytes, GameProfile profile, UserConfig config, string recentHistory, bool forceAdvice, string spatialTelemetry = "", HudSensorSnapshot? sensorSnapshot = null, CancellationToken ct = default) =>
+        Task.FromResult(new ProviderCallResult(CoachResponse.Silent()));
+    public Task<ProviderCallResult> AskQuestionAsync(byte[]? jpegBytes, string userQuestion, GameProfile profile, UserConfig config, string recentHistory = "", string visualTimeline = "", HudSensorSnapshot? sensorSnapshot = null, string recentChatHistory = "", CancellationToken ct = default) =>
+        Task.FromResult(onQuestion(jpegBytes, userQuestion, visualTimeline));
+    public Task<(bool Ok, string Message)> TestConnectionAsync(CancellationToken ct = default) => Task.FromResult((true, "ok"));
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

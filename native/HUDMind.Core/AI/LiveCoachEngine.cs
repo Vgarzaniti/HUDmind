@@ -33,8 +33,10 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private readonly Action<bool>? _onPauseChanged;
     private readonly Action<MatchSessionSnapshot>? _onMatchCompleted;
     private readonly Func<GameProfile, AssembledCoachContext>? _resolveContextForProfile;
+    private readonly ITemporalStoryboardComposer? _storyboardComposer;
 
     private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
+    private readonly RecentFrameRingBuffer _frameRingBuffer = new(maxFrames: 4, minSpacingMs: 250.0);
     private readonly TacticalSignalTracker _tacticalTracker = new();
     private readonly BlackScreenDiagnostic _blackScreenDiagnostic = new();
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
@@ -124,7 +126,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         ITextOnlySensorService? localPhaseGate = null,
         Func<bool>? isPttKeyPressed = null,
         Action<MatchSessionSnapshot>? onMatchCompleted = null,
-        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null)
+        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null,
+        ITemporalStoryboardComposer? storyboardComposer = null)
     {
         _backend = backend;
         _config = config;
@@ -143,6 +146,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         _onPauseChanged = onPauseChanged;
         _onMatchCompleted = onMatchCompleted;
         _resolveContextForProfile = resolveContextForProfile;
+        _storyboardComposer = storyboardComposer;
         _micEnabled = config.IsMicActive;
     }
 
@@ -196,6 +200,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _bargeInMuted = false;
             _suppressCurrentTurnAudio = false;
             _memory.Clear(clearMatchLog: true);
+            _frameRingBuffer.Clear();
             _tacticalTracker.Reset();
             _blackScreenDiagnostic.Reset();
             Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, 0);
@@ -361,9 +366,21 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
                     Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
 
-                    byte[]? fresh = attachCurrentScreen
+                    var freshFrame = attachCurrentScreen
                         ? CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _framesSent))
                         : null;
+                    var (_, _, cfgQuality) = ResolveTargetResolution();
+                    var (visualBytes, panelCount) = _frameRingBuffer.BuildTemporalPayload(
+                        _storyboardComposer,
+                        freshFrame,
+                        maxFrames: 4,
+                        maxAgeSeconds: 3.5,
+                        jpegQuality: Math.Max(cfgQuality, 85));
+
+                    bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+                    var guide = GameKnowledgeCompiler.CompileForQuestion(_activeProfile, msg, maxChars: 520);
+                    var timeline = _memory.FormatVisualTimeline(isEn: isEn);
+                    var enrichedPrompt = BuildEnrichedLiveQuestionPrompt(msg, guide, timeline, panelCount, isEn);
 
                     await _turnGate.WaitAsync(ct);
                     try
@@ -373,10 +390,10 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             readyTcs.TrySetResult(false);
                             return;
                         }
-                        if (fresh is not null)
-                            await _backend.SendImageAndPromptTurnAsync(fresh, msg, ct);
+                        if (visualBytes is not null)
+                            await _backend.SendImageAndPromptTurnAsync(visualBytes, enrichedPrompt, ct);
                         else
-                            await _backend.SendTextTurnAsync(msg, ct);
+                            await _backend.SendTextTurnAsync(enrichedPrompt, ct);
                         readyTcs.TrySetResult(true);
                     }
                     finally
@@ -456,9 +473,17 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
         TrackFireAndForget(async ct =>
         {
-            var fresh = CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _framesSent));
-            if (fresh is null)
+            var freshFrame = CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _framesSent));
+            if (freshFrame is null)
                 return;
+
+            var (_, _, cfgQuality) = ResolveTargetResolution();
+            var (visualBytes, panelCount) = _frameRingBuffer.BuildTemporalPayload(
+                _storyboardComposer,
+                freshFrame,
+                maxFrames: 4,
+                maxAgeSeconds: 3.5,
+                jpegQuality: Math.Max(cfgQuality, 84));
 
             await _turnGate.WaitAsync(ct);
             try
@@ -469,11 +494,15 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, DateTimeOffset.UtcNow.UtcTicks);
 
                 bool isEn = CoachingPersonaBuilder.IsEnglish(_config);
+                string seqPrefix = panelCount >= 2
+                    ? (isEn ? $"Looking across these {panelCount} chronological panels `[1..-Xs] -> [NOW]`: "
+                            : $"Analizando estos {panelCount} cuadros cronológicos `[1..-Xs] -> [AHORA]`: ")
+                    : string.Empty;
                 string prompt = isEn
-                    ? "Look closely at this exact game frame. Tell me in 1 crisp clear sentence what is happening and the best next play right now."
-                    : "Mirá esta imagen actual exacta del juego. Decime en 1 oración corta y clara qué está pasando y qué me conviene hacer ahora.";
+                    ? $"{seqPrefix}Give 1 predictive, crystal-clear tactical callout (8-14 words) for the next 2 seconds based ONLY on clearly visible pixels."
+                    : $"{seqPrefix}Dame 1 sola llamada táctica predictiva y clara (8 a 14 palabras) para los próximos 2 segundos basándote SOLO en lo que se ve nítido.";
 
-                await _backend.SendImageAndPromptTurnAsync(fresh, prompt, ct);
+                await _backend.SendImageAndPromptTurnAsync(visualBytes ?? freshFrame.JpegBytes, prompt, ct);
             }
             finally
             {
@@ -667,6 +696,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         if (!staleEpoch && !string.IsNullOrWhiteSpace(spoken))
         {
             var prof = sessionProfile ?? _activeProfile;
+            _memory.RecordObservation("LIVE", spoken);
             _memory.RecordMatchEvent(
                 prof?.Manifest.GameId ?? string.Empty,
                 prof?.Manifest.DisplayName ?? "HUDMind Live",
@@ -852,15 +882,39 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         ch?.Writer.TryComplete();
     }
 
+    private static string BuildEnrichedLiveQuestionPrompt(
+        string question,
+        string topicGuide,
+        string timeline,
+        int panelCount,
+        bool isEn)
+    {
+        var sb = new System.Text.StringBuilder(question.Length + topicGuide.Length + 240);
+        if (panelCount >= 2)
+        {
+            sb.Append(isEn
+                ? $"[Temporal sequence attached: {panelCount} panels from oldest [1] to [NOW]; inspect every panel in order to judge rapid mechanics cleanly.] "
+                : $"[Secuencia temporal adjunta: {panelCount} cuadros de [1] a [AHORA]; seguí cuadro por cuadro antes de confirmar mecánicas rápidas.] ");
+        }
+        if (!string.IsNullOrWhiteSpace(topicGuide))
+            sb.Append(isEn ? $"Relevant game rules: {topicGuide}. " : $"Mecánicas/reglas del juego: {topicGuide}. ");
+        if (!string.IsNullOrWhiteSpace(timeline))
+            sb.Append(isEn ? $"Match context: {timeline}. " : $"Contexto de partida: {timeline}. ");
+        sb.Append(isEn
+            ? $"Answer honestly based ONLY on what you clearly see (admit if obscured/unclear, never guess yes). Question: {question}"
+            : $"Respondé con 100% honestidad SOLO por lo que ves claro (si un contacto o detalle no se distingue, admitilo sin inventar). Pregunta: {question}");
+        return sb.ToString();
+    }
+
     private (int W, int H, int Quality) ResolveTargetResolution() =>
         (_config.TokenEfficiencyMode ?? "balanced").ToLowerInvariant() switch
         {
-            "eco" => (800, 450, 74),
-            "high" => (1280, 720, 82),
-            _ => (960, 540, 78)
+            "eco" => (960, 540, Math.Max(_config.ImageCompressionQuality, 78)),
+            "high" => (1600, 900, Math.Max(_config.ImageCompressionQuality, 86)),
+            _ => (1280, 720, Math.Max(_config.ImageCompressionQuality, 82))
         };
 
-    private byte[]? CaptureSharpFrame(bool force, long frameId)
+    private CapturedFrameData? CaptureSharpFrame(bool force, long frameId)
     {
         ulong? prevHash;
         lock (_hashLock) prevHash = _lastSentHash;
@@ -877,7 +931,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             jpegQuality: q,
             frameId: frameId,
             lastAcceptedHash: prevHash,
-            phashThreshold: phash,
+            phashThreshold: force ? 0 : Math.Min(phash, 5),
             isForced: force);
 
         _blackScreenDiagnostic.Observe(_capture, _activeProfile, _testMode, _onLog, _overlay, _config.EnableOverlay);
@@ -890,7 +944,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _lastSentHash = frame.PerceptualHash;
             Volatile.Write(ref _lastCaptureMs, frame.CaptureMs + frame.EncodeMs);
         }
-        return frame.JpegBytes;
+        _frameRingBuffer.Record(frame, forceReplaceTailIfTooClose: force);
+        return frame;
     }
 
     private async Task VideoAndAutoCoachLoopAsync(CancellationToken ct)
@@ -920,6 +975,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                 _config.RuntimeTiltRisk = false;
                                 Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, 0);
                                 lock (_hashLock) _lastSentHash = null;
+                                _frameRingBuffer.Clear();
                                 _localPhaseGate?.Reset();
                                 _tacticalTracker.Reset(matched.Manifest.GameId);
                                 _blackScreenDiagnostic.Reset();
@@ -946,9 +1002,10 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         }
                     }
 
-                    var jpeg = CaptureSharpFrame(force: false, frameId: ++frameCounter);
-                    if (jpeg is not null)
+                    var captured = CaptureSharpFrame(force: false, frameId: ++frameCounter);
+                    if (captured is not null)
                     {
+                        var jpeg = captured.JpegBytes;
                         Interlocked.Increment(ref _framesSent);
 
                         bool isEnEval = CoachingPersonaBuilder.IsEnglish(_config);
@@ -957,6 +1014,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             : string.Empty;
                         var tactical = TacticalSignalEvaluator.Evaluate(rawTelemetry, _activeProfile, _tacticalTracker, isEnEval);
                         _config.RuntimeTiltRisk = tactical.IsTiltRisk;
+                        if (!string.IsNullOrWhiteSpace(tactical.DeterministicFact))
+                            _memory.UpdateMatchAnchor(tactical.DeterministicFact);
                         if (tactical.MatchEnded)
                             FlushMatchSnapshot(resetMatchLog: true);
 
@@ -970,7 +1029,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         bool regularDue = canVoiceTurn &&
                             (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(scaledAutoSec).Ticks);
                         bool eventDue = canVoiceTurn && tactical.TriggerImmediate &&
-                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(Math.Max(3.5, autoSec * 0.45)).Ticks);
+                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(Math.Max(3.0, autoSec * 0.45)).Ticks);
                         bool shouldNudge = (regularDue || eventDue) && !tactical.ShouldSilence;
 
                         bool sentAsTurn = false;
@@ -992,6 +1051,14 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             if (!skipProactive)
                             {
                                 sentAsTurn = true;
+                                var (_, _, cfgQuality) = ResolveTargetResolution();
+                                var (turnBytes, panelCount) = _frameRingBuffer.BuildTemporalPayload(
+                                    _storyboardComposer,
+                                    captured,
+                                    maxFrames: 2,
+                                    maxAgeSeconds: 2.2,
+                                    jpegQuality: Math.Max(cfgQuality, 82));
+
                                 await _turnGate.WaitAsync(ct);
                                 try
                                 {
@@ -1000,12 +1067,19 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                     string factNote = string.IsNullOrWhiteSpace(tactical.DeterministicFact)
                                         ? string.Empty
                                         : (isEnEval
-                                            ? $" Verified sensor fact: {tactical.DeterministicFact}."
-                                            : $" Dato exacto del juego: {tactical.DeterministicFact}.");
+                                            ? $" Verified fact: {tactical.DeterministicFact}."
+                                            : $" Dato real: {tactical.DeterministicFact}.");
+                                    string timelineNote = _memory.FormatVisualTimeline(isEn: isEnEval);
+                                    string ctxNote = string.IsNullOrWhiteSpace(timelineNote) ? string.Empty
+                                        : (isEnEval ? $" Match context: {timelineNote}." : $" Contexto: {timelineNote}.");
+                                    string seqPrefix = panelCount >= 2
+                                        ? (isEnEval ? "Compare these 2 frames `[1] -> [2 · AHORA]` for speed/trajectory. "
+                                                    : "Compará los 2 cuadros `[1] -> [2 · AHORA]` para leer dirección y velocidad. ")
+                                        : string.Empty;
                                     string prompt = isEnEval
-                                        ? $"Look at this exact live game frame.{factNote} Give 1 crisp, helpful tactical tip in 8-14 words based strictly on what you see."
-                                        : $"Mirá esta captura exacta de la partida actual.{factNote} Da 1 solo consejo táctico claro, natural y útil en español (8 a 14 palabras) basado únicamente en lo que ves en pantalla.";
-                                    await _backend.SendImageAndPromptTurnAsync(jpeg, prompt, ct);
+                                        ? $"{seqPrefix}{factNote}{ctxNote} Anticipate the next 2 seconds BEFORE the error: 1 crisp tip (8-13 words) ONLY on clearly seen pixels."
+                                        : $"{seqPrefix}{factNote}{ctxNote} Anticipate 2 segundos a la jugada (no narres lo pasado): 1 consejo claro (8 a 13 palabras) SOLO sobre lo que se ve nítido.";
+                                    await _backend.SendImageAndPromptTurnAsync(turnBytes ?? jpeg, prompt, ct);
                                 }
                                 finally
                                 {
@@ -1021,8 +1095,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     }
                 }
 
-                double fps = _activeProfile?.Manifest.CaptureFps ?? 1.0;
-                int periodMs = Math.Clamp((int)Math.Round(1000.0 / Math.Clamp(fps, 0.5, 2.0)), 500, 1500);
+                double fps = _activeProfile?.Manifest.CaptureFps ?? 1.5;
+                int periodMs = Math.Clamp((int)Math.Round(1000.0 / Math.Clamp(fps, 0.5, 3.0)), 330, 1500);
                 try { await _wakeSignal.WaitAsync(TimeSpan.FromMilliseconds(periodMs), ct); }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
             }
@@ -1083,6 +1157,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             }
 
             FlushMatchSnapshot(resetMatchLog: false);
+            _frameRingBuffer.Clear();
             _sessionTask = null;
             _micSendTask = null;
             cts.Dispose();

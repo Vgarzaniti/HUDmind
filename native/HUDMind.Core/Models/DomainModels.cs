@@ -418,6 +418,7 @@ public sealed class GameProfile
     public required string DirectoryPath { get; init; }
     public string CustomRules { get; set; } = string.Empty;
     public string TacticalSummary { get; init; } = string.Empty;
+    public string KnowledgeGuide { get; init; } = string.Empty;
 
     public bool MatchesProcess(string? executableName)
     {

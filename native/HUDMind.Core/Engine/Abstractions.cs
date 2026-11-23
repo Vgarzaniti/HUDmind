@@ -2,6 +2,25 @@ using HUDMind.Core.Models;
 
 namespace HUDMind.Core.Engine;
 
+public sealed record TemporalFrameSample(
+    byte[] JpegBytes,
+    DateTimeOffset CapturedAtUtc,
+    ulong PerceptualHash
+);
+
+/// <summary>
+/// Pure CPU (0% GPU) temporal sequence composer combining recent frames into a single
+/// timestamp-labeled motion strip (e.g. 2x1 live delta or 2x2 storyboard) for any Vision provider.
+/// </summary>
+public interface ITemporalStoryboardComposer
+{
+    byte[]? ComposeSequenceJpeg(
+        IReadOnlyList<TemporalFrameSample> frames,
+        int targetWidth,
+        int targetHeight,
+        int jpegQuality);
+}
+
 public interface IForegroundWindowDetector
 {
     string? GetForegroundExecutable();

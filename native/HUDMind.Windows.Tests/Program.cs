@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 using HUDMind.Windows;
 
@@ -347,6 +348,51 @@ await RunTest("W10. Win32StreamingPcmPlayer prebuffer/flush/interrupt & WinRt/SA
     using var voice = new HybridVoiceService();
     voice.SetSpeechRate("+5%");
     voice.SetSpeechRate("+0%");
+    return Task.CompletedTask;
+});
+
+// W11. Win32TemporalStoryboardComposer packs 2x1 motion strip & 2x2 chronological storyboard cleanly
+await RunTest("W11. Win32TemporalStoryboardComposer renders valid 2x1 motion strips & 2x2 storyboards cleanly", () =>
+{
+    var composer = new Win32TemporalStoryboardComposer();
+    Assert(composer.ComposeSequenceJpeg([], 1440, 810, 84) is null, "Empty frames must return null");
+    Assert(composer.ComposeSequenceJpeg([new TemporalFrameSample([1, 2, 3], DateTimeOffset.UtcNow, 1UL)], 1440, 810, 84) is null,
+        "Single malformed frame must return null safely");
+
+    byte[] MakeTestJpeg(System.Drawing.Color c)
+    {
+        using var bmp = new System.Drawing.Bitmap(320, 180);
+        using (var g = System.Drawing.Graphics.FromImage(bmp))
+            g.Clear(c);
+        using var ms = new MemoryStream();
+        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+        return ms.ToArray();
+    }
+
+    var now = DateTimeOffset.UtcNow;
+    var samples = new List<TemporalFrameSample>
+    {
+        new(MakeTestJpeg(System.Drawing.Color.Navy), now.AddMilliseconds(-900), 1UL),
+        new(MakeTestJpeg(System.Drawing.Color.DarkCyan), now.AddMilliseconds(-600), 2UL),
+        new(MakeTestJpeg(System.Drawing.Color.DarkGreen), now.AddMilliseconds(-300), 3UL),
+        new(MakeTestJpeg(System.Drawing.Color.DarkOrange), now, 4UL)
+    };
+
+    var pair = composer.ComposeSequenceJpeg(samples.Take(2).ToList(), 1440, 405, 82);
+    Assert(pair is { Length: > 1000 }, "2-frame strip must produce valid JPEG bytes");
+    using (var ms2 = new MemoryStream(pair!))
+    using (var img2 = System.Drawing.Image.FromStream(ms2))
+    {
+        Assert(img2.Width == 1440 && img2.Height == 405, $"Expected 1440x405 2x1 strip, got {img2.Width}x{img2.Height}");
+    }
+
+    var grid = composer.ComposeSequenceJpeg(samples, 1440, 810, 85);
+    Assert(grid is { Length: > 1000 }, "4-frame storyboard must produce valid JPEG bytes");
+    using (var ms4 = new MemoryStream(grid!))
+    using (var img4 = System.Drawing.Image.FromStream(ms4))
+    {
+        Assert(img4.Width == 1440 && img4.Height == 810, $"Expected 1440x810 2x2 storyboard, got {img4.Width}x{img4.Height}");
+    }
     return Task.CompletedTask;
 });
 

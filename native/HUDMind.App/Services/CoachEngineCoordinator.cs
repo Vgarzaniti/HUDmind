@@ -112,7 +112,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                             return held;
                         },
                         onMatchCompleted: wrappedMatchCompleted,
-                        resolveContextForProfile: resolveContextForProfile
+                        resolveContextForProfile: resolveContextForProfile,
+                        storyboardComposer: new Win32TemporalStoryboardComposer()
                     );
                 }
                 catch
@@ -147,7 +148,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                     disposeVoice: false,
                     telemetrySensor: textOnlySensor,
                     onMatchCompleted: wrappedMatchCompleted,
-                    resolveContextForProfile: resolveContextForProfile
+                    resolveContextForProfile: resolveContextForProfile,
+                    storyboardComposer: new Win32TemporalStoryboardComposer()
                 );
             }
 

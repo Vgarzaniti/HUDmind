@@ -51,5 +51,8 @@ Cuando el usuario esté en **Modo Entrenamiento** (*El Arte de la Guerra / Art o
   - Desarrollar **Telar (*Loom*)** antes de clickear a Feudal si hay riesgo o justo al final de la cola de aldeanos.
 - **Evaluación en Entrenamiento:** Corregí en vivo cualquier segundo de TC inactivo (*Idle TC time*), exceso de aldeanos golpeando animales lejos del TC, campamentos madereros mal pegados al bosque o retraso en explorar en círculos con el Scout.
 
-## 5. Lista Negra de UI (En modo `match`)
+## 5. Lectura Predictiva (Anticipar Timing y Raids)
+- Si estás cerca de `500` comida sin telar ni casas libres -> avisar **antes** de quedar *housed* o retrasar Feudal. Si el Scout enemigo rodea madera/oro -> prevenir *quick-wall* o lanzas antes de que lleguen Scouts.
+
+## 6. Lista Negra de UI (En modo `match`)
 - Menú principal, lobby multijugador, árbol tecnológico a pantalla completa tapando el mapa, pantalla de estadísticas post-partida o pausa de partida.

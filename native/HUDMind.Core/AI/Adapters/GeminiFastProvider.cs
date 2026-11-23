@@ -128,7 +128,7 @@ public sealed class GeminiFastProvider : IAIProvider
             w.WriteNumber("temperature", temperature);
             w.WriteNumber("maxOutputTokens", maxOutputTokens);
             if (jpegBytes is { Length: > 0 })
-                w.WriteString("mediaResolution", "MEDIA_RESOLUTION_MEDIUM");
+                w.WriteString("mediaResolution", !stopOnNewline ? "MEDIA_RESOLUTION_HIGH" : "MEDIA_RESOLUTION_MEDIUM");
             if (stopOnNewline)
             {
                 w.WritePropertyName("stopSequences");
