@@ -247,5 +247,121 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+
+        <!-- Reusable Dark Esports Card & Pill Styles (0% GPU) -->
+        <Style x:Key="CardPanel" TargetType="Border">
+            <Setter Property="Background" Value="#0F172A" />
+            <Setter Property="BorderBrush" Value="#1E293B" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="12" />
+        </Style>
+
+        <Style x:Key="ChipButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#172554" />
+            <Setter Property="BorderBrush" Value="#1E40AF" />
+            <Setter Property="Foreground" Value="#BAE6FD" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="Normal" />
+            <Setter Property="Padding" Value="9,4" />
+        </Style>
+
+        <!-- Dark CheckBox (replaces bright Aero2 box) -->
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#E2E8F0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border x:Name="Box"
+                                    Width="16"
+                                    Height="16"
+                                    CornerRadius="4"
+                                    Background="#0F172A"
+                                    BorderBrush="#475569"
+                                    BorderThickness="1.5"
+                                    Margin="0,0,7,0"
+                                    VerticalAlignment="Center">
+                                <TextBlock x:Name="CheckMark"
+                                           Text="✓"
+                                           Foreground="#052E16"
+                                           FontSize="11"
+                                           FontWeight="Bold"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           Visibility="Collapsed" />
+                            </Border>
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Box" Property="Background" Value="#10B981" />
+                                <Setter TargetName="Box" Property="BorderBrush" Value="#34D399" />
+                                <Setter TargetName="CheckMark" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Box" Property="BorderBrush" Value="#38BDF8" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Dark Expander for Advanced / Diagnostic drawers -->
+        <Style TargetType="Expander">
+            <Setter Property="Foreground" Value="#94A3B8" />
+            <Setter Property="Background" Value="#0F172A" />
+            <Setter Property="BorderBrush" Value="#1E293B" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Expander">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8">
+                            <DockPanel>
+                                <ToggleButton DockPanel.Dock="Top"
+                                              IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                              Cursor="Hand"
+                                              Background="Transparent"
+                                              BorderThickness="0">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border Background="Transparent" Padding="10,7">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock x:Name="Arrow" Text="▸" Foreground="#38BDF8" FontSize="12" Margin="0,0,7,0" VerticalAlignment="Center" />
+                                                    <ContentPresenter Content="{TemplateBinding Content}" VerticalAlignment="Center" />
+                                                </StackPanel>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsChecked" Value="True">
+                                                    <Setter TargetName="Arrow" Property="Text" Value="▾" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                    <ContentPresenter ContentSource="Header" />
+                                </ToggleButton>
+                                <ContentPresenter x:Name="ExpandSite"
+                                                  Visibility="Collapsed"
+                                                  Margin="10,0,10,10" />
+                            </DockPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="True">
+                                <Setter TargetName="ExpandSite" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Application.Resources>
 </Application>

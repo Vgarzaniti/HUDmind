@@ -24,6 +24,7 @@ public sealed class AccountRowView
     public int Priority => Source.Priority;
     public string Label => Source.Label;
     public string Provider => Source.Provider;
+    public string ProviderDisplay => CoachFeedFormatter.FriendlyShortProvider(Source.Provider);
     public string Model => Source.Model;
     public string VisionDisplay => Source.SupportsVisionOverride.HasValue
         ? (Source.SupportsVisionOverride.Value ? "Visión*" : "OCR/Logs*")
@@ -35,6 +36,7 @@ public sealed class AccountRowView
 public partial class MainWindow : Window
 {
     private const int MaxLogEntries = 180;
+    private const int MaxFeedEntries = 120;
 
     private readonly ConfigRepository _repo = new();
     private readonly CoachEngineCoordinator _coordinator = new();
@@ -43,6 +45,7 @@ public partial class MainWindow : Window
     private List<GameProfile> _profiles;
 
     private readonly ObservableCollection<string> _logEntries = [];
+    private readonly ObservableCollection<CoachFeedItem> _feedEntries = [];
     private readonly OverlayWindow _overlay = new();
     private readonly HybridVoiceService _sharedVoice;
     private readonly GitHubReleaseUpdateService _updateService = new();
@@ -78,7 +81,17 @@ public partial class MainWindow : Window
         }
 
         InitializeComponent();
+        LstCoachFeed.ItemsSource = _feedEntries;
         LstLiveLogs.ItemsSource = _logEntries;
+        _feedEntries.Add(new CoachFeedItem
+        {
+            Timestamp = DateTime.Now.ToString("HH:mm"),
+            Author = "HUDMind",
+            Message = "Listo para acompañarte. Elegí tu juego (o dejalo en Automático) y tocá Iniciar Coach.",
+            AccentHex = "#10B981",
+            CardBackgroundHex = "#151D2C",
+            AuthorForegroundHex = "#34D399"
+        });
 
         _sharedVoice = new HybridVoiceService(_repo.WorkspaceRoot);
         _config = _repo.LoadUserConfig();
@@ -144,15 +157,37 @@ public partial class MainWindow : Window
         _trayIcon?.Hide();
     }
 
+    private void RefreshProfilePickers(string? selectMainId = null, string? selectRulesId = null)
+    {
+        var mainOptions = _profiles
+            .Select(p => new GameProfileOption(
+                p.Manifest.GameId,
+                p.Manifest.GameId == "universal"
+                    ? "🌐 Cualquier Juego (Automático)"
+                    : p.Manifest.DisplayName))
+            .ToList();
+
+        CmbGameProfile.ItemsSource = mainOptions;
+        if (!string.IsNullOrWhiteSpace(selectMainId) && mainOptions.Any(o => o.GameId == selectMainId))
+            CmbGameProfile.SelectedValue = selectMainId;
+        else if (mainOptions.Count > 0)
+            CmbGameProfile.SelectedIndex = 0;
+
+        var rulesOptions = mainOptions.ToList();
+        CmbRulesGame.ItemsSource = rulesOptions;
+        if (!string.IsNullOrWhiteSpace(selectRulesId) && rulesOptions.Any(o => o.GameId == selectRulesId))
+            CmbRulesGame.SelectedValue = selectRulesId;
+        else if (rulesOptions.Count > 0)
+            CmbRulesGame.SelectedIndex = 0;
+    }
+
     private void BindInitialUi()
     {
-        CmbGameProfile.ItemsSource = _profiles.Select(p => p.Manifest.GameId).ToList();
-        if (CmbGameProfile.Items.Count > 0) CmbGameProfile.SelectedIndex = 0;
+        RefreshProfilePickers();
 
-        CmbRulesGame.ItemsSource = _profiles.Select(p => p.Manifest.GameId).ToList();
-        if (CmbRulesGame.Items.Count > 0) CmbRulesGame.SelectedIndex = 0;
-
-        CmbNewProvider.ItemsSource = ProviderRegistry.AllPresets.Select(p => p.Id).ToList();
+        CmbNewProvider.ItemsSource = ProviderRegistry.AllPresets
+            .Select(p => new ProviderOption(p.Id, CoachFeedFormatter.FriendlyProviderName(p.Id)))
+            .ToList();
         if (CmbNewProvider.Items.Count > 0) CmbNewProvider.SelectedIndex = 0;
 
         RefreshMonitorsList();
@@ -176,9 +211,9 @@ public partial class MainWindow : Window
             TxtPttKey.Text = string.IsNullOrWhiteSpace(_config.PushToTalkKey) ? "V" : _config.PushToTalkKey;
             SelectByTag(CmbMicDevice, _config.AudioInputDeviceName);
             SelectByTag(CmbSpeakerDevice, _config.AudioOutputDeviceName);
-            SelectByContent(CmbLanguage, _config.VoiceLanguage);
-            SelectByContent(CmbEfficiency, _config.TokenEfficiencyMode);
-            SelectByContent(CmbOverlayPos, _config.OverlayPosition);
+            SelectByTag(CmbLanguage, _config.VoiceLanguage);
+            SelectByTag(CmbEfficiency, _config.TokenEfficiencyMode);
+            SelectByTag(CmbOverlayPos, _config.OverlayPosition);
             SldOverlayScale.Value = Math.Clamp(_config.OverlayScale, 0.75, 1.45);
             LblOverlayScale.Text = $"{(int)Math.Round(SldOverlayScale.Value * 100)}%";
             SldOverlayOpacity.Value = Math.Clamp(_config.OverlayOpacity, 0.45, 1.0);
@@ -220,8 +255,10 @@ public partial class MainWindow : Window
     private void RefreshMonitorsList()
     {
         int screenCount = Math.Max(1, Win32DisplayHelper.GetAllWorkingAreas().Length);
-        CmbMonitor.ItemsSource = Enumerable.Range(1, screenCount).ToList();
-        CmbMonitor.SelectedItem = Math.Clamp(_config.CaptureMonitor, 1, screenCount);
+        CmbMonitor.ItemsSource = Enumerable.Range(1, screenCount)
+            .Select(i => new MonitorOption(i, i == 1 ? "Monitor 1 (Principal)" : $"Monitor {i}"))
+            .ToList();
+        CmbMonitor.SelectedValue = Math.Clamp(_config.CaptureMonitor, 1, screenCount);
     }
 
     private void RefreshAudioDevicesList()
@@ -271,15 +308,15 @@ public partial class MainWindow : Window
 
     private void UpdateLatencyCardHeaders(bool isLive)
     {
-        LblAiCardTitle.Text = isLive ? "PRIMER AUDIO / TTFA (WS)" : "VISIÓN / SENSOR IA";
-        LblVoiceCardTitle.Text = isLive ? "CANAL DE VOZ NATIVA" : "VOZ DEL COACH";
+        LblAiCardTitle.Text = isLive ? "RESPUESTA EN VIVO" : "VELOCIDAD DE RESPUESTA";
+        LblVoiceCardTitle.Text = isLive ? "VOZ Y MICRÓFONO" : "VOZ DEL COACH";
     }
 
     private void ResetStatsCards()
     {
-        StatCaptureMs.Text = "— ms";
-        StatAiMs.Text = "— ms";
-        StatVoiceMs.Text = "— ms";
+        StatActiveGame.Text = "Esperando juego";
+        StatAiMs.Text = "—";
+        StatVoiceMs.Text = _config.IsTextOnlyMode ? "Silencio" : "Listo";
         StatInterventions.Text = "0";
     }
 
@@ -307,7 +344,9 @@ public partial class MainWindow : Window
     {
         if (_shutdownComplete) return;
         var safeMsg = SecretRedactor.Redact(message, _accounts.Select(a => a.ApiKey));
-        var line = $"[{DateTime.Now:HH:mm:ss}] {safeMsg}";
+        var now = DateTime.Now;
+        var line = $"[{now:HH:mm:ss}] {safeMsg}";
+        var feedItem = CoachFeedFormatter.TryFormatFeedItem(safeMsg, now.ToString("HH:mm"));
         Dispatcher.BeginInvoke(() =>
         {
             if (_shutdownComplete) return;
@@ -316,6 +355,15 @@ public partial class MainWindow : Window
                 _logEntries.RemoveAt(0);
             if (_logEntries.Count > 0 && WindowState != WindowState.Minimized)
                 LstLiveLogs.ScrollIntoView(_logEntries[^1]);
+
+            if (feedItem is not null)
+            {
+                _feedEntries.Add(feedItem);
+                while (_feedEntries.Count > MaxFeedEntries)
+                    _feedEntries.RemoveAt(0);
+                if (_feedEntries.Count > 0 && WindowState != WindowState.Minimized)
+                    LstCoachFeed.ScrollIntoView(_feedEntries[^1]);
+            }
         });
     }
 
@@ -325,15 +373,26 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke(() =>
         {
             if (_shutdownComplete || !_coordinator.IsRunning) return;
-            StatCaptureMs.Text = stats.LastCaptureMs > 0 ? $"{stats.LastCaptureMs:F1} ms" : "— ms";
-            StatAiMs.Text = stats.LastAiMs > 0 ? $"{stats.LastAiMs:F0} ms" : "— ms";
-            StatVoiceMs.Text = _coordinator.SupportsLiveMic
-                ? (_config.IsTextOnlyMode ? "Silencio" : "Integrada (WS)")
-                : (stats.LastVoiceMs > 0 ? $"{stats.LastVoiceMs:F1} ms" : "— ms");
-            StatInterventions.Text = $"{stats.Interventions} · {stats.ActiveGame}";
+            StatActiveGame.Text = string.IsNullOrWhiteSpace(stats.ActiveGame) || stats.ActiveGame == "-"
+                ? "Detectando..."
+                : stats.ActiveGame;
+            StatAiMs.Text = stats.LastAiMs <= 0
+                ? "—"
+                : (stats.LastAiMs >= 1000 ? $"{stats.LastAiMs / 1000.0:0.0} s" : $"{stats.LastAiMs:F0} ms");
+            StatVoiceMs.Text = _config.IsTextOnlyMode
+                ? "Silencio"
+                : (_coordinator.SupportsLiveMic
+                    ? (_config.IsMicActive
+                        ? (_config.IsPushToTalkMode ? $"PTT ({_config.PushToTalkKey})" : "Mic activo")
+                        : "Solo voz coach")
+                    : "Voz activa");
+            StatInterventions.Text = stats.Interventions.ToString(CultureInfo.InvariantCulture);
+            var provLabel = string.IsNullOrWhiteSpace(stats.ActiveProvider) || stats.ActiveProvider == "-"
+                ? "IA"
+                : (stats.ActiveProvider.Contains(' ') ? stats.ActiveProvider : CoachFeedFormatter.FriendlyShortProvider(stats.ActiveProvider));
             HeaderStatusText.Text = stats.IsPaused
-                ? $"Pausado · {stats.ActiveProvider}"
-                : $"Activo · {stats.ActiveProvider}";
+                ? $"Pausado · {provLabel}"
+                : $"En partida · {provLabel}";
             PauseBadge.Visibility = stats.IsPaused ? Visibility.Visible : Visibility.Collapsed;
             _trayIcon?.UpdateTooltip($"HUDMind · {HeaderStatusText.Text}");
             RefreshMatchReviewButtonState();
@@ -400,7 +459,7 @@ public partial class MainWindow : Window
             ConfigureOverlayFromCurrentConfig();
 
             bool testMode = GetSelectedTag(CmbRunMode) == "test";
-            string? forcedId = CmbGameProfile.SelectedItem?.ToString();
+            string? forcedId = CmbGameProfile.SelectedValue?.ToString();
             bool wantLive = GetSelectedTag(CmbEngineType) == "live";
             var hintGameName = forcedId is not null
                 ? _profiles.FirstOrDefault(p => p.Manifest.GameId == forcedId)?.Manifest.DisplayName
@@ -465,9 +524,9 @@ public partial class MainWindow : Window
         ResetStatsCards();
         RefreshMatchReviewButtonState();
         PauseBadge.Visibility = Visibility.Collapsed;
-        TxtHeaderBadge.Text = ".NET 9 · 0% GPU · $0 COSTO · MULTI-IA";
-        HeaderStatusText.Text = "Estado: Detenido";
-        _trayIcon?.UpdateTooltip("HUDMind · Detenido");
+        TxtHeaderBadge.Text = "🛡 0% GPU · Anti-Cheat Safe";
+        HeaderStatusText.Text = "Listo para jugar";
+        _trayIcon?.UpdateTooltip("HUDMind · Listo para jugar");
     }
 
     private void ToggleMicViaHotkey()
@@ -579,6 +638,9 @@ public partial class MainWindow : Window
         }
     }
 
+    private void BtnClearFeed_Click(object sender, RoutedEventArgs e) =>
+        _feedEntries.Clear();
+
     private void BtnClearLogs_Click(object sender, RoutedEventArgs e) =>
         _logEntries.Clear();
 
@@ -593,7 +655,7 @@ public partial class MainWindow : Window
     private void CmbNewProvider_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncingUi || TxtNewLabel is null || TxtNewModel is null) return;
-        var prov = CmbNewProvider.SelectedItem?.ToString() ?? "groq";
+        var prov = CmbNewProvider.SelectedValue?.ToString() ?? "groq";
         var preset = ProviderRegistry.FindPreset(prov);
         if (preset is not null)
         {
@@ -627,7 +689,7 @@ public partial class MainWindow : Window
         _syncingUi = true;
         try
         {
-            CmbNewProvider.SelectedItem = acc.Provider;
+            CmbNewProvider.SelectedValue = acc.Provider;
             TxtNewLabel.Text = acc.Label;
             TxtNewModel.Text = acc.Model;
             TxtNewBaseUrl.Text = acc.BaseUrl;
@@ -648,22 +710,24 @@ public partial class MainWindow : Window
         PwdNewApiKey.ToolTip = "Editando: dejá vacío para conservar la API Key actual, o pegá una nueva";
         BtnAddAccount.Content = $"💾 Guardar #{acc.Priority}";
         BtnCancelEdit.Visibility = Visibility.Visible;
-        TxtNewModel.Focus();
+        ExpAccountAdvanced.IsExpanded = !string.IsNullOrWhiteSpace(acc.BaseUrl) || acc.SupportsVisionOverride.HasValue;
+        TxtNewLabel.Focus();
     }
 
     private void CancelAccountEdit()
     {
         _editingAccountId = null;
-        BtnAddAccount.Content = "+ Agregar #1";
+        BtnAddAccount.Content = "+ Conectar IA";
         BtnCancelEdit.Visibility = Visibility.Collapsed;
+        ExpAccountAdvanced.IsExpanded = false;
         PwdNewApiKey.Clear();
-        PwdNewApiKey.ToolTip = "Pegá tu API Key (oculta para seguridad en OBS/Discord)";
+        PwdNewApiKey.ToolTip = "Pegá tu clave (oculta para seguridad en OBS/Discord)";
         CmbNewProvider_SelectionChanged(CmbNewProvider, null!);
     }
 
     private void BtnAddAccount_Click(object sender, RoutedEventArgs e)
     {
-        var prov = CmbNewProvider.SelectedItem?.ToString() ?? "groq";
+        var prov = CmbNewProvider.SelectedValue?.ToString() ?? "groq";
         var model = TxtNewModel.Text.Trim();
         if (string.IsNullOrWhiteSpace(model))
         {
@@ -740,6 +804,7 @@ public partial class MainWindow : Window
         PwdNewApiKey.Clear();
         TxtNewBaseUrl.Clear();
         CmbNewVisionOverride.SelectedIndex = 0;
+        ExpAccountAdvanced.IsExpanded = false;
         RefreshAccountsList();
         _repo.SaveAccounts(_accounts);
         AppendLog($"Cuenta agregada en prioridad #1: {acc.Label} [{acc.Provider}:{acc.Model} · {(acc.SupportsVision ? "Visión" : "OCR/Logs")}]");
@@ -821,7 +886,10 @@ public partial class MainWindow : Window
 
     private void CmbRulesGame_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        var nextId = CmbRulesGame.SelectedItem?.ToString();
+        var nextId = CmbRulesGame.SelectedValue?.ToString();
+        if (string.IsNullOrEmpty(nextId))
+            return;
+
         if (_rulesDirty && !string.IsNullOrEmpty(_lastRulesGameId) && !string.Equals(_lastRulesGameId, nextId, StringComparison.OrdinalIgnoreCase))
         {
             var ans = System.Windows.MessageBox.Show(
@@ -832,7 +900,7 @@ public partial class MainWindow : Window
             if (ans != MessageBoxResult.Yes)
             {
                 _syncingUi = true;
-                try { CmbRulesGame.SelectedItem = _lastRulesGameId; }
+                try { CmbRulesGame.SelectedValue = _lastRulesGameId; }
                 finally { _syncingUi = false; }
                 return;
             }
@@ -891,7 +959,7 @@ public partial class MainWindow : Window
 
     private void BtnSaveRules_Click(object sender, RoutedEventArgs e)
     {
-        var id = CmbRulesGame.SelectedItem?.ToString();
+        var id = CmbRulesGame.SelectedValue?.ToString();
         var prof = _profiles.FirstOrDefault(p => p.Manifest.GameId == id);
         if (prof is null) return;
         try
@@ -903,12 +971,12 @@ public partial class MainWindow : Window
                 var cdText = (TxtProfileCooldown.Text ?? "8").Trim().Replace(',', '.');
                 if (!double.TryParse(cdText, NumberStyles.Float, CultureInfo.InvariantCulture, out double cooldown))
                 {
-                    System.Windows.MessageBox.Show("Cooldown inválido (ej: 8 o 10.0).", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    System.Windows.MessageBox.Show("Pausa entre avisos inválida (ej: 8 o 10.0).", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
                 if (!int.TryParse((TxtProfilePhash.Text ?? "6").Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int phash))
                 {
-                    System.Windows.MessageBox.Show("Valor pHash inválido (1 a 64).", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    System.Windows.MessageBox.Show("Sensibilidad visual inválida (1 a 64).", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
                 _repo.UpdateProfileManifest(prof, exes, cooldown, phash);
@@ -928,14 +996,14 @@ public partial class MainWindow : Window
 
     private void BtnDeleteProfile_Click(object sender, RoutedEventArgs e)
     {
-        var id = CmbRulesGame.SelectedItem?.ToString();
+        var id = CmbRulesGame.SelectedValue?.ToString();
         var prof = _profiles.FirstOrDefault(p => p.Manifest.GameId == id);
         if (prof is null || string.Equals(prof.Manifest.GameId, "universal", StringComparison.OrdinalIgnoreCase))
             return;
 
         var ans = System.Windows.MessageBox.Show(
-            $"¿Eliminar permanentemente el perfil '{prof.Manifest.DisplayName}' (profiles/{prof.Manifest.GameId})?",
-            "HUDMind · Eliminar Perfil",
+            $"¿Eliminar permanentemente el juego '{prof.Manifest.DisplayName}'?",
+            "HUDMind · Eliminar Juego",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
         if (ans != MessageBoxResult.Yes)
@@ -946,19 +1014,14 @@ public partial class MainWindow : Window
             _repo.DeleteGameProfile(prof);
             _profiles.Remove(prof);
 
-            var ids = _profiles.Select(p => p.Manifest.GameId).ToList();
-            var prevMain = CmbGameProfile.SelectedItem?.ToString();
+            var prevMain = CmbGameProfile.SelectedValue?.ToString();
+            var nextProf = _profiles.FirstOrDefault();
+            _rulesDirty = false;
+            RefreshProfilePickers(prevMain, nextProf?.Manifest.GameId);
 
             _syncingUi = true;
             try
             {
-                CmbGameProfile.ItemsSource = ids;
-                CmbGameProfile.SelectedItem = (prevMain is not null && ids.Contains(prevMain)) ? prevMain : ids.FirstOrDefault();
-
-                _rulesDirty = false;
-                CmbRulesGame.ItemsSource = ids;
-                if (ids.Count > 0) CmbRulesGame.SelectedIndex = 0;
-                var nextProf = _profiles.FirstOrDefault();
                 _lastRulesGameId = nextProf?.Manifest.GameId;
                 TxtCustomRules.Text = nextProf?.CustomRules ?? string.Empty;
                 PopulateManifestFields(nextProf);
@@ -977,12 +1040,74 @@ public partial class MainWindow : Window
         }
     }
 
+    private void BtnBrowseNewExe_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Elegí el ejecutable (.exe) de tu juego",
+            Filter = "Ejecutables de juegos (*.exe)|*.exe",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (dlg.ShowDialog(this) != true)
+            return;
+
+        var fileName = Path.GetFileName(dlg.FileName);
+        if (!string.IsNullOrWhiteSpace(fileName))
+        {
+            TxtNewProfExe.Text = fileName;
+            if (string.IsNullOrWhiteSpace(TxtNewProfName.Text))
+                TxtNewProfName.Text = CultureInfo.CurrentCulture.TextInfo.ToTitleCase(
+                    Path.GetFileNameWithoutExtension(fileName).Replace('_', ' ').Replace('-', ' '));
+        }
+    }
+
+    private void BtnPromptChip_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button btn || btn.Tag is not string snippet || string.IsNullOrWhiteSpace(snippet))
+            return;
+
+        var current = TxtCustomRules.Text ?? string.Empty;
+        if (current.Contains(snippet, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var separator = string.IsNullOrWhiteSpace(current)
+            ? string.Empty
+            : (current.EndsWith('\n') ? string.Empty : Environment.NewLine);
+        var next = current + separator + snippet;
+        if (next.Length > ConfigRepository.MaxCustomRulesChars)
+        {
+            System.Windows.MessageBox.Show(
+                $"Límite de {ConfigRepository.MaxCustomRulesChars} caracteres alcanzado.",
+                "HUDMind",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        TxtCustomRules.Text = next;
+        TxtCustomRules.CaretIndex = next.Length;
+        TxtCustomRules.Focus();
+    }
+
     private void BtnCreateProfile_Click(object sender, RoutedEventArgs e)
     {
-        var rawId = (TxtNewProfId.Text ?? string.Empty).Trim();
         var rawName = (TxtNewProfName.Text ?? string.Empty).Trim();
         var exeList = (TxtNewProfExe.Text ?? string.Empty)
             .Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (string.IsNullOrWhiteSpace(rawName))
+        {
+            System.Windows.MessageBox.Show("Escribí el nombre del juego (ej: Apex Legends).", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
+            TxtNewProfName.Focus();
+            return;
+        }
+        if (exeList.Length == 0)
+        {
+            System.Windows.MessageBox.Show("Indicá el archivo .exe del juego (ej: r5apex.exe) o usá '📂 Elegir .exe'.", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
+            TxtNewProfExe.Focus();
+            return;
+        }
 
         if (_rulesDirty)
         {
@@ -995,28 +1120,24 @@ public partial class MainWindow : Window
                 return;
         }
 
+        var rawId = CoachFeedFormatter.BuildSafeGameId(rawName, _profiles.Select(p => p.Manifest.GameId));
         try
         {
             var created = _repo.CreateNewGameProfile(rawId, rawName, exeList);
             if (_profiles.Any(p => string.Equals(p.Manifest.GameId, created.Manifest.GameId, StringComparison.OrdinalIgnoreCase)))
             {
-                System.Windows.MessageBox.Show($"Ya existe un perfil con ID '{created.Manifest.GameId}'.", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
+                System.Windows.MessageBox.Show($"Ya existe un juego similar ('{created.Manifest.GameId}').", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             _profiles.Add(created);
-            var prevActiveGame = CmbGameProfile.SelectedItem?.ToString();
-            var ids = _profiles.Select(p => p.Manifest.GameId).ToList();
+            var prevActiveGame = CmbGameProfile.SelectedValue?.ToString();
+            _rulesDirty = false;
+            RefreshProfilePickers(prevActiveGame, created.Manifest.GameId);
 
             _syncingUi = true;
             try
             {
-                CmbGameProfile.ItemsSource = ids;
-                CmbGameProfile.SelectedItem = prevActiveGame ?? ids.FirstOrDefault();
-
-                _rulesDirty = false;
-                CmbRulesGame.ItemsSource = ids;
-                CmbRulesGame.SelectedItem = created.Manifest.GameId;
                 _lastRulesGameId = created.Manifest.GameId;
                 TxtCustomRules.Text = created.CustomRules;
                 PopulateManifestFields(created);
@@ -1027,14 +1148,13 @@ public partial class MainWindow : Window
             }
 
             UpdateRulesCounterUi();
-            TxtNewProfId.Clear();
             TxtNewProfName.Clear();
             TxtNewProfExe.Clear();
-            AppendLog($"Perfil de juego creado en profiles/{created.Manifest.GameId}: {created.Manifest.DisplayName}");
+            AppendLog($"Juego agregado: {created.Manifest.DisplayName}");
         }
         catch (Exception ex)
         {
-            System.Windows.MessageBox.Show(SecretRedactor.Redact(ex.Message), "No se pudo crear el perfil", MessageBoxButton.OK, MessageBoxImage.Warning);
+            System.Windows.MessageBox.Show(SecretRedactor.Redact(ex.Message), "No se pudo agregar el juego", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
@@ -1280,11 +1400,11 @@ public partial class MainWindow : Window
         if (HotkeyParser.TryParsePushToTalkKey(TxtPttKey.Text, out _, out var pttSafe)) _config.PushToTalkKey = pttSafe;
         _config.AudioInputDeviceName = GetSelectedTag(CmbMicDevice, string.Empty);
         _config.AudioOutputDeviceName = GetSelectedTag(CmbSpeakerDevice, string.Empty);
-        _config.TextLanguage = (CmbLanguage.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "es";
+        _config.TextLanguage = GetSelectedTag(CmbLanguage, "es");
         _config.VoiceLanguage = _config.TextLanguage;
-        _config.TokenEfficiencyMode = (CmbEfficiency.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "eco";
-        _config.OverlayPosition = (CmbOverlayPos.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "top-right";
-        _config.CaptureMonitor = CmbMonitor.SelectedItem is int m ? m : 1;
+        _config.TokenEfficiencyMode = GetSelectedTag(CmbEfficiency, "eco");
+        _config.OverlayPosition = GetSelectedTag(CmbOverlayPos, "top-right");
+        _config.CaptureMonitor = CmbMonitor.SelectedValue is int m ? m : 1;
         _config.EnableOverlay = ChkEnableOverlay.IsChecked == true;
         _config.OverlayCompact = ChkOverlayCompact.IsChecked == true;
         _config.EnableHotkeys = ChkEnableHotkeys.IsChecked == true;
@@ -1353,19 +1473,6 @@ public partial class MainWindow : Window
         foreach (ComboBoxItem item in cb.Items)
         {
             if (string.Equals(item.Tag?.ToString(), tag, StringComparison.OrdinalIgnoreCase))
-            {
-                cb.SelectedItem = item;
-                return;
-            }
-        }
-        if (cb.Items.Count > 0) cb.SelectedIndex = 0;
-    }
-
-    private static void SelectByContent(System.Windows.Controls.ComboBox cb, string content)
-    {
-        foreach (ComboBoxItem item in cb.Items)
-        {
-            if (string.Equals(item.Content?.ToString(), content, StringComparison.OrdinalIgnoreCase))
             {
                 cb.SelectedItem = item;
                 return;
