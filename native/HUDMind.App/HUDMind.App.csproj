@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>HUDMind.Native</AssemblyName>
-    <Version>1.1.1</Version>
+    <Version>1.2.0</Version>
     <ApplicationIcon>Assets\hudmind.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <LangVersion>latest</LangVersion>
@@ -20,4 +20,73 @@
     <ProjectReference Include="..\HUDMind.Core\HUDMind.Core.csproj" />
     <ProjectReference Include="..\HUDMind.Windows\HUDMind.Windows.csproj" />
   </ItemGroup>
+
+  <Target Name="ObfuscatePublishAssemblies"
+          Condition="'$(ObfuscateRelease)' == 'true'"
+          AfterTargets="ComputeResolvedFilesToPublishList;ILLink"
+          BeforeTargets="CreateReadyToRunImages;GeneratePublishDependencyFile;GenerateSingleFileBundle">
+    <PropertyGroup>
+      <_HudObfIn>$([System.IO.Path]::GetFullPath('$(IntermediateOutputPath)obf-in'))</_HudObfIn>
+      <_HudObfOut>$([System.IO.Path]::GetFullPath('$(IntermediateOutputPath)obf-out'))</_HudObfOut>
+      <_HudObfXml>$([System.IO.Path]::GetFullPath('$(IntermediateOutputPath)obfuscar.xml'))</_HudObfXml>
+    </PropertyGroup>
+    <RemoveDuplicates Inputs="@(ReferencePath->'%(RootDir)%(Directory)')">
+      <Output TaskParameter="Filtered" ItemName="_HudRefSearchDir" />
+    </RemoveDuplicates>
+    <ItemGroup>
+      <_HudObfAllDlls Include="@(ResolvedFileToPublish)" Condition="'%(Extension)' == '.dll'" />
+      <_HudObfReplaced Include="@(ResolvedFileToPublish)"
+                       Condition="'%(Filename)' == 'HUDMind.Core' Or '%(Filename)' == 'HUDMind.Windows' Or '%(Filename)' == 'HUDMind.Native'" />
+      <_HudObfUpdated Include="@(_HudObfReplaced->'$(_HudObfOut)\%(Filename)%(Extension)')">
+        <RelativePath>%(_HudObfReplaced.RelativePath)</RelativePath>
+        <CopyToPublishDirectory>%(_HudObfReplaced.CopyToPublishDirectory)</CopyToPublishDirectory>
+        <PostprocessAssembly>%(_HudObfReplaced.PostprocessAssembly)</PostprocessAssembly>
+        <AssetType>%(_HudObfReplaced.AssetType)</AssetType>
+      </_HudObfUpdated>
+      <_HudObfSearchPathTags Include="@(_HudRefSearchDir->'  &lt;AssemblySearchPath path=&quot;%(Identity)&quot; /&gt;')" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_HudSearchPathBlock>@(_HudObfSearchPathTags, '%0A')</_HudSearchPathBlock>
+      <_HudObfXmlContent><![CDATA[<?xml version='1.0'?>
+<Obfuscator>
+  <Var name="InPath" value="$(_HudObfIn)" />
+  <Var name="OutPath" value="$(_HudObfOut)" />
+  <Var name="KeepPublicApi" value="true" />
+  <Var name="HidePrivateApi" value="true" />
+  <Var name="RenameProperties" value="false" />
+  <Var name="RenameEvents" value="false" />
+  <Var name="RenameFields" value="true" />
+  <Var name="HideStrings" value="true" />
+  <Var name="OptimizeMethods" value="true" />
+$(_HudSearchPathBlock)
+  <Module file="$(_HudObfIn)\HUDMind.Core.dll">
+    <SkipNamespace name="HUDMind.Core.Models" />
+    <SkipType name="HUDMind.Core.Config.UserConfig" />
+    <SkipType name="HUDMind.Core.Config.ProviderAccount" />
+    <SkipType name="HUDMind.Core.Pipeline.PlayerGameMemory" skipFields="true" skipMethods="true" skipProperties="true" />
+    <SkipType name="HUDMind.Core.Pipeline.MatchMemoryEntry" skipFields="true" skipMethods="true" skipProperties="true" />
+    <SkipType name="HUDMind.Core.Pipeline.MasteredHabitRecord" skipFields="true" skipMethods="true" skipProperties="true" />
+    <SkipType name="HUDMind.Core.Pipeline.RecurringHabitStat" skipFields="true" skipMethods="true" skipProperties="true" />
+    <SkipType name="*AnonymousType*" skipFields="true" skipMethods="true" skipProperties="true" />
+  </Module>
+  <Module file="$(_HudObfIn)\HUDMind.Windows.dll">
+    <SkipType name="*AnonymousType*" skipFields="true" skipMethods="true" skipProperties="true" />
+  </Module>
+  <Module file="$(_HudObfIn)\HUDMind.Native.dll">
+    <SkipNamespace name="HUDMind.App" />
+    <SkipNamespace name="HUDMind.App.Controls" />
+    <SkipType name="*AnonymousType*" skipFields="true" skipMethods="true" skipProperties="true" />
+  </Module>
+</Obfuscator>]]></_HudObfXmlContent>
+    </PropertyGroup>
+    <RemoveDir Directories="$(_HudObfIn);$(_HudObfOut)" />
+    <MakeDir Directories="$(_HudObfIn);$(_HudObfOut)" />
+    <Copy SourceFiles="@(_HudObfAllDlls)" DestinationFolder="$(_HudObfIn)" />
+    <WriteLinesToFile File="$(_HudObfXml)" Lines="$(_HudObfXmlContent)" Overwrite="true" Encoding="UTF-8" />
+    <Exec Command="obfuscar.console &quot;$(_HudObfXml)&quot;" />
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(_HudObfReplaced)" />
+      <ResolvedFileToPublish Include="@(_HudObfUpdated)" />
+    </ItemGroup>
+  </Target>
 </Project>

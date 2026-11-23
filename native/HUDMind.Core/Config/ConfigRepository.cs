@@ -285,11 +285,14 @@ public sealed partial class ConfigRepository
     public string UserConfigPath => Path.Combine(ConfigDir, "user_config.json");
     public string CoachSoulPath => Path.Combine(ConfigDir, "coach_soul.md");
     public string PlayerProfilePath => Path.Combine(ConfigDir, "player_profile.md");
+    private readonly AI.ICoachSafetyPipeline _safety;
+
     public string? LastLoadWarning { get; private set; }
 
-    public ConfigRepository(string? workspaceRoot = null)
+    public ConfigRepository(string? workspaceRoot = null, AI.ICoachSafetyPipeline? safetyPipeline = null)
     {
         WorkspaceRoot = workspaceRoot ?? DiscoverWorkspaceRoot();
+        _safety = safetyPipeline ?? AI.CoachContentGuard.DefaultPipeline;
     }
 
     public static string DiscoverWorkspaceRoot()
@@ -353,18 +356,12 @@ public sealed partial class ConfigRepository
                 return 0;
         }
 
-        const string prefix = "HUDMind.DefaultProfiles/";
-        var asm = typeof(ConfigRepository).Assembly;
         int extracted = 0;
-
         Directory.CreateDirectory(fullProfilesRoot);
-        foreach (var resName in asm.GetManifestResourceNames())
-        {
-            if (!resName.StartsWith(prefix, StringComparison.Ordinal))
-                continue;
 
-            var rel = resName[prefix.Length..].Replace('\\', '/').Trim('/');
-            var parts = rel.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var (relKey, content) in Security.ProfileVaultReader.GetDefaultProfileEntries())
+        {
+            var parts = relKey.Split('/', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length != 2)
                 continue;
 
@@ -385,11 +382,7 @@ public sealed partial class ConfigRepository
             if (File.Exists(targetFile))
                 continue;
 
-            using var stream = asm.GetManifestResourceStream(resName);
-            if (stream is null)
-                continue;
-            using var reader = new StreamReader(stream, Encoding.UTF8);
-            AtomicWrite(targetFile, reader.ReadToEnd());
+            AtomicWrite(targetFile, content);
             extracted++;
         }
 
@@ -531,7 +524,7 @@ public sealed partial class ConfigRepository
                 if (!string.IsNullOrWhiteSpace(manifest.DisplayName) && manifest.DisplayName.Length > 64)
                     manifest.DisplayName = manifest.DisplayName[..64];
 
-                var customRules = AI.CoachContentGuard.SanitizeInstructionMarkdown(
+                var customRules = _safety.SanitizeInstructionMarkdown(
                     ReadBoundedText(Path.Combine(fullDir, "custom_rules.md"), MaxCustomRulesChars));
                 var diskSysPrompt = ReadBoundedText(Path.Combine(fullDir, "system_prompt.md"), 750);
                 var embeddedSysPrompt = ReadEmbeddedDefaultProfileText(manifest.GameId, "system_prompt.md", 750);
@@ -560,14 +553,17 @@ public sealed partial class ConfigRepository
         return result;
     }
 
-    public static GameProfile CreateUniversalProfile(string profilesRoot, bool isEn = false)
+    public static GameProfile CreateUniversalProfile(
+        string profilesRoot,
+        bool isEn = false,
+        AI.ICoachSafetyPipeline? safetyPipeline = null)
     {
         var universalDir = Path.Combine(profilesRoot, "universal");
         // Check universal/custom_rules.md first, and legacy profiles/custom_rules.md fallback
         var rules = ReadBoundedText(Path.Combine(universalDir, "custom_rules.md"), MaxCustomRulesChars);
         if (string.IsNullOrEmpty(rules))
             rules = ReadBoundedText(Path.Combine(profilesRoot, "custom_rules.md"), MaxCustomRulesChars);
-        rules = AI.CoachContentGuard.SanitizeInstructionMarkdown(rules);
+        rules = (safetyPipeline ?? AI.CoachContentGuard.DefaultPipeline).SanitizeInstructionMarkdown(rules);
 
         return new GameProfile
         {
@@ -633,7 +629,7 @@ public sealed partial class ConfigRepository
         var trimmed = (rulesText ?? string.Empty).Trim();
         if (trimmed.Length > MaxCustomRulesChars)
             throw new ArgumentException($"Las reglas personalizadas no pueden superar {MaxCustomRulesChars} caracteres.");
-        if (AI.CoachContentGuard.ContainsUnsafeInstruction(trimmed))
+        if (_safety.ContainsUnsafeInstruction(trimmed))
             throw new ArgumentException("Las reglas no pueden incluir insultos, temas sexuales/ilegales ni pedidos fuera del coaching gamer.");
 
         var (fullProfileDir, fullTarget) = ValidateProfileSubpath(profile, "custom_rules.md");
@@ -1059,7 +1055,7 @@ public sealed partial class ConfigRepository
         if (File.Exists(fullTarget) && (File.GetAttributes(fullTarget) & FileAttributes.ReparsePoint) != 0)
             throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en archivos config.");
 
-        var cleaned = SecretRedactor.Redact(AI.CoachContentGuard.SanitizeInstructionMarkdown((rawContent ?? string.Empty).Trim()));
+        var cleaned = SecretRedactor.Redact(_safety.SanitizeInstructionMarkdown((rawContent ?? string.Empty).Trim()));
         if (cleaned.Length > MaxMarkdownProfileChars)
             cleaned = cleaned[..MaxMarkdownProfileChars];
         AtomicWrite(fullTarget, string.IsNullOrEmpty(cleaned) ? string.Empty : cleaned + Environment.NewLine);
@@ -1121,25 +1117,8 @@ public sealed partial class ConfigRepository
     private static string ExtractCompactTacticalSummary(string systemPromptPath, string fallbackNotes) =>
         CompactTacticalSummaryText(ReadBoundedText(systemPromptPath, 750), fallbackNotes);
 
-    private static string ReadEmbeddedDefaultProfileText(string gameId, string fileName, int maxChars)
-    {
-        if (string.IsNullOrWhiteSpace(gameId))
-            return string.Empty;
-
-        var expected = $"HUDMind.DefaultProfiles/{gameId.Trim().ToLowerInvariant()}/{fileName}";
-        var asm = typeof(ConfigRepository).Assembly;
-        var match = asm.GetManifestResourceNames()
-            .FirstOrDefault(n => string.Equals(n.Replace('\\', '/'), expected, StringComparison.OrdinalIgnoreCase));
-        if (match is null)
-            return string.Empty;
-
-        using var stream = asm.GetManifestResourceStream(match);
-        if (stream is null)
-            return string.Empty;
-        using var reader = new StreamReader(stream, Encoding.UTF8);
-        var text = reader.ReadToEnd().Trim();
-        return text.Length <= maxChars ? text : text[..maxChars];
-    }
+    private static string ReadEmbeddedDefaultProfileText(string gameId, string fileName, int maxChars) =>
+        Security.ProfileVaultReader.ReadDefaultProfileText(gameId, fileName, maxChars);
 
     private static void BackupCorruptFile(string path)
     {

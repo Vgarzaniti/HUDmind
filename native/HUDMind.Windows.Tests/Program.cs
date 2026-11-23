@@ -426,6 +426,20 @@ await RunTest("W12. Win32StreamingPcmPlayer slices >400ms buffers smoothly & San
     return Task.CompletedTask;
 });
 
+// W13. Runtime hardening integrity probe (never blocks smoke-startup or non-single-file test runner)
+await RunTest("W13. RuntimeHardeningGuard & encrypted ProfileVault integrity check safely allow tests and smoke mode", () =>
+{
+    Assert(!HUDMind.Windows.Security.RuntimeHardeningGuard.IsExternalDebuggerAttached(isSmokeMode: true),
+        "Smoke startup mode must always bypass debugger integrity block cleanly");
+    Assert(!HUDMind.Windows.Security.RuntimeHardeningGuard.IsExternalDebuggerAttached(isSmokeMode: false),
+        "Non-single-file dev/test assemblies must remain debuggable cleanly");
+
+    var entries = HUDMind.Core.Security.ProfileVaultReader.GetDefaultProfileEntries();
+    Assert(entries.Count >= 21 && HUDMind.Core.Security.ProfileVaultReader.IsVaultIntegrityHealthy,
+        $"Encrypted vault must unseal >=21 profile assets cleanly (got {entries.Count})");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

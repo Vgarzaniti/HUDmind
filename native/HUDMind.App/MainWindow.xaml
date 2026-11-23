@@ -54,7 +54,7 @@
                     <DockPanel>
                         <Button x:Name="BtnVersionCheck"
                                 DockPanel.Dock="Left"
-                                Content="v1.1.1"
+                                Content="v1.2.0"
                                 FontSize="10.5"
                                 Padding="9,4"
                                 Background="#09121C"

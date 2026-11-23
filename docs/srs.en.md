@@ -3,7 +3,7 @@
 # Software Requirements Specification (SRS) — ISO/IEC/IEEE 29148
 
 **Project:** HUDMind Native (.NET 9) — Real-Time Tactical Video Game Coach  
-**Version:** 1.1.1 (`HUDMind.Native`)  
+**Version:** 1.2.0 (`HUDMind.Native`)  
 **Reference Standards:** ISO/IEC/IEEE 29148 (Requirements Engineering), ISO/IEC 25010 (Software Product Quality), ISO/IEC 27001 (Information Security), ISO/IEC/IEEE 42010 (Architecture Description), ISO/IEC/IEEE 29119 (Software Testing).
 
 ---
@@ -63,3 +63,4 @@
 | **REQ-SEC-04** | Strict Riot loopback TLS & GSI HTTP bounds. | `LeagueLiveClientSensor` enforces `127.0.0.1:2999`, validity window, RSA>=2048/ECDSA>=256, loopback SAN, `Riot Games` identity, and active process. `LoopbackGsiService` bounds headers (`8KB`), body (`64KB`, `413`), rejects `chunked` (`400`), and caps concurrency. |
 | **REQ-SEC-05** | Prompt-injection sanitization in OCR/telemetry. | `CoachingPersonaBuilder.SanitizeField` strips protocol delimiters (`\|`), XML/prompt tags (`<...>`) and truncates length before injecting context into prompts. |
 | **REQ-SEC-06** | Update integrity & trusted download origin. | `GitHubReleaseUpdateService` allows HTTPS only to `github.com` / `.githubusercontent.com` initially and across up to 5 redirects, bounds reads (`512KB` API / `250MB` binary), and verifies `SHA-256` against `SHA256SUMS.txt`, deleting mismatched files. |
+| **REQ-SEC-07** | Extensible safety chain & anti-extraction binary hardening. | `ICoachSafetyPipeline` / `CoachContentGuard` filter profanity and off-topic/NSFW prompts in real time; `HUDMind.Packer` seals default profiles and sensitive rules into `HUDMind.Vault.bin` (Brotli + AES-256-GCM) and `release.yml` packages hardened `ReadyToRun` single-file binaries guarded by `RuntimeHardeningGuard`. |

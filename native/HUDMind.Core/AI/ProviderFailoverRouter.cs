@@ -21,6 +21,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
     private readonly List<IAIProvider> _providers;
     private readonly ConcurrentDictionary<string, CircuitState> _circuits = new();
     private readonly ITextOnlySensorService? _textOnlySensor;
+    private readonly ICoachSafetyPipeline _safety;
     private readonly double _hedgeDelaySeconds;
     private readonly double _freshnessDeadlineMs;
     private readonly Action<string>? _onLog;
@@ -47,12 +48,14 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         double hedgeDelaySeconds = 1.45,
         double freshnessDeadlineMs = 3400.0,
         Action<string>? onLog = null,
-        ITextOnlySensorService? textOnlySensor = null)
+        ITextOnlySensorService? textOnlySensor = null,
+        ICoachSafetyPipeline? safetyPipeline = null)
     {
         _hedgeDelaySeconds = Math.Max(0.05, hedgeDelaySeconds);
         _freshnessDeadlineMs = freshnessDeadlineMs;
         _onLog = onLog;
         _textOnlySensor = textOnlySensor;
+        _safety = safetyPipeline ?? CoachContentGuard.DefaultPipeline;
         var create = factory ?? CreateDefaultAdapter;
 
         // Include all ready providers so pure-text Chat / Post-Match Review always route cleanly;
@@ -164,7 +167,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
             if (hedged.Handled)
             {
                 bool isEn = CoachingPersonaBuilder.IsEnglish(config);
-                return (CoachContentGuard.SanitizeCoachResponse(hedged.Response, isEn), hedged.LatencyMs, hedged.Model);
+                return (_safety.SanitizeCoachResponse(hedged.Response, isEn), hedged.LatencyMs, hedged.Model);
             }
         }
 
@@ -228,7 +231,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
                 RecordSuccess(prov.Account.Id);
                 Volatile.Write(ref _activeIndex, idx);
                 bool isEn = CoachingPersonaBuilder.IsEnglish(config);
-                var safeResp = CoachContentGuard.SanitizeCoachResponse(
+                var safeResp = _safety.SanitizeCoachResponse(
                     ApplyFreshnessDeadline(res.Response, ms, forceAdvice, prov.Account.Model),
                     isEn);
                 return (safeResp, ms, prov.Account.Model);
@@ -271,7 +274,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         CancellationToken ct = default)
     {
         bool isEnText = CoachingPersonaBuilder.IsEnglish(config, preferTextLang: true);
-        var inputGuard = CoachContentGuard.EvaluateUserInput(userQuestion, isEnText);
+        var inputGuard = _safety.EvaluateUserInput(userQuestion, isEnText);
         if (!inputGuard.IsAllowed)
             return (inputGuard.SafeRedirectReply, 0, "safety-guard");
 
@@ -321,7 +324,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
             {
                 RecordSuccess(prov.Account.Id);
                 Volatile.Write(ref _activeIndex, idx);
-                var outGuard = CoachContentGuard.InspectAndCleanModelOutput(res.Response.OverlayText.Trim(), isEnText);
+                var outGuard = _safety.InspectAndCleanModelOutput(res.Response.OverlayText.Trim(), isEnText);
                 return (outGuard.IsSafe ? outGuard.CleanText : outGuard.FallbackReplacement, sw.Elapsed.TotalMilliseconds, prov.Account.Model);
             }
 
@@ -371,7 +374,7 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
             {
                 RecordSuccess(prov.Account.Id);
                 Volatile.Write(ref _activeIndex, idx);
-                var outGuard = CoachContentGuard.InspectAndCleanModelOutput(res.Response.OverlayText.Trim(), isEnText);
+                var outGuard = _safety.InspectAndCleanModelOutput(res.Response.OverlayText.Trim(), isEnText);
                 return (outGuard.IsSafe ? outGuard.CleanText : outGuard.FallbackReplacement, sw.Elapsed.TotalMilliseconds, prov.Account.Model);
             }
 

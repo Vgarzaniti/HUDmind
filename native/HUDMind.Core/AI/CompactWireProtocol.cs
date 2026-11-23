@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using HUDMind.Core.Models;
+using HUDMind.Core.Security;
 
 namespace HUDMind.Core.AI;
 
@@ -36,15 +37,19 @@ public static class CompactWireProtocol
         var modeNote = BuildModeNote(config.CoachMode, isEn);
 
         var sb = new StringBuilder(840);
+        var coreRules = ProfileVaultReader.ReadProtectedString(
+            isEn ? "realtime_rules_en" : "realtime_rules_es",
+            isEn
+                ? "1) Use verified pixels only. 2) Stay silent on menus. 3) Coach 1-3s predictively."
+                : "1) Basate solo en imagen clara. 2) Silencio en menús. 3) Coacheá 1-3s adelante.");
+
         if (isEn)
         {
             sb.Append("You are a calm, sharp human eSports coach watching ").Append(gameLabel).Append(" LIVE on Discord (100% generic across any game).\n");
             sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
             sb.Append(modeNote).Append('\n');
             sb.Append("CRITICAL RULES:\n");
-            sb.Append("1) VERIFIED PIXELS ONLY: Inspect ONLY what is clearly visible (timer, boost/HP/ammo, car/ball trajectory, teammates, enemies). If blurred, hidden, or ambiguous, output NONE or admit uncertainty—NEVER guess or fabricate.\n");
-            sb.Append("2) SILENCE OVER NONSENSE: If menu, loading screen, goal replay, pause, desktop, or nothing clearly useful -> reply NONE.\n");
-            sb.Append("3) PREDICTIVE (1-3s AHEAD): If a 2-panel/4-panel sequence `[1..-Xs] -> [NOW]` is shown, compare frames for direction & speed. Call what to do BEFORE the play breaks (avoid narrating already-finished errors). Give 1 natural rank-calibrated sentence (8-15 words).\n");
+            sb.Append(coreRules).Append('\n');
             sb.Append("4) ").Append(CoachContentGuard.BuildImmutableSafetyBlock(isEn: true, forLiveAudio: false)).Append('\n');
         }
         else
@@ -53,9 +58,7 @@ public static class CompactWireProtocol
             sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
             sb.Append(modeNote).Append('\n');
             sb.Append("REGLAS CRÍTICAS:\n");
-            sb.Append("1) VER ANTES DE OPINAR: Basate ÚNICAMENTE en lo que se distingue nítido en la imagen (marcador, reloj, saque, boost/vida/balas, trayectoria auto-pelota, rivales). Si algo está borroso o no se llega a ver, usá NONE—JAMÁS inventes.\n");
-            sb.Append("2) SILENCIO ANTES QUE HUMO: Si es menú, pantalla de carga, replay de gol, pausa, escritorio o no hay peligro/oportunidad real -> usá NONE.\n");
-            sb.Append("3) COACHING PREDICTIVO (1-3s ADELANTE): Si ves secuencia `[1..-Xs] -> [AHORA]`, compará cuadros para leer velocidad y dirección. Avisá lo que hay que hacer ANTES de que pase la jugada (no narres errores ya terminados) en 1 oración corta y natural (8 a 15 palabras).\n");
+            sb.Append(coreRules).Append('\n');
             sb.Append("4) ").Append(CoachContentGuard.BuildImmutableSafetyBlock(isEn: false, forLiveAudio: false)).Append('\n');
         }
 
@@ -191,22 +194,26 @@ public static class CompactWireProtocol
             ? (isEn ? "the video game currently on screen" : "el videojuego en pantalla")
             : SanitizeInline(profile.Manifest.DisplayName, 48);
 
+        var chatRules = ProfileVaultReader.ReadProtectedString(
+            isEn ? "chat_rules_en" : "chat_rules_es",
+            isEn
+                ? "Reply concisely based only on clear visible frames. Plain text only."
+                : "Respondé corto basándote solo en lo visible en pantalla. Texto plano.");
+
         var sb = new StringBuilder(760);
         if (isEn)
         {
             sb.Append("You are a calm, sharp human eSports coach watching ").Append(gameLabel).Append(" live.\n");
             sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
             sb.Append(CoachContentGuard.BuildImmutableSafetyBlock(isEn: true, forLiveAudio: false)).Append('\n');
-            sb.Append("If multiple chronological HD images or a labeled strip `[1:-Xs] ... -> [NOW]`/`[AHORA]` are attached, read the full motion clip in chronological order before judging fast mechanics (e.g. flip reset 4-wheel contact, flicks, peeks). ");
-            sb.Append("Reply directly in 1-2 honest, concise sentences based ONLY on what is clearly visible—if contact or a detail isn't clearly visible in the frames, say so honestly instead of guessing yes. Plain text only, no markdown or pipes.\n");
+            sb.Append(chatRules).Append('\n');
         }
         else
         {
             sb.Append("Sos un coach humano de eSports mirando ").Append(gameLabel).Append(" en vivo.\n");
             sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
             sb.Append(CoachContentGuard.BuildImmutableSafetyBlock(isEn: false, forLiveAudio: false)).Append('\n');
-            sb.Append("Si recibís múltiples imágenes HD o una tira cronológica `[1:-Xs] ... -> [AHORA]`, seguí la secuencia completa como un clip de video cuadro por cuadro antes de juzgar mecánicas rápidas (ej. si las 4 ruedas tocaron debajo de la pelota en un flip reset, un flick o un peek). ");
-            sb.Append("Respondé en 1 o 2 oraciones claras y 100% honestas basándote SOLO en lo que se ve nítido: si algún contacto no se distingue en los cuadros, admitilo sin inventar ni confirmar por complacer. Solo texto plano, sin markdown ni barras '|'.\n");
+            sb.Append(chatRules).Append('\n');
         }
 
         var topicKnowledge = GameKnowledgeCompiler.CompileForQuestion(profile, userQuestion, maxChars: 760);

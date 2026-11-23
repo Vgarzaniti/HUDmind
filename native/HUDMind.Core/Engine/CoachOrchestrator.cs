@@ -14,7 +14,7 @@ namespace HUDMind.Core.Engine;
 public sealed class CoachOrchestrator : ICoachEngine
 {
     private readonly UserConfig _config;
-    private readonly List<GameProfile> _profiles;
+    private readonly int _profilesCount;
     private readonly ProviderFailoverRouter _router;
     private readonly IForegroundWindowDetector _windowDetector;
     private readonly IScreenCaptureService _capture;
@@ -24,18 +24,13 @@ public sealed class CoachOrchestrator : ICoachEngine
     private readonly Action<CoachRuntimeStats>? _onStats;
     private readonly Action<bool>? _onPauseChanged;
     private readonly ITextOnlySensorService? _telemetrySensor;
-    private readonly Action<MatchSessionSnapshot>? _onMatchCompleted;
-    private readonly Func<GameProfile, AssembledCoachContext>? _resolveContextForProfile;
     private readonly ITemporalStoryboardComposer? _storyboardComposer;
+    private readonly ICoachSafetyPipeline _safety;
+    private readonly MatchSessionCoordinator _session;
     private readonly bool _testMode;
     private readonly bool _disposeVoice;
-    private readonly string? _forcedGameId;
 
     private readonly InterventionStateMachine _stateMachine = new();
-    private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
-    private readonly RecentFrameRingBuffer _frameRingBuffer = new(maxFrames: 10, minSpacingMs: 125.0);
-    private readonly TacticalSignalTracker _tacticalTracker = new();
-    private readonly BlackScreenDiagnostic _blackScreenDiagnostic = new();
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
     private readonly object _hashLock = new();
@@ -49,8 +44,6 @@ public sealed class CoachOrchestrator : ICoachEngine
     private Task? _producerTask;
     private Task? _consumerTask;
 
-    private volatile GameProfile? _activeProfile;
-    private long _profileEpoch;
     private ulong? _lastAcceptedHash;
     private ulong? _lastRingHash;
     private volatile bool _userPaused;
@@ -72,7 +65,7 @@ public sealed class CoachOrchestrator : ICoachEngine
     public string EngineBadge => ".NET 9 · 0% GPU · HTTP/2 MULTI-IA";
     public string ActiveChannelStatus => $"Corriendo · {_router.ActiveProviderLabel}";
     public string ActiveVoiceDisplay => _voice.EngineName;
-    public string ActiveGameId => _activeProfile?.Manifest.GameId ?? string.Empty;
+    public string ActiveGameId => _session.ActiveProfile?.Manifest.GameId ?? string.Empty;
 
     public void RefreshPersona(string? reason = null) => WakeNow();
 
@@ -105,25 +98,34 @@ public sealed class CoachOrchestrator : ICoachEngine
         ITextOnlySensorService? telemetrySensor = null,
         Action<MatchSessionSnapshot>? onMatchCompleted = null,
         Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null,
-        ITemporalStoryboardComposer? storyboardComposer = null)
+        ITemporalStoryboardComposer? storyboardComposer = null,
+        ICoachSafetyPipeline? safetyPipeline = null)
     {
         _config = config;
-        _profiles = profiles;
+        _profilesCount = profiles.Count;
         _router = router;
         _windowDetector = windowDetector;
         _capture = capture;
         _voice = voice;
         _overlay = overlay;
         _testMode = testMode;
-        _forcedGameId = forcedGameId;
         _onLog = onLog;
         _onStats = onStats;
         _onPauseChanged = onPauseChanged;
         _disposeVoice = disposeVoice;
         _telemetrySensor = telemetrySensor;
-        _onMatchCompleted = onMatchCompleted;
-        _resolveContextForProfile = resolveContextForProfile;
         _storyboardComposer = storyboardComposer;
+        _safety = safetyPipeline ?? CoachContentGuard.DefaultPipeline;
+        _session = new MatchSessionCoordinator(
+            profiles,
+            windowDetector,
+            capture,
+            overlay,
+            testMode,
+            forcedGameId,
+            onLog,
+            onMatchCompleted,
+            resolveContextForProfile);
     }
 
     public async Task StartAsync()
@@ -141,10 +143,6 @@ public sealed class CoachOrchestrator : ICoachEngine
             _config.RuntimeTiltRisk = false;
             Interlocked.Exchange(ref _forceAnalysisPending, 0);
             _stateMachine.Reset();
-            _memory.Clear(clearMatchLog: true);
-            _frameRingBuffer.Clear();
-            _tacticalTracker.Reset();
-            _blackScreenDiagnostic.Reset();
             Volatile.Write(ref _latestDeterministicFact, string.Empty);
             SetLastHash(null);
             _lastRingHash = null;
@@ -175,22 +173,19 @@ public sealed class CoachOrchestrator : ICoachEngine
                     ? $"Solo voz coach ({_voice.EngineName})"
                     : $"Chat escrito + Voz ({_voice.EngineName})";
 
+            var initialProfile = _session.InitializeOnStart(_config, predetectInNonTestMode: false);
             if (_testMode)
             {
-                _activeProfile = ResolveForcedOrDefaultProfile();
-                if (_activeProfile is not null)
+                if (initialProfile is not null)
                 {
-                    if (_resolveContextForProfile is not null)
-                        CoachContextAssembler.ApplyToConfig(_config, _resolveContextForProfile(_activeProfile));
-                    _onLog?.Invoke($"[TEST-MODE] Perfil activo: {_activeProfile.Manifest.DisplayName} | Comunicación: {commLabel}");
+                    _onLog?.Invoke($"[TEST-MODE] Perfil activo: {initialProfile.Manifest.DisplayName} | Comunicación: {commLabel}");
                     if (_config.EnableOverlay)
-                        _overlay.ShowCallout("Coach Nativo .NET 9 ACTIVO — observando", UrgencyLevel.Low, _activeProfile.Manifest.DisplayName, 3.5);
+                        _overlay.ShowCallout("Coach Nativo .NET 9 ACTIVO — observando", UrgencyLevel.Low, initialProfile.Manifest.DisplayName, 3.5);
                 }
             }
             else
             {
-                _activeProfile = null;
-                _onLog?.Invoke($"[AUTO-DETECT] Esperando juego registrado ({_profiles.Count} perfiles) | Comunicación: {commLabel}");
+                _onLog?.Invoke($"[AUTO-DETECT] Esperando juego registrado ({_profilesCount} perfiles) | Comunicación: {commLabel}");
             }
 
             var channel = Channel.CreateBounded<CapturedFrameData>(new BoundedChannelOptions(1)
@@ -210,10 +205,6 @@ public sealed class CoachOrchestrator : ICoachEngine
             _lifecycleLock.Release();
         }
     }
-
-    private GameProfile? ResolveForcedOrDefaultProfile() =>
-        _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, _forcedGameId, StringComparison.OrdinalIgnoreCase))
-        ?? _profiles.FirstOrDefault();
 
     public void SetCommunicationMode(string mode)
     {
@@ -250,15 +241,15 @@ public sealed class CoachOrchestrator : ICoachEngine
             return false;
         }
 
-        var profile = _activeProfile ?? ResolveForcedOrDefaultProfile();
+        var profile = _session.ActiveProfile ?? _session.ResolveForcedOrDefaultProfile();
         if (profile is null)
             return false;
 
-        long chatEpoch = Volatile.Read(ref _profileEpoch);
+        long chatEpoch = _session.CurrentEpoch;
         _onLog?.Invoke($"💬 Vos: \"{msg}\"");
 
         bool isEnMsg = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
-        var inputGuard = CoachContentGuard.EvaluateUserInput(msg, isEnMsg);
+        var inputGuard = _safety.EvaluateUserInput(msg, isEnMsg);
         if (!inputGuard.IsAllowed)
         {
             if (_config.EnableOverlay)
@@ -305,14 +296,14 @@ public sealed class CoachOrchestrator : ICoachEngine
                         frameId: 0, lastAcceptedHash: null, phashThreshold: 0, isForced: true);
 
                     bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
-                    var clip = _frameRingBuffer.BuildVisualClipPayload(
+                    var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
                         _storyboardComposer,
                         frame,
                         maxFrames: 6,
                         maxAgeSeconds: 2.5,
                         jpegQuality: Math.Max(q, 84),
                         isEn: isEn);
-                    var timelineText = _memory.FormatVisualTimeline(isEn: isEn);
+                    var timelineText = _session.Memory.FormatVisualTimeline(isEn: isEn);
                     if (clip.PanelCount >= 2 && !string.IsNullOrWhiteSpace(clip.SequenceNote))
                     {
                         timelineText = string.IsNullOrWhiteSpace(timelineText)
@@ -324,9 +315,9 @@ public sealed class CoachOrchestrator : ICoachEngine
                         msg,
                         profile,
                         _config,
-                        _memory.FormatCompactHistory(),
+                        _session.Memory.FormatCompactHistory(),
                         timelineText,
-                        _memory.FormatChatHistory(isEn: isEn),
+                        _session.Memory.FormatChatHistory(isEn: isEn),
                         linkedCts.Token);
 
                     if (string.IsNullOrWhiteSpace(reply))
@@ -335,14 +326,14 @@ public sealed class CoachOrchestrator : ICoachEngine
                         return false;
                     }
 
-                    if (Volatile.Read(ref _profileEpoch) != chatEpoch)
+                    if (_session.CurrentEpoch != chatEpoch)
                         return false;
 
                     Volatile.Write(ref _lastAiMs, aiMs);
                     Interlocked.Increment(ref _interventions);
-                    _memory.RecordChatTurn(msg, reply);
-                    _memory.RecordObservation("CHAT", msg);
-                    _memory.RecordMatchEvent(profile.Manifest.GameId, profile.Manifest.DisplayName, "CHAT", msg, reply);
+                    _session.Memory.RecordChatTurn(msg, reply);
+                    _session.Memory.RecordObservation("CHAT", msg);
+                    _session.Memory.RecordMatchEvent(profile.Manifest.GameId, profile.Manifest.DisplayName, "CHAT", msg, reply);
 
                     if (_config.EnableOverlay)
                         _overlay.ShowCallout(reply, UrgencyLevel.Medium, profile.Manifest.DisplayName, _config.OverlayDurationSeconds);
@@ -386,7 +377,7 @@ public sealed class CoachOrchestrator : ICoachEngine
     public void TogglePause()
     {
         _userPaused = !_userPaused;
-        var title = _activeProfile?.Manifest.DisplayName ?? "HUDMind";
+        var title = _session.ActiveProfile?.Manifest.DisplayName ?? "HUDMind";
         _onPauseChanged?.Invoke(_userPaused);
         if (_userPaused)
         {
@@ -407,10 +398,7 @@ public sealed class CoachOrchestrator : ICoachEngine
 
     public void TriggerOnDemandAnalysis()
     {
-        if (_activeProfile is null && _profiles.Count > 0 && _testMode)
-            _activeProfile = ResolveForcedOrDefaultProfile();
-
-        var active = _activeProfile;
+        var active = _session.ActiveProfile ?? (_testMode ? _session.ResolveForcedOrDefaultProfile() : null);
         if (active is null)
         {
             _onLog?.Invoke($"{_config.HotkeyAnalyzeNow} ignorado: todavía no hay un juego activo detectado.");
@@ -496,39 +484,24 @@ public sealed class CoachOrchestrator : ICoachEngine
 
                 if (!_testMode)
                 {
-                    var fg = _windowDetector.GetForegroundExecutable();
-                    var matched = GameProfile.MatchForegroundProfile(_profiles, fg, _forcedGameId);
-                    if (matched is not null && !ReferenceEquals(matched, _activeProfile))
-                    {
-                        if (_activeProfile is not null)
-                            FlushMatchSnapshot(resetMatchLog: true);
-
-                        Interlocked.Increment(ref _profileEpoch);
-                        _config.RuntimeTiltRisk = false;
-                        SetLastHash(null);
-                        _lastRingHash = null;
-                        _stateMachine.Reset();
-                        _memory.Clear(clearMatchLog: true);
-                        _frameRingBuffer.Clear();
-                        _tacticalTracker.Reset(matched.Manifest.GameId);
-                        _blackScreenDiagnostic.Reset();
-                        Volatile.Write(ref _latestDeterministicFact, string.Empty);
-                        if (_resolveContextForProfile is not null)
-                            CoachContextAssembler.ApplyToConfig(_config, _resolveContextForProfile(matched));
-                        _activeProfile = matched;
-                        _onLog?.Invoke($"Juego detectado automáticamente: {matched.Manifest.DisplayName} ({fg})");
-                        if (_config.EnableOverlay)
-                            _overlay.ShowCallout("Coach Nativo ACTIVO — observando", UrgencyLevel.Low, matched.Manifest.DisplayName, 3.5);
-                        EmitStats();
-                    }
-                    else if (matched is null)
+                    var switchOutcome = _session.SyncForegroundProfile(_config, "Coach Nativo ACTIVO — observando");
+                    if (!switchOutcome.GameInForeground)
                     {
                         await WaitInterruptibleAsync(TimeSpan.FromMilliseconds(750), ct);
                         continue;
                     }
+
+                    if (switchOutcome.Switched)
+                    {
+                        SetLastHash(null);
+                        _lastRingHash = null;
+                        _stateMachine.Reset();
+                        Volatile.Write(ref _latestDeterministicFact, string.Empty);
+                        EmitStats();
+                    }
                 }
 
-                var profile = _activeProfile;
+                var profile = _session.ActiveProfile;
                 if (profile is null)
                 {
                     await WaitInterruptibleAsync(TimeSpan.FromMilliseconds(500), ct);
@@ -539,14 +512,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                 string rawTelemetry = _telemetrySensor is not null
                     ? await _telemetrySensor.ReadTelemetryAsync(profile, ct)
                     : string.Empty;
-                var tactical = TacticalSignalEvaluator.Evaluate(rawTelemetry, profile, _tacticalTracker, isEnEval);
-                _config.RuntimeTiltRisk = tactical.IsTiltRisk;
+                var tactical = _session.EvaluateTacticalSignal(rawTelemetry, profile, _config, isEnEval);
                 Volatile.Write(ref _latestDeterministicFact, tactical.DeterministicFact);
-                if (!string.IsNullOrWhiteSpace(tactical.DeterministicFact))
-                    _memory.UpdateMatchAnchor(tactical.DeterministicFact);
-
-                if (tactical.MatchEnded)
-                    FlushMatchSnapshot(resetMatchLog: true);
 
                 var (w, h, q) = ResolveTargetResolution();
                 var region = _testMode ? null : _windowDetector.GetForegroundClientRect();
@@ -594,11 +561,11 @@ public sealed class CoachOrchestrator : ICoachEngine
                                 _lastRingHash,
                                 Math.Min(profile.Manifest.PhashThreshold, 4),
                                 isForced: false);
-                            _blackScreenDiagnostic.Observe(_capture, _activeProfile, _testMode, _onLog, _overlay, _config.EnableOverlay);
+                            _session.ObserveCaptureHealth(_config);
                             if (!ringSkipped && ringFrame is not null)
                             {
                                 _lastRingHash = ringFrame.PerceptualHash;
-                                _frameRingBuffer.Record(ringFrame);
+                                _session.FrameRingBuffer.Record(ringFrame);
                             }
 
                             var boundedWait = waitRem > TimeSpan.FromMilliseconds(135)
@@ -621,7 +588,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                     profile.Manifest.PhashThreshold,
                     isForced);
 
-                _blackScreenDiagnostic.Observe(_capture, _activeProfile, _testMode, _onLog, _overlay, _config.EnableOverlay);
+                _session.ObserveCaptureHealth(_config);
 
                 if (skippedByHash)
                 {
@@ -630,7 +597,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                 else if (frame is not null)
                 {
                     _lastRingHash = frame.PerceptualHash;
-                    _frameRingBuffer.Record(frame, forceReplaceTailIfTooClose: isForced);
+                    _session.FrameRingBuffer.Record(frame, forceReplaceTailIfTooClose: isForced);
                     Interlocked.Increment(ref _framesCaptured);
                     Volatile.Write(ref _lastCaptureMs, frame.CaptureMs + frame.EncodeMs);
                     channel.Writer.TryWrite(frame);
@@ -655,8 +622,8 @@ public sealed class CoachOrchestrator : ICoachEngine
     {
         await foreach (var frame in channel.Reader.ReadAllAsync(ct))
         {
-            var profile = _activeProfile;
-            long startEpoch = Volatile.Read(ref _profileEpoch);
+            var profile = _session.ActiveProfile;
+            long startEpoch = _session.CurrentEpoch;
             if (profile is null || _userPaused)
                 continue;
 
@@ -678,7 +645,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                 Interlocked.Increment(ref _aiCalls);
                 bool isEn = CoachingPersonaBuilder.IsEnglish(_config);
                 var (_, _, cfgQuality) = ResolveTargetResolution();
-                var clip = _frameRingBuffer.BuildVisualClipPayload(
+                var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
                     _storyboardComposer,
                     frame,
                     maxFrames: forceNow ? 6 : 3,
@@ -686,8 +653,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                     jpegQuality: Math.Max(cfgQuality, 82),
                     isEn: isEn);
 
-                var history = _memory.FormatCompactHistory();
-                var timeline = _memory.FormatVisualTimeline(isEn: isEn);
+                var history = _session.Memory.FormatCompactHistory();
+                var timeline = _session.Memory.FormatVisualTimeline(isEn: isEn);
                 var fact = Volatile.Read(ref _latestDeterministicFact);
                 var contextParts = new List<string>(3);
                 if (clip.PanelCount >= 2 && !string.IsNullOrWhiteSpace(clip.SequenceNote))
@@ -706,7 +673,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                     ct);
                 Volatile.Write(ref _lastAiMs, aiMs);
 
-                if (Volatile.Read(ref _profileEpoch) != startEpoch || _userPaused)
+                if (_session.CurrentEpoch != startEpoch || _userPaused)
                 {
                     epochValid = false;
                     continue;
@@ -722,12 +689,12 @@ public sealed class CoachOrchestrator : ICoachEngine
                         phase = ctx[1..closeIdx];
                         summary = ctx[(closeIdx + 1)..].Trim();
                     }
-                    _memory.RecordObservation(phase, summary);
+                    _session.Memory.RecordObservation(phase, summary);
                 }
 
                 if (resp is { ShouldIntervene: true } && !string.IsNullOrWhiteSpace(resp.OverlayText))
                 {
-                    if (!forceNow && _memory.IsRepetitive(resp))
+                    if (!forceNow && _session.Memory.IsRepetitive(resp))
                     {
                         _onLog?.Invoke($"Consejo repetitivo omitido ({aiMs:F0}ms) [{model}]");
                     }
@@ -735,8 +702,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                     {
                         delivered = true;
                         Interlocked.Increment(ref _interventions);
-                        _memory.Record(resp);
-                        _memory.RecordMatchEvent(profile.Manifest.GameId, profile.Manifest.DisplayName, "PLAY", resp.MatchContext, resp.OverlayText);
+                        _session.Memory.Record(resp);
+                        _session.Memory.RecordMatchEvent(profile.Manifest.GameId, profile.Manifest.DisplayName, "PLAY", resp.MatchContext, resp.OverlayText);
 
                         if (_config.EnableOverlay)
                             _overlay.ShowCallout(resp.OverlayText, resp.Urgency, profile.Manifest.DisplayName, _config.OverlayDurationSeconds);
@@ -805,28 +772,16 @@ public sealed class CoachOrchestrator : ICoachEngine
             Volatile.Read(ref _lastAiMs),
             Volatile.Read(ref _lastVoiceMs),
             _router.ActiveProviderLabel,
-            _activeProfile?.Manifest.DisplayName ?? "(esperando juego)",
+            _session.ActiveProfile?.Manifest.DisplayName ?? "(esperando juego)",
             _userPaused
         ));
     }
 
     public (string GameName, string Digest, int Count) GetMatchSessionDigest(bool isEn = false) =>
-        _memory.BuildMatchReviewDigest(isEn: isEn);
+        _session.GetMatchSessionDigest(isEn);
 
     public MatchSessionSnapshot? CaptureMatchSnapshot(bool isEn = false) =>
-        _memory.BuildSessionSnapshot(isEn);
-
-    private void FlushMatchSnapshot(bool resetMatchLog)
-    {
-        bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
-        var snap = _memory.BuildSessionSnapshot(isEn);
-        if (snap is not null && snap.InterventionsCount > 0)
-        {
-            try { _onMatchCompleted?.Invoke(snap); } catch { }
-        }
-        if (resetMatchLog)
-            _memory.Clear(clearMatchLog: true);
-    }
+        _session.CaptureMatchSnapshot(isEn);
 
     public async Task StopAsync()
     {
@@ -850,8 +805,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                 try { await Task.WhenAll(tasks); } catch { /* clean shutdown */ }
             }
 
-            FlushMatchSnapshot(resetMatchLog: false);
-            _frameRingBuffer.Clear();
+            _session.FlushMatchSnapshot(resetMatchLog: false, _config);
+            _session.OnStop();
             _producerTask = null;
             _consumerTask = null;
             _frameChannel = null;
