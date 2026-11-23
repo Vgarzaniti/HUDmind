@@ -78,6 +78,7 @@ You can also launch directly via [HUDMind.bat](HUDMind.bat).
 | Document | Español (`.es.md`) | English (`.en.md`) |
 | :--- | :--- | :--- |
 | Main Guide (README) | [README.es.md](README.es.md) | [README.en.md](README.en.md) |
+| AI Agent Context (`AGENTS`/`CLAUDE`/`GEMINI`) | [AGENTS.es.md](AGENTS.es.md) | [AGENTS.en.md](AGENTS.en.md) |
 | Pull Request & Contribution Guide | [docs/pull_request_guide.es.md](docs/pull_request_guide.es.md) · [CONTRIBUTING.es.md](CONTRIBUTING.es.md) | [docs/pull_request_guide.en.md](docs/pull_request_guide.en.md) · [CONTRIBUTING.en.md](CONTRIBUTING.en.md) |
 | Versioning `vN.N.N` & Release Policy | [docs/versioning_and_releases.es.md](docs/versioning_and_releases.es.md) | [docs/versioning_and_releases.en.md](docs/versioning_and_releases.en.md) |
 | Technical Architecture (IEEE 42010) | [docs/architecture.es.md](docs/architecture.es.md) | [docs/architecture.en.md](docs/architecture.en.md) |
@@ -92,13 +93,16 @@ You can also launch directly via [HUDMind.bat](HUDMind.bat).
 
 ```text
 .
+├── .cursor/rules/                  # Automatic rules for Cursor AI
 ├── .github/
 │   ├── ISSUE_TEMPLATE/             # Bilingual Bug Report & Feature Request templates
 │   ├── PULL_REQUEST_TEMPLATE.md    # Mandatory PR checklist (type, CI checks, SemVer, security)
+│   ├── copilot-instructions.md     # Automatic instructions for GitHub Copilot
 │   ├── dependabot.yml              # Monthly GitHub Actions updates
 │   └── workflows/
 │       ├── ci.yml                  # .NET 9 CI (ubuntu-latest core + windows-latest build/tests/smoke)
 │       └── release.yml             # Automated Windows x64 Release (tags v*.*.* or manual + SHA256SUMS)
+├── AGENTS.md / CLAUDE.md / GEMINI.md # Instant multi-AI context (+ AGENTS.es.md / AGENTS.en.md)
 ├── .gitignore                      # Protects .env, config/*.json, custom_rules.md, logs/, bin/obj & dist/
 ├── HUDMind.bat                     # Windows launcher for the native app
 ├── native/

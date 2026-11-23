@@ -1,0 +1,13 @@
+---
+description: HUDMind Native (.NET 9) architecture, anti-cheat safety, security, testing, and PR workflow rules
+alwaysApply: true
+---
+
+Read `AGENTS.md` (and `AGENTS.en.md` / `AGENTS.es.md`) before making edits in this repository.
+
+- **0% GPU & Zero NuGet:** Keep `RenderMode.SoftwareOnly` in WPF and do not add external NuGet packages or GPU shaders.
+- **100% Passive / Anti-Cheat Safe:** Never inject DLLs, read/write game memory, or install `WH_KEYBOARD_LL` / `WH_MOUSE_LL` hooks.
+- **Cross-Platform Core:** Keep `native/HUDMind.Core` strictly `net9.0` (no Windows/WPF/WinForms dependencies).
+- **Security:** Preserve `BaseUrlSecurityValidator` (SSRF/HTTPS), `SecretRedactor`, `ConfigRepository` CWE-22/symlink checks, `CoachingPersonaBuilder.SanitizeField`, and `GitHubReleaseUpdateService` GitHub-only HTTPS redirect + SHA-256 checks.
+- **Protected Assets:** Do not edit `archive/legacy_python/`, do not rename `profiles/*/*.md`, and never stage `.env`, `config/*.json`, `profiles/*/custom_rules.md`, `logs/`, or `dist/`.
+- **Verification & PRs:** Never push directly to `main`. Work on a typed branch (`feat/`, `fix/`, `refactor/`, etc.), run `dotnet build native/HUDMind.sln -c Release`, `HUDMind.Tests`, `HUDMind.Windows.Tests`, and `--smoke-startup`, keep `.es.md` and `.en.md` docs synchronized, and follow `.github/PULL_REQUEST_TEMPLATE.md`.
