@@ -10,7 +10,7 @@ This file provides immediate architectural, security, testing, and workflow cont
   - `HUDMind.Core` (`net9.0` cross-platform): models, config/SSRF/redaction, embedded profiles, AI adapters/live backends, orchestrators, wire protocol, pipelines, and `GitHubReleaseUpdateService`.
   - `HUDMind.Windows` (`net9.0-windows10.0.19041.0`): GDI `StretchBlt` capture, Win32 foreground/hotkeys/PTT, WinMM streaming audio, WinRT TTS/OCR, passive game sensors (GSI TCP, Riot TLS, log tailers), and `KnownFolders`.
   - `HUDMind.App` (`net9.0-windows10.0.19041.0` WPF): `MainWindow` (with in-app GitHub Releases `UpdateBanner`), click-through `OverlayWindow`, `Win32TrayIcon`, and `CoachEngineCoordinator`.
-  - `HUDMind.Tests` (`net9.0`, 41 tests) & `HUDMind.Windows.Tests` (`net9.0-windows`, 9 tests).
+  - `HUDMind.Tests` (`net9.0`, 42 tests) & `HUDMind.Windows.Tests` (`net9.0-windows`, 9 tests).
   - `profiles/`: 7 embedded game cartridges (`profiles/*/*.md` filenames are runtime resources—never rename them).
   - `docs/`: All developer/project documentation in bilingual pairs (`*.es.md` and `*.en.md`).
 

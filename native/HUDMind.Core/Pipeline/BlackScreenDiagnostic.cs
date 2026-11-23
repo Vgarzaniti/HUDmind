@@ -12,6 +12,8 @@ public sealed class BlackScreenDiagnostic
     private const int ConsecutiveThreshold = 6;
     private bool _warnedForStreak;
 
+    public void Reset() => _warnedForStreak = false;
+
     public void Observe(
         IScreenCaptureService capture,
         GameProfile? activeProfile,

@@ -44,13 +44,33 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
         Action<CoachRuntimeStats> onStats,
         Action<bool> onPauseChanged,
         Action onMicHotkey,
-        Action<MatchSessionSnapshot>? onMatchCompleted = null)
+        Action<MatchSessionSnapshot>? onMatchCompleted = null,
+        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null)
     {
         await _lifecycleLock.WaitAsync();
         try
         {
             if (_disposed || IsRunning)
                 return (false, false, string.Empty, string.Empty);
+
+            _lastMatchId = string.Empty;
+            _lastMatchGameId = string.Empty;
+            _lastMatchGameName = string.Empty;
+            _lastMatchDigest = string.Empty;
+            _lastMatchCount = 0;
+
+            Action<MatchSessionSnapshot>? wrappedMatchCompleted = snap =>
+            {
+                if (snap.InterventionsCount > 0 && !string.IsNullOrWhiteSpace(snap.Digest))
+                {
+                    _lastMatchId = snap.MatchId;
+                    _lastMatchGameId = snap.GameId;
+                    _lastMatchGameName = snap.DisplayName;
+                    _lastMatchDigest = snap.Digest;
+                    _lastMatchCount = snap.InterventionsCount;
+                }
+                onMatchCompleted?.Invoke(snap);
+            };
 
             if (_gsiService.TryStart())
                 onLog($"📡 Receptor Valve GSI oficial activo (127.0.0.1:{LoopbackGsiService.DefaultPort}) para CS2 / Dota 2.");
@@ -91,7 +111,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                                 Win32AudioCue.Play(AudioCueKind.SoftOn);
                             return held;
                         },
-                        onMatchCompleted: onMatchCompleted
+                        onMatchCompleted: wrappedMatchCompleted,
+                        resolveContextForProfile: resolveContextForProfile
                     );
                 }
                 catch
@@ -125,7 +146,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                     onPauseChanged: onPauseChanged,
                     disposeVoice: false,
                     telemetrySensor: textOnlySensor,
-                    onMatchCompleted: onMatchCompleted
+                    onMatchCompleted: wrappedMatchCompleted,
+                    resolveContextForProfile: resolveContextForProfile
                 );
             }
 

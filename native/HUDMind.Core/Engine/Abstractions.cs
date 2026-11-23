@@ -100,6 +100,7 @@ public interface ICoachEngine : IAsyncDisposable
     string EngineBadge { get; }
     string ActiveChannelStatus { get; }
     string ActiveVoiceDisplay { get; }
+    string ActiveGameId => string.Empty;
 
     Task StartAsync();
     Task StopAsync();

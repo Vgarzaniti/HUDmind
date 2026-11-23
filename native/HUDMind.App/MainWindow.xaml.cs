@@ -490,7 +490,8 @@ public partial class MainWindow : Window
                     UpdateStatsUi,
                     OnPauseChanged,
                     ToggleMicViaHotkey,
-                    HandleMatchCompleted);
+                    HandleMatchCompleted,
+                    ResolveContextForProfileSafe);
 
                 if (!result.Started)
                     return;
@@ -524,6 +525,12 @@ public partial class MainWindow : Window
         }
     }
 
+    private AssembledCoachContext ResolveContextForProfileSafe(GameProfile profile)
+    {
+        lock (_memoryIoLock)
+            return _repo.LoadAssembledCoachContext(profile.Manifest.GameId, _config, profile, CoachContextDepth.RealtimePlay);
+    }
+
     private void SyncAssembledContext(string? gameId, GameProfile? profile, CoachContextDepth depth)
     {
         AssembledCoachContext assembled;
@@ -542,8 +549,12 @@ public partial class MainWindow : Window
             lock (_memoryIoLock)
                 updated = _repo.RecordMatchToRollingMemory(gameId, snap.DisplayName, entry, _config.MemoryMatchWindow);
 
-            var prof = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, gameId, StringComparison.OrdinalIgnoreCase));
-            SyncAssembledContext(gameId, prof, CoachContextDepth.RealtimePlay);
+            var runningGameId = _coordinator.ActiveEngine?.ActiveGameId ?? string.Empty;
+            if (string.IsNullOrEmpty(runningGameId) || string.Equals(runningGameId, gameId, StringComparison.OrdinalIgnoreCase))
+            {
+                var prof = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, gameId, StringComparison.OrdinalIgnoreCase));
+                SyncAssembledContext(gameId, prof, CoachContextDepth.RealtimePlay);
+            }
 
             if (!_shutdownComplete)
             {

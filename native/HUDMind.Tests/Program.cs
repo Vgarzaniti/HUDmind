@@ -1464,6 +1464,98 @@ await RunTest("41. TacticalSignalEvaluator detects 3-death Anti-Tilt streak, res
     return Task.CompletedTask;
 });
 
+// 42. Cross-Game Switch Isolation (Flush Prior Match, Clear Tilt/Memory/Epoch & Reload Next Game .md Context)
+await RunTest("42. Switching games flushes old match cleanly, clears tilt/epoch, preserves Discord Alt-Tab & swaps .md context", async () =>
+{
+    var csProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "CS2", ProcessNames = ["cs2.exe"], CooldownSeconds = 1.0, PhashThreshold = 1 } };
+    var rlProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League", ProcessNames = ["RocketLeague.exe"], CooldownSeconds = 1.0, PhashThreshold = 1 } };
+
+    AssembledCoachContext ResolveGameCtx(GameProfile p) => p.Manifest.GameId switch
+    {
+        "cs2" => new AssembledCoachContext("soul_cs2", "global_cs2", "MEMORY_CS2"),
+        "rocket_league" => new AssembledCoachContext("soul_rl", "global_rl", "MEMORY_RL"),
+        _ => new AssembledCoachContext("soul_u", "global_u", "MEMORY_U")
+    };
+
+    // Part A: Classic CoachOrchestrator game switch + Alt-Tab preservation
+    var winDet = new MutableWindowDetector("cs2.exe");
+    var cfg = new UserConfig { MinInferenceIntervalSeconds = 0.05, RuntimeTiltRisk = true };
+    cfg.SetCommunicationMode("text_only");
+    var flushed = new List<MatchSessionSnapshot>();
+    int csCalls = 0;
+
+    var acc = new ProviderAccount { Id = "p1", Label = "Stub", Provider = "openai", Model = "gpt-4o", ApiKey = "sk-test-stub", Priority = 1 };
+    await using var router = new ProviderFailoverRouter([acc], _ => new CallbackStubProvider(acc, _ =>
+    {
+        int n = Interlocked.Increment(ref csCalls);
+        return new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Medium, $"Tip #{n}", $"Tip #{n}"), 5, "gpt-4o");
+    }));
+
+    await using (var orch = new CoachOrchestrator(
+        cfg, [csProf, rlProf], router, winDet, new StubCapture(), new RecordingVoice(), new RecordingOverlay(),
+        testMode: false, onMatchCompleted: s => flushed.Add(s), resolveContextForProfile: ResolveGameCtx))
+    {
+        await orch.StartAsync();
+        for (int i = 0; i < 60 && (orch.ActiveGameId != "cs2" || orch.CaptureMatchSnapshot()?.InterventionsCount < 1); i++)
+            await Task.Delay(40);
+        Assert(orch.ActiveGameId == "cs2" && (orch.CaptureMatchSnapshot()?.InterventionsCount ?? 0) >= 1, "CS2 session must capture >= 1 tip");
+
+        cfg.RuntimeTiltRisk = true; // simulate streak right before quitting CS2
+        winDet.CurrentExe = "RocketLeague.exe";
+        for (int i = 0; i < 60 && orch.ActiveGameId != "rocket_league"; i++)
+            await Task.Delay(40);
+
+        Assert(orch.ActiveGameId == "rocket_league", $"Expected switch to rocket_league, got {orch.ActiveGameId}");
+        Assert(!cfg.RuntimeTiltRisk, "RuntimeTiltRisk must reset to false on game switch");
+        Assert(cfg.PreviousMatchFocus == "MEMORY_RL", $"Expected MEMORY_RL loaded on switch, got {cfg.PreviousMatchFocus}");
+        Assert(flushed.Count == 1 && flushed[0].GameId == "cs2" && flushed[0].InterventionsCount >= 1,
+            "Prior CS2 match must flush cleanly before switching to Rocket League");
+
+        // Alt-Tabbing to Discord must keep Rocket League active without flushing or corrupting current match
+        int flushedBeforeDiscord = flushed.Count;
+        winDet.CurrentExe = "Discord.exe";
+        await Task.Delay(200);
+        Assert(orch.ActiveGameId == "rocket_league" && flushed.Count == flushedBeforeDiscord,
+            "Brief Alt-Tab to Discord must not split or corrupt active Rocket League session");
+
+        await orch.StopAsync();
+    }
+
+    // Part B: RealtimeLiveCoachOrchestrator flushes old game & reloads Live backend persona with new game context
+    var liveStub = new StubLiveBackend();
+    var liveDet = new MutableWindowDetector("cs2.exe");
+    var liveCfg = new UserConfig { LiveAutoCoachSeconds = 0, RuntimeTiltRisk = true };
+    liveCfg.SetCommunicationMode("coach_voice");
+    var liveFlushed = new List<MatchSessionSnapshot>();
+
+    await using (var live = new RealtimeLiveCoachOrchestrator(
+        liveStub, liveCfg, [csProf, rlProf], liveDet,
+        new StubCapture(), new StubStreamingPlayer(), new StubStreamingMic(), new RecordingOverlay(),
+        testMode: false, onMatchCompleted: s => liveFlushed.Add(s), resolveContextForProfile: ResolveGameCtx))
+    {
+        await live.StartAsync();
+        for (int i = 0; i < 50 && (!liveStub.IsConnected || liveStub.LastProfile?.Manifest.GameId != "cs2"); i++)
+            await Task.Delay(30);
+        Assert(liveCfg.PreviousMatchFocus == "MEMORY_CS2", $"Live startup must load MEMORY_CS2, got {liveCfg.PreviousMatchFocus}");
+
+        liveStub.EmitTurnComplete("Jugá más lento en mid");
+        Assert((live.CaptureMatchSnapshot()?.InterventionsCount ?? 0) == 1, "Live turn must be recorded under CS2");
+
+        liveDet.CurrentExe = "RocketLeague.exe";
+        for (int i = 0; i < 60 && liveStub.LastProfile?.Manifest.GameId != "rocket_league"; i++)
+            await Task.Delay(40);
+
+        Assert(liveStub.LastProfile?.Manifest.GameId == "rocket_league" && liveCfg.PreviousMatchFocus == "MEMORY_RL" && !liveCfg.RuntimeTiltRisk,
+            $"Live switch must reload backend for Rocket League cleanly (focus={liveCfg.PreviousMatchFocus})");
+        Assert(liveFlushed.Count == 1 && liveFlushed[0].GameId == "cs2" && liveFlushed[0].Digest.Contains("Jugá más lento en mid"),
+            "CS2 Live match must flush cleanly without leaking into Rocket League memory");
+        Assert((live.CaptureMatchSnapshot()?.InterventionsCount ?? 0) == 0,
+            "New Rocket League Live match must start with empty fresh match log");
+
+        await live.StopAsync();
+    }
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

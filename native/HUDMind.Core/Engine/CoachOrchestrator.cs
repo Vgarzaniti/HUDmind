@@ -25,6 +25,7 @@ public sealed class CoachOrchestrator : ICoachEngine
     private readonly Action<bool>? _onPauseChanged;
     private readonly ITextOnlySensorService? _telemetrySensor;
     private readonly Action<MatchSessionSnapshot>? _onMatchCompleted;
+    private readonly Func<GameProfile, AssembledCoachContext>? _resolveContextForProfile;
     private readonly bool _testMode;
     private readonly bool _disposeVoice;
     private readonly string? _forcedGameId;
@@ -68,6 +69,7 @@ public sealed class CoachOrchestrator : ICoachEngine
     public string EngineBadge => ".NET 9 · 0% GPU · HTTP/2 MULTI-IA";
     public string ActiveChannelStatus => $"Corriendo · {_router.ActiveProviderLabel}";
     public string ActiveVoiceDisplay => _voice.EngineName;
+    public string ActiveGameId => _activeProfile?.Manifest.GameId ?? string.Empty;
 
     public void RefreshPersona(string? reason = null) => WakeNow();
 
@@ -95,7 +97,8 @@ public sealed class CoachOrchestrator : ICoachEngine
         Action<bool>? onPauseChanged = null,
         bool disposeVoice = true,
         ITextOnlySensorService? telemetrySensor = null,
-        Action<MatchSessionSnapshot>? onMatchCompleted = null)
+        Action<MatchSessionSnapshot>? onMatchCompleted = null,
+        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null)
     {
         _config = config;
         _profiles = profiles;
@@ -112,6 +115,7 @@ public sealed class CoachOrchestrator : ICoachEngine
         _disposeVoice = disposeVoice;
         _telemetrySensor = telemetrySensor;
         _onMatchCompleted = onMatchCompleted;
+        _resolveContextForProfile = resolveContextForProfile;
     }
 
     public async Task StartAsync()
@@ -126,10 +130,12 @@ public sealed class CoachOrchestrator : ICoachEngine
             var ct = cts.Token;
             Volatile.Write(ref _runCts, cts);
             _userPaused = false;
+            _config.RuntimeTiltRisk = false;
             Interlocked.Exchange(ref _forceAnalysisPending, 0);
             _stateMachine.Reset();
             _memory.Clear(clearMatchLog: true);
             _tacticalTracker.Reset();
+            _blackScreenDiagnostic.Reset();
             Volatile.Write(ref _latestDeterministicFact, string.Empty);
             SetLastHash(null);
 
@@ -161,6 +167,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                 _activeProfile = ResolveForcedOrDefaultProfile();
                 if (_activeProfile is not null)
                 {
+                    if (_resolveContextForProfile is not null)
+                        CoachContextAssembler.ApplyToConfig(_config, _resolveContextForProfile(_activeProfile));
                     _onLog?.Invoke($"[TEST-MODE] Perfil activo: {_activeProfile.Manifest.DisplayName} | Comunicación: {commLabel}");
                     if (_config.EnableOverlay)
                         _overlay.ShowCallout("Coach Nativo .NET 9 ACTIVO — observando", UrgencyLevel.Low, _activeProfile.Manifest.DisplayName, 3.5);
@@ -233,6 +241,7 @@ public sealed class CoachOrchestrator : ICoachEngine
         if (profile is null)
             return false;
 
+        long chatEpoch = Volatile.Read(ref _profileEpoch);
         _onLog?.Invoke($"💬 Vos: \"{msg}\"");
         int taskId = Interlocked.Increment(ref _chatSeq);
         CancellationTokenSource? linkedCts = null;
@@ -277,6 +286,9 @@ public sealed class CoachOrchestrator : ICoachEngine
                         _onLog?.Invoke($"Sin respuesta del coach [{model}].");
                         return false;
                     }
+
+                    if (Volatile.Read(ref _profileEpoch) != chatEpoch)
+                        return false;
 
                     Volatile.Write(ref _lastAiMs, aiMs);
                     Interlocked.Increment(ref _interventions);
@@ -443,13 +455,17 @@ public sealed class CoachOrchestrator : ICoachEngine
                         if (_activeProfile is not null)
                             FlushMatchSnapshot(resetMatchLog: true);
 
-                        _activeProfile = matched;
                         Interlocked.Increment(ref _profileEpoch);
+                        _config.RuntimeTiltRisk = false;
                         SetLastHash(null);
                         _stateMachine.Reset();
-                        _memory.Clear();
+                        _memory.Clear(clearMatchLog: true);
                         _tacticalTracker.Reset(matched.Manifest.GameId);
+                        _blackScreenDiagnostic.Reset();
                         Volatile.Write(ref _latestDeterministicFact, string.Empty);
+                        if (_resolveContextForProfile is not null)
+                            CoachContextAssembler.ApplyToConfig(_config, _resolveContextForProfile(matched));
+                        _activeProfile = matched;
                         _onLog?.Invoke($"Juego detectado automáticamente: {matched.Manifest.DisplayName} ({fg})");
                         if (_config.EnableOverlay)
                             _overlay.ShowCallout("Coach Nativo ACTIVO — observando", UrgencyLevel.Low, matched.Manifest.DisplayName, 3.5);
