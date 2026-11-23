@@ -31,8 +31,10 @@ public interface IScreenCaptureService : IDisposable
 public interface IVoiceOutputService : IDisposable
 {
     string EngineName { get; }
+    bool IsSpeaking => false;
     void WarmUp(string language, double volume, string gender = "male", string style = "neural");
     void UpdateSettings(string language, double volume, string gender = "male", string style = "neural");
+    void SetSpeechRate(string? rate) { }
     void SetOutputDevice(string? deviceName) { }
     double SpeakInstant(string text);
     void StopSpeaking();

@@ -695,6 +695,7 @@
                                             <RowDefinition Height="36" />
                                             <RowDefinition Height="36" />
                                             <RowDefinition Height="36" />
+                                            <RowDefinition Height="36" />
                                         </Grid.RowDefinitions>
 
                                         <TextBlock Grid.Row="0" Grid.Column="0" Text="Modo de Comunicación:" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -716,24 +717,33 @@
                                             <ComboBoxItem Content="⚡ Instantánea ultra-rápida (~8ms)" Tag="instant" />
                                         </ComboBox>
 
-                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Uso del Micrófono (Live):" VerticalAlignment="Center" />
-                                        <ComboBox x:Name="CmbMicInputMode" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Velocidad de Voz:" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="CmbVoiceRate" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbVoiceRate_SelectionChanged" ToolTip="Bajá a Natural o Pausada si querés que se entienda con total claridad sobre el sonido del juego">
+                                            <ComboBoxItem Content="🐢 Pausada y muy clara (-10%)" Tag="-10%" />
+                                            <ComboBoxItem Content="🎯 Natural (0% · máxima dicción)" Tag="+0%" />
+                                            <ComboBoxItem Content="✨ Clara y ágil (+5% · recomendada)" Tag="+5%" />
+                                            <ComboBoxItem Content="⚡ Rápida (+15%)" Tag="+15%" />
+                                            <ComboBoxItem Content="🚀 Muy rápida (+25%)" Tag="+25%" />
+                                        </ComboBox>
+
+                                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Uso del Micrófono (Live):" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="CmbMicInputMode" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center">
                                             <ComboBoxItem Content="🎙 Mic Abierto (hablás cuando querés)" Tag="open_mic" />
                                             <ComboBoxItem Content="⌨ Push-to-Talk (mantener tecla para hablar)" Tag="push_to_talk" />
                                         </ComboBox>
 
-                                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Tecla Push-to-Talk:" VerticalAlignment="Center" />
-                                        <TextBox x:Name="TxtPttKey" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" ToolTip="Ej: V, Alt, CapsLock, Space, Mouse4, Mouse5" />
+                                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Tecla Push-to-Talk:" VerticalAlignment="Center" />
+                                        <TextBox x:Name="TxtPttKey" Grid.Row="5" Grid.Column="1" VerticalAlignment="Center" ToolTip="Ej: V, Alt, CapsLock, Space, Mouse4, Mouse5" />
 
-                                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Micrófono:" VerticalAlignment="Center" />
-                                        <ComboBox x:Name="CmbMicDevice" Grid.Row="5" Grid.Column="1" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Micrófono:" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="CmbMicDevice" Grid.Row="6" Grid.Column="1" VerticalAlignment="Center" />
 
-                                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Auriculares / Parlantes:" VerticalAlignment="Center" />
-                                        <ComboBox x:Name="CmbSpeakerDevice" Grid.Row="6" Grid.Column="1" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Row="7" Grid.Column="0" Text="Auriculares / Parlantes:" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="CmbSpeakerDevice" Grid.Row="7" Grid.Column="1" VerticalAlignment="Center" />
 
-                                        <TextBlock Grid.Row="7" Grid.Column="0" Text="Volumen de Voz:" VerticalAlignment="Center" />
-                                        <Slider x:Name="SldVolume" Grid.Row="7" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldVolume_ValueChanged" />
-                                        <TextBlock x:Name="LblVolumePct" Grid.Row="7" Grid.Column="2" Text="75%" Foreground="#38BDF8" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                        <TextBlock Grid.Row="8" Grid.Column="0" Text="Volumen de Voz:" VerticalAlignment="Center" />
+                                        <Slider x:Name="SldVolume" Grid.Row="8" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldVolume_ValueChanged" />
+                                        <TextBlock x:Name="LblVolumePct" Grid.Row="8" Grid.Column="2" Text="75%" Foreground="#38BDF8" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
                                     </Grid>
                                     <CheckBox x:Name="ChkEnableAudioCues" Content="Sonidos suaves de confirmación (al pausar, mutear mic o pulsar Push-to-Talk)" Margin="0,6,0,0" ToolTip="Emite un tono sutil al usar atajos (silenciado en modo Solo Texto)." />
                                 </StackPanel>

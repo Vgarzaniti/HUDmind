@@ -77,7 +77,10 @@ public sealed class CoachOrchestrator : ICoachEngine
     {
         _config.CopyRuntimePreferencesFrom(config);
         lock (_voiceGate)
+        {
+            _voice.SetSpeechRate(_config.TtsRate);
             _voice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
+        }
     }
 
     public void ApplyLiveSettings(UserConfig config) => UpdateAudioLive(config);
@@ -144,7 +147,10 @@ public sealed class CoachOrchestrator : ICoachEngine
                 if (_config.IsCoachVoiceActive)
                 {
                     await Task.Run(() =>
-                        _voice.WarmUp(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle), ct);
+                    {
+                        _voice.SetSpeechRate(_config.TtsRate);
+                        _voice.WarmUp(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
+                    }, ct);
                 }
 
                 await _router.PrewarmAsync(ct);
@@ -663,7 +669,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                         {
                             lock (_voiceGate)
                             {
-                                if (_config.IsCoachVoiceActive && !_userPaused && !ct.IsCancellationRequested && !string.IsNullOrWhiteSpace(resp.VoiceLine))
+                                bool avoidMidSentenceCut = !forceNow && resp.Urgency != UrgencyLevel.High && _voice.IsSpeaking;
+                                if (!avoidMidSentenceCut && _config.IsCoachVoiceActive && !_userPaused && !ct.IsCancellationRequested && !string.IsNullOrWhiteSpace(resp.VoiceLine))
                                     voiceMs = _voice.SpeakInstant(resp.VoiceLine);
                             }
                         }

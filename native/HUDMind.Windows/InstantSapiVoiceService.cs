@@ -33,9 +33,26 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
     private string _language = "es";
     private string _gender = "male";
     private double _volume = 0.75;
+    private int _sapiRate;
     private string _selectedVoiceName = "OneCore";
 
     public string EngineName => _ready ? $"onecore-instant({_selectedVoiceName})" : "onecore-inactive";
+
+    public void SetSpeechRate(string? rate)
+    {
+        int nextRate = WinRtNaturalVoiceService.ParseSapiRateOffset(rate);
+        lock (_sync)
+        {
+            if (_disposed || _sapiRate == nextRate)
+                return;
+            _sapiRate = nextRate;
+            if (_staThread is { IsAlive: true })
+            {
+                _pendingConfigUpdate = true;
+                _signal.Set();
+            }
+        }
+    }
 
     public void WarmUp(string language, double volume, string gender = "male", string style = "instant")
     {
@@ -161,14 +178,16 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
 
             string initLang, initGender;
             double initVol;
+            int initRate;
             lock (_sync)
             {
                 initLang = _language;
                 initGender = _gender;
                 initVol = _volume;
+                initRate = _sapiRate;
             }
 
-            ApplyVoiceSettings(spVoice, initLang, initGender, initVol, reselectVoice: true);
+            ApplyVoiceSettings(spVoice, initLang, initGender, initVol, initRate, reselectVoice: true);
             spVoice.Speak(string.Empty, SvsFlagsAsync | SvsfPurgeBeforeSpeak);
             _ready = true;
             _readyTcs?.TrySetResult(true);
@@ -183,6 +202,7 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
                 bool doReselect;
                 string lang, gender;
                 double vol;
+                int rate;
 
                 lock (_sync)
                 {
@@ -199,12 +219,13 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
                     lang = _language;
                     gender = _gender;
                     vol = _volume;
+                    rate = _sapiRate;
                 }
 
                 try
                 {
                     if (doConfig)
-                        ApplyVoiceSettings(spVoice, lang, gender, vol, doReselect);
+                        ApplyVoiceSettings(spVoice, lang, gender, vol, rate, doReselect);
 
                     if (doStop)
                         spVoice.Speak(string.Empty, SvsFlagsAsync | SvsfPurgeBeforeSpeak);
@@ -238,13 +259,13 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         }
     }
 
-    private void ApplyVoiceSettings(dynamic spVoice, string lang, string gender, double volume, bool reselectVoice)
+    private void ApplyVoiceSettings(dynamic spVoice, string lang, string gender, double volume, int rate, bool reselectVoice)
     {
         try
         {
             if (reselectVoice)
                 SelectBestVoice(spVoice, lang, gender);
-            spVoice.Rate = 1;
+            spVoice.Rate = Math.Clamp(rate, -10, 10);
             spVoice.Volume = (int)Math.Round(Math.Clamp(volume, 0.0, 1.0) * 100.0);
         }
         catch { }

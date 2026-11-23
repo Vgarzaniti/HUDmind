@@ -69,6 +69,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private double _lastTtfaMs;
     private long _lastTurnRequestTick;
     private int _waitingFirstAudioInt;
+    private int _bargeInConsecutiveFrames;
     private long _lastOverlayPartialTick;
     private long _lastAutoNudgeUtcTicks;
     private long _lastMicVoiceUtcTicks;
@@ -579,6 +580,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     _pcmPlayer.InterruptAndClear();
                 }
                 Interlocked.Exchange(ref _waitingFirstAudioInt, 0);
+                Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
                 StopMicAndDrainChannel();
                 if (videoTask is not null)
                 {
@@ -659,6 +661,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _suppressCurrentTurnAudio = false;
         }
         Interlocked.Exchange(ref _waitingFirstAudioInt, 0);
+        Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
         Interlocked.Exchange(ref _lastOverlayPartialTick, 0);
 
         if (!staleEpoch && !string.IsNullOrWhiteSpace(spoken))
@@ -697,6 +700,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _suppressCurrentTurnAudio = false;
         }
         Interlocked.Exchange(ref _waitingFirstAudioInt, 0);
+        Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
     }
 
     private void StartMicIfEnabled()
@@ -705,6 +709,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         {
             if (_disposed || !_micEnabled || _userPaused || !_backend.IsConnected) return;
 
+            Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
             StopMicAndDrainChannelLocked();
 
             var micChan = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(2)
@@ -759,16 +764,29 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     double rms = AudioPcmUtilities.ComputeRms16(pcmChunk);
                     bool coachAudible = _modelSpeaking || _pcmPlayer.IsPlayingAudio;
 
-                    // Acoustic Echo Suppression: ignore speaker bleed while coach speaks, trigger clean barge-in above threshold
+                    // Acoustic Echo Suppression: ignore speaker bleed & brief key clacks while coach speaks, trigger clean barge-in on real voice
                     if (coachAudible)
                     {
                         if (pttInReleaseTail)
                             return; // Do not trigger false echo barge-in on post-release silence tail
 
-                        double bargeThreshold = (pttMode && pttHeld) ? 650.0 : 1800.0;
-                        if (rms < bargeThreshold)
-                            return;
+                        if (pttMode && pttHeld)
+                        {
+                            if (rms < 650.0)
+                                return;
+                        }
+                        else
+                        {
+                            if (rms < 1600.0)
+                            {
+                                Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
+                                return;
+                            }
+                            if (rms < 2700.0 && Interlocked.Increment(ref _bargeInConsecutiveFrames) < 2)
+                                return; // Require >=200ms sustained medium speech to avoid mechanical key clicks cutting off coach
+                        }
 
+                        Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
                         lock (_audioStateLock)
                         {
                             // Mute residual dying chunks ONLY when server stream is still active (_modelSpeaking == true)!
@@ -778,6 +796,10 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             _modelSpeaking = false;
                             _pcmPlayer.InterruptAndClear();
                         }
+                    }
+                    else
+                    {
+                        Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
                     }
 
                     if (pttMode)

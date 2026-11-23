@@ -1556,6 +1556,98 @@ await RunTest("42. Switching games flushes old match cleanly, clears tilt/epoch,
     }
 });
 
+// 43. Audio Output Clarity (Catmull-Rom resample, edge fades, sustained barge-in & TtsRate/IsSpeaking guards)
+await RunTest("43. Audio DSP smoothing, sustained open-mic barge-in & TtsRate/IsSpeaking voice guards work cleanly", async () =>
+{
+    // 1) Fade-in & Fade-out ramps eliminate sudden sample jumps at utterance start/end
+    byte[] raw = MakeSinePcm16(samples: 600, amplitude: 3000);
+    AudioPcmUtilities.ApplyFadeIn16(raw, fadeSamples: 60);
+    AudioPcmUtilities.ApplyFadeOut16(raw, fadeSamples: 60);
+    short firstSample = BitConverter.ToInt16(raw, 0);
+    short lastSample = BitConverter.ToInt16(raw, raw.Length - 2);
+    short midSample = BitConverter.ToInt16(raw, (300) * 2);
+    Assert(firstSample == 0 && Math.Abs(lastSample) < 120 && Math.Abs(midSample) > 1500,
+        $"Edge fades invalid: first={firstSample}, mid={midSample}, last={lastSample}");
+
+    // 2) Catmull-Rom 16kHz -> 24kHz mono and stereo 48kHz -> 24kHz mono resampling preserve bounded amplitude
+    byte[] src16k = MakeSinePcm16(samples: 320, amplitude: 2500);
+    byte[] out24k = AudioPcmUtilities.ResampleMonoPcm16(src16k, channels: 1, srcRate: 16000, dstRate: 24000);
+    Assert(out24k.Length == 480 * 2 && AudioPcmUtilities.ComputeRms16(out24k) > 1200.0,
+        $"Catmull-Rom 16k->24k resample unexpected: len={out24k.Length}");
+
+    byte[] stereo48k = new byte[480 * 4];
+    for (int i = 0; i < 480; i++)
+    {
+        short v = (short)(Math.Sin(i * 0.2) * 2000);
+        BitConverter.GetBytes(v).CopyTo(stereo48k, i * 4);
+        BitConverter.GetBytes(v).CopyTo(stereo48k, i * 4 + 2);
+    }
+    byte[] down24k = AudioPcmUtilities.ResampleMonoPcm16(stereo48k, channels: 2, srcRate: 48000, dstRate: 24000);
+    Assert(down24k.Length == 240 * 2 && AudioPcmUtilities.ComputeRms16(down24k) > 900.0,
+        $"Stereo 48k->24k downmix resample unexpected: len={down24k.Length}");
+
+    // 3) Live open-mic barge-in ignores single 100ms transient click (amplitude 2000) while coach speaks,
+    //    then cleanly interrupts on 2nd consecutive sustained frame!
+    var stubBackend = new StubLiveBackend();
+    var stubPlayer = new StubStreamingPlayer();
+    var stubMic = new StubStreamingMic();
+    var liveCfg = new UserConfig { LiveAutoCoachSeconds = 0 };
+    liveCfg.SetCommunicationMode("conversation");
+
+    await using (var live = new RealtimeLiveCoachOrchestrator(
+        stubBackend, liveCfg,
+        [new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "RL" } }],
+        new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), stubPlayer, stubMic, new RecordingOverlay(), testMode: true))
+    {
+        await live.StartAsync();
+        for (int i = 0; i < 40 && !stubMic.IsCapturing; i++) await Task.Delay(25);
+
+        stubBackend.EmitIncomingAudio([9, 9]); // _modelSpeaking = true
+        byte[] transientClick = MakeSinePcm16(samples: 1600, amplitude: 2000);
+        stubMic.PushChunk(transientClick);
+        await Task.Delay(35);
+        Assert(stubPlayer.InterruptCount == 0 && stubBackend.SentMicChunks == 0,
+            $"Single 100ms medium spike must NOT chop active coach audio (int={stubPlayer.InterruptCount}, sent={stubBackend.SentMicChunks})");
+
+        // Second sustained frame confirms intentional speech -> interrupts & forwards cleanly
+        stubMic.PushChunk(transientClick);
+        for (int i = 0; i < 40 && stubBackend.SentMicChunks == 0; i++) await Task.Delay(20);
+        Assert(stubPlayer.InterruptCount == 1 && stubBackend.SentMicChunks >= 1,
+            $"Two consecutive medium speech chunks must trigger clean barge-in (int={stubPlayer.InterruptCount}, sent={stubBackend.SentMicChunks})");
+
+        stubBackend.EmitTurnComplete("Ok.");
+        await live.StopAsync();
+    }
+
+    // 4) Classic CoachOrchestrator propagates TtsRate & skips auto-cut when routine tip arrives while IsSpeaking==true
+    var voice = new RecordingVoice { IsSpeaking = true };
+    var prof = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "RL", CooldownSeconds = 1.0 } };
+    var clsCfg = new UserConfig { TtsRate = "-10%", MinInferenceIntervalSeconds = 1.0, OverlayDurationSeconds = 2.0 };
+    clsCfg.SetCommunicationMode("coach_voice");
+    var expected = new CoachResponse(true, UrgencyLevel.Medium, "Rotá segundo palo", "Rotá segundo palo");
+    var router = new ProviderFailoverRouter(
+        [new ProviderAccount { Label = "V", Provider = "gemini", ApiKey = "AIzaSyTest1234567890", Model = "gemini-2.5-flash", Priority = 1 }],
+        acc => new StubProvider(acc, 5, new ProviderCallResult(expected)));
+
+    await using var cls = new CoachOrchestrator(
+        clsCfg, [prof], router, new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), voice, new RecordingOverlay(), testMode: true, forcedGameId: "rl");
+
+    await cls.StartAsync();
+    Assert(voice.LastRate == "-10%", $"StartAsync must propagate initial TtsRate (-10%), got '{voice.LastRate}'");
+
+    for (int i = 0; i < 45 && cls.GetMatchSessionDigest().Count == 0; i++) await Task.Delay(40);
+    Assert(cls.GetMatchSessionDigest().Count >= 1 && voice.Spoken.Count == 0,
+        $"Routine medium tip while already speaking must NOT cut off previous utterance (spoken={voice.Spoken.Count})");
+
+    clsCfg.TtsRate = "+0%";
+    cls.UpdateAudioLive(clsCfg);
+    Assert(voice.LastRate == "+0%", $"UpdateAudioLive must propagate new TtsRate (+0%), got '{voice.LastRate}'");
+
+    await cls.StopAsync();
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -1657,9 +1749,12 @@ sealed class StubCapture : IScreenCaptureService
 sealed class RecordingVoice : IVoiceOutputService
 {
     public List<string> Spoken { get; } = [];
+    public string? LastRate { get; private set; }
+    public bool IsSpeaking { get; set; }
     public string EngineName => "recording-test";
     public void WarmUp(string language, double volume, string gender = "male", string style = "neural") { }
     public void UpdateSettings(string language, double volume, string gender = "male", string style = "neural") { }
+    public void SetSpeechRate(string? rate) => LastRate = rate;
     public double SpeakInstant(string text) { Spoken.Add(text); return 1.0; }
     public void StopSpeaking() { }
     public void Dispose() { }

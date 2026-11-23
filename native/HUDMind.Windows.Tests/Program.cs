@@ -327,6 +327,29 @@ await RunTest("W9. Enriched GSI C4 countdown/kit, LoL allgamedata CS/DEAD & Read
         $"ParseAllGameData missing CS/Wards/DEAD fields: {lolParsed}");
 });
 
+// W10. Win32StreamingPcmPlayer jitter prebuffer/flush/odd-byte + SAPI5 TtsRate parity
+await RunTest("W10. Win32StreamingPcmPlayer prebuffer/flush/interrupt & WinRt/SAPI5 speech rate parity hold cleanly", () =>
+{
+    Assert(Math.Abs(WinRtNaturalVoiceService.ParseRateFactor(null) - 1.05) < 0.001, "Default natural rate should be +5% (1.05)");
+    Assert(WinRtNaturalVoiceService.ParseSapiRateOffset("-10%") == -1, "-10% -> SAPI rate -1");
+    Assert(WinRtNaturalVoiceService.ParseSapiRateOffset("+5%") == 0, "+5% -> SAPI rate 0");
+    Assert(WinRtNaturalVoiceService.ParseSapiRateOffset("+15%") == 1, "+15% -> SAPI rate 1");
+    Assert(WinRtNaturalVoiceService.ParseSapiRateOffset("+25%") == 2, "+25% -> SAPI rate 2");
+
+    using var player = new Win32StreamingPcmPlayer();
+    player.SetVolume(0.6);
+    player.EnqueuePcm24k(new byte[2401]); // under 160ms prebuffer + odd byte
+    player.EnqueuePcm24k(new byte[6000]); // crosses prebuffer -> submits smoothed block
+    player.FlushBuffered();               // adds fade-out + trailing silence padding & clears odd state
+    player.InterruptAndClear();           // resets safely even if audio hardware is absent on headless runner
+    Assert(!player.IsPlayingAudio, "InterruptAndClear must clear IsPlayingAudio immediately");
+
+    using var voice = new HybridVoiceService();
+    voice.SetSpeechRate("+5%");
+    voice.SetSpeechRate("+0%");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

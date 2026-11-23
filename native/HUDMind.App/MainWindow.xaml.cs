@@ -206,6 +206,7 @@ public partial class MainWindow : Window
             SelectByTag(CmbVoiceGender, _config.VoiceGender);
             SelectByTag(CmbQuickGender, _config.VoiceGender);
             SelectByTag(CmbVoiceStyle, _config.VoiceStyle);
+            SelectByTag(CmbVoiceRate, NormalizeVoiceRateBucket(_config.TtsRate));
             SelectByTag(CmbEngineType, _config.UseLiveConversational ? "live" : "classic");
             SelectByTag(CmbCommMode, _config.CommunicationMode);
             SelectByTag(CmbCommModeSettings, _config.CommunicationMode);
@@ -1274,6 +1275,32 @@ public partial class MainWindow : Window
         ApplyVoiceSettingsFromUi(GetSelectedTag(CmbVoiceGender), GetSelectedTag(CmbVoiceStyle));
     }
 
+    private void CmbVoiceRate_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingUi || CmbVoiceRate is null) return;
+        string rate = GetSelectedTag(CmbVoiceRate, "+5%");
+        _config.TtsRate = rate;
+        _repo.SaveUserConfig(_config);
+        _sharedVoice.SetSpeechRate(rate);
+        _coordinator.ApplyLiveSettings(_config);
+        AppendLog($"Velocidad de voz ajustada: {rate}.");
+    }
+
+    private static string NormalizeVoiceRateBucket(string? rate)
+    {
+        var clean = (rate ?? "+5%").Trim().TrimEnd('%').Replace(',', '.');
+        if (!double.TryParse(clean, NumberStyles.Float, CultureInfo.InvariantCulture, out double pct))
+            return "+5%";
+        return pct switch
+        {
+            <= -5.0 => "-10%",
+            <= 2.0 => "+0%",
+            <= 10.0 => "+5%",
+            <= 20.0 => "+15%",
+            _ => "+25%"
+        };
+    }
+
     private void ApplyVoiceSettingsFromUi(string gender, string style)
     {
         _syncingUi = true;
@@ -1398,16 +1425,7 @@ public partial class MainWindow : Window
             {
                 string spoken = review.Replace("*", "").Replace("#", "").Trim();
                 if (spoken.Length > 280) spoken = spoken[..280];
-                string lang = _config.VoiceLanguage;
-                double vol = _config.TtsVolume;
-                string gender = _config.VoiceGender;
-                string style = _config.VoiceStyle;
-                _ = Task.Run(() =>
-                {
-                    _sharedVoice.WarmUp(lang, vol, gender, style);
-                    _sharedVoice.UpdateSettings(lang, vol, gender, style);
-                    _sharedVoice.SpeakInstant(spoken);
-                });
+                SpeakWithSharedVoiceAsync(spoken);
             }
         }
         catch (Exception ex)
@@ -1541,6 +1559,7 @@ public partial class MainWindow : Window
         _config.LiveAutoCoachSeconds = double.TryParse(GetSelectedTag(CmbLiveAutoRate), out double autoSec) ? autoSec : 12.0;
         _config.VoiceGender = GetSelectedTag(CmbVoiceGender);
         _config.VoiceStyle = GetSelectedTag(CmbVoiceStyle);
+        _config.TtsRate = GetSelectedTag(CmbVoiceRate, "+5%");
         _config.UseLiveConversational = GetSelectedTag(CmbEngineType) == "live";
         _config.SetCommunicationMode(GetSelectedTag(CmbCommMode));
         _config.MicInputMode = GetSelectedTag(CmbMicInputMode, "open_mic");
@@ -1587,6 +1606,7 @@ public partial class MainWindow : Window
             _overlay.HideImmediately();
 
         _sharedVoice.SetOutputDevice(_config.AudioOutputDeviceName);
+        _sharedVoice.SetSpeechRate(_config.TtsRate);
         _sharedVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
         _coordinator.ApplyLiveSettings(_config);
         RefreshHotkeyButtonLabels();
@@ -1607,16 +1627,28 @@ public partial class MainWindow : Window
             return;
         }
 
+        SpeakWithSharedVoiceAsync(
+            "Rotá segundo palo, tenés dieciocho de boost.",
+            ms => AppendLog($"Preview Voz [{_sharedVoice.EngineName}] ({_config.TtsRate}) disparado en {ms:F1} ms."));
+    }
+
+    private void SpeakWithSharedVoiceAsync(string text, Action<double>? onDispatched = null)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
         string lang = _config.VoiceLanguage;
         string gender = _config.VoiceGender;
         string style = _config.VoiceStyle;
+        string rate = _config.TtsRate;
         double vol = _config.TtsVolume;
         _ = Task.Run(() =>
         {
+            _sharedVoice.SetSpeechRate(rate);
             _sharedVoice.WarmUp(lang, vol, gender, style);
             _sharedVoice.UpdateSettings(lang, vol, gender, style);
-            double ms = _sharedVoice.SpeakInstant("Rotá segundo palo, tenés dieciocho de boost.");
-            AppendLog($"Preview Voz [{_sharedVoice.EngineName}] disparado en {ms:F1} ms.");
+            double ms = _sharedVoice.SpeakInstant(text);
+            onDispatched?.Invoke(ms);
         });
     }
 

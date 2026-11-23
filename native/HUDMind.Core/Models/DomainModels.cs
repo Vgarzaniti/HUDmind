@@ -172,7 +172,7 @@ public sealed class UserConfig
     public string TtsEngine { get; set; } = "pyttsx3";
 
     [JsonPropertyName("tts_rate")]
-    public string TtsRate { get; set; } = "+15%";
+    public string TtsRate { get; set; } = "+5%";
 
     [JsonPropertyName("voice_gender")]
     public string VoiceGender { get; set; } = "male";
