@@ -36,6 +36,7 @@ public sealed partial class LoopbackGsiService : IDisposable
 
     private string _latestCs2Summary = string.Empty;
     private DateTimeOffset _latestCs2Utc = DateTimeOffset.MinValue;
+    private DateTimeOffset _cs2BombPlantedUtc = DateTimeOffset.MinValue;
     private string _latestDotaSummary = string.Empty;
     private DateTimeOffset _latestDotaUtc = DateTimeOffset.MinValue;
 
@@ -170,7 +171,7 @@ public sealed partial class LoopbackGsiService : IDisposable
                 var (status, jsonBody) = await ReadHttpJsonBodyAsync(stream, readCts.Token).ConfigureAwait(false);
                 if (status == 200 && !string.IsNullOrWhiteSpace(jsonBody))
                 {
-                    var (kind, summary) = ParseGsiPayload(jsonBody);
+                    var (kind, summary, bombPlanted) = ParseGsiPayloadWithMeta(jsonBody);
                     if (summary == "__CLEAR__")
                     {
                         lock (_stateLock)
@@ -179,6 +180,7 @@ public sealed partial class LoopbackGsiService : IDisposable
                             {
                                 _latestCs2Summary = string.Empty;
                                 _latestCs2Utc = DateTimeOffset.MinValue;
+                                _cs2BombPlantedUtc = DateTimeOffset.MinValue;
                             }
                             else if (kind == "dota2")
                             {
@@ -194,6 +196,18 @@ public sealed partial class LoopbackGsiService : IDisposable
                         {
                             if (kind == "cs2")
                             {
+                                if (bombPlanted)
+                                {
+                                    if (_cs2BombPlantedUtc == DateTimeOffset.MinValue)
+                                        _cs2BombPlantedUtc = now;
+                                    int elapsed = (int)Math.Floor((now - _cs2BombPlantedUtc).TotalSeconds);
+                                    int rem = Math.Clamp(40 - elapsed, 0, 40);
+                                    summary = summary.Replace("C4=planted", $"C4=planted(~{rem}s)", StringComparison.Ordinal);
+                                }
+                                else
+                                {
+                                    _cs2BombPlantedUtc = DateTimeOffset.MinValue;
+                                }
                                 _latestCs2Summary = summary;
                                 _latestCs2Utc = now;
                             }
@@ -304,6 +318,12 @@ public sealed partial class LoopbackGsiService : IDisposable
 
     public static (string Kind, string Summary) ParseGsiPayload(string json)
     {
+        var (kind, summary, _) = ParseGsiPayloadWithMeta(json);
+        return (kind, summary);
+    }
+
+    private static (string Kind, string Summary, bool BombPlanted) ParseGsiPayloadWithMeta(string json)
+    {
         try
         {
             using var doc = JsonDocument.Parse(json);
@@ -311,36 +331,37 @@ public sealed partial class LoopbackGsiService : IDisposable
             if (!root.TryGetProperty("provider", out var prov) ||
                 !prov.TryGetProperty("appid", out var appIdEl))
             {
-                return (string.Empty, string.Empty);
+                return (string.Empty, string.Empty, false);
             }
 
             int appId = appIdEl.ValueKind == JsonValueKind.Number ? appIdEl.GetInt32() : 0;
             if (appId == 730)
-                return ("cs2", ParseCs2Gsi(root));
+                return ParseCs2Gsi(root);
             if (appId == 570)
-                return ("dota2", ParseDota2Gsi(root));
+                return ("dota2", ParseDota2Gsi(root), false);
         }
         catch
         {
             // Ignore malformed telemetry JSON
         }
-        return (string.Empty, string.Empty);
+        return (string.Empty, string.Empty, false);
     }
 
-    private static string ParseCs2Gsi(JsonElement root)
+    private static (string Kind, string Summary, bool BombPlanted) ParseCs2Gsi(JsonElement root)
     {
         // Clear stale match telemetry immediately when player exits to CS2 main menu / lobby!
         if (root.TryGetProperty("player", out var playerCheck) &&
             playerCheck.TryGetProperty("activity", out var actEl) &&
             string.Equals(actEl.GetString(), "menu", StringComparison.OrdinalIgnoreCase))
         {
-            return "__CLEAR__";
+            return ("cs2", "__CLEAR__", false);
         }
         if (!root.TryGetProperty("map", out _))
-            return "__CLEAR__";
+            return ("cs2", "__CLEAR__", false);
 
-        var sb = new StringBuilder(160);
+        var sb = new StringBuilder(192);
         sb.Append("CS2_GSI:");
+        bool bombPlanted = false;
 
         if (root.TryGetProperty("map", out var map))
         {
@@ -360,7 +381,10 @@ public sealed partial class LoopbackGsiService : IDisposable
             if (round.TryGetProperty("phase", out var rp) && rp.GetString() is string rPhase && !string.IsNullOrWhiteSpace(rPhase))
                 sb.Append(" round=").Append(CoachingPersonaBuilder.SanitizeField(rPhase, 16));
             if (round.TryGetProperty("bomb", out var bomb) && bomb.GetString() is string bombState && !string.IsNullOrWhiteSpace(bombState))
+            {
+                bombPlanted = string.Equals(bombState, "planted", StringComparison.OrdinalIgnoreCase);
                 sb.Append(" C4=").Append(CoachingPersonaBuilder.SanitizeField(bombState, 12));
+            }
         }
 
         if (root.TryGetProperty("player", out var player))
@@ -373,7 +397,12 @@ public sealed partial class LoopbackGsiService : IDisposable
                 int hp = st.TryGetProperty("health", out var h) ? h.GetInt32() : 0;
                 int armor = st.TryGetProperty("armor", out var a) ? a.GetInt32() : 0;
                 int money = st.TryGetProperty("money", out var m) ? m.GetInt32() : 0;
-                sb.Append($" HP={hp} Armor={armor} ${money}");
+                sb.Append($" HP={hp} Armor={armor}");
+                if (st.TryGetProperty("helmet", out var hm) && hm.ValueKind == JsonValueKind.True)
+                    sb.Append(" Helmet=1");
+                if (st.TryGetProperty("defusekit", out var dk) && dk.ValueKind == JsonValueKind.True)
+                    sb.Append(" Kit=1");
+                sb.Append($" ${money}");
             }
 
             if (player.TryGetProperty("weapons", out var weapons) && weapons.ValueKind == JsonValueKind.Object)
@@ -394,7 +423,7 @@ public sealed partial class LoopbackGsiService : IDisposable
             }
         }
 
-        return sb.Length > 10 ? sb.ToString() : string.Empty;
+        return ("cs2", sb.Length > 10 ? sb.ToString() : string.Empty, bombPlanted);
     }
 
     private static string ParseDota2Gsi(JsonElement root)

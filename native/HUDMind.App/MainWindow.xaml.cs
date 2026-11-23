@@ -12,6 +12,7 @@ using HUDMind.Core.AI;
 using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
+using HUDMind.Core.Pipeline;
 using HUDMind.Core.Updates;
 using HUDMind.Windows;
 using MediaColor = System.Windows.Media.Color;
@@ -40,6 +41,7 @@ public partial class MainWindow : Window
 
     private readonly ConfigRepository _repo = new();
     private readonly CoachEngineCoordinator _coordinator = new();
+    private readonly object _memoryIoLock = new();
     private UserConfig _config;
     private List<ProviderAccount> _accounts;
     private List<GameProfile> _profiles;
@@ -204,6 +206,7 @@ public partial class MainWindow : Window
             SelectByTag(CmbVoiceGender, _config.VoiceGender);
             SelectByTag(CmbQuickGender, _config.VoiceGender);
             SelectByTag(CmbVoiceStyle, _config.VoiceStyle);
+            SelectByTag(CmbVoiceRate, NormalizeVoiceRateBucket(_config.TtsRate));
             SelectByTag(CmbEngineType, _config.UseLiveConversational ? "live" : "classic");
             SelectByTag(CmbCommMode, _config.CommunicationMode);
             SelectByTag(CmbCommModeSettings, _config.CommunicationMode);
@@ -213,6 +216,8 @@ public partial class MainWindow : Window
             SelectByTag(CmbSpeakerDevice, _config.AudioOutputDeviceName);
             SelectByTag(CmbLanguage, _config.VoiceLanguage);
             SelectByTag(CmbEfficiency, _config.TokenEfficiencyMode);
+            string memBucket = _config.MemoryMatchWindow switch { <= 7 => "5", <= 15 => "10", _ => "20" };
+            SelectByTag(CmbMemoryWindow, memBucket);
             SelectByTag(CmbOverlayPos, _config.OverlayPosition);
             SldOverlayScale.Value = Math.Clamp(_config.OverlayScale, 0.75, 1.45);
             LblOverlayScale.Text = $"{(int)Math.Round(SldOverlayScale.Value * 100)}%";
@@ -232,6 +237,8 @@ public partial class MainWindow : Window
         ChkMinimizeToTray.IsChecked = _config.MinimizeToTray;
         ChkEnableAudioCues.IsChecked = _config.EnableAudioCues;
         ChkCheckUpdatesOnStartup.IsChecked = _config.CheckUpdatesOnStartup;
+        TxtCoachSoul.Text = _repo.LoadCoachSoulMarkdown();
+        TxtPlayerProfile.Text = _repo.LoadPlayerProfileMarkdown();
         TxtPauseKey.Text = _config.HotkeyTogglePause;
         TxtAnalyzeKey.Text = _config.HotkeyAnalyzeNow;
         TxtMicKey.Text = _config.HotkeyToggleMic;
@@ -243,6 +250,7 @@ public partial class MainWindow : Window
         ConfigureOverlayFromCurrentConfig();
         RefreshAccountsList();
         RefreshOnboardingBanner();
+        RefreshRollingMemoryUi();
         UpdateLatencyCardHeaders(isLive: false);
 
         if (!string.IsNullOrWhiteSpace(_repo.LastLoadWarning))
@@ -461,12 +469,12 @@ public partial class MainWindow : Window
             bool testMode = GetSelectedTag(CmbRunMode) == "test";
             string? forcedId = CmbGameProfile.SelectedValue?.ToString();
             bool wantLive = GetSelectedTag(CmbEngineType) == "live";
-            var hintGameName = forcedId is not null
-                ? _profiles.FirstOrDefault(p => p.Manifest.GameId == forcedId)?.Manifest.DisplayName
+            var hintProf = forcedId is not null
+                ? _profiles.FirstOrDefault(p => p.Manifest.GameId == forcedId)
                 : null;
-            _config.PreviousMatchFocus = _repo.LoadLatestPostMatchFocus(hintGameName);
+            SyncAssembledContext(forcedId ?? "universal", hintProf, CoachContextDepth.RealtimePlay);
             if (!string.IsNullOrWhiteSpace(_config.PreviousMatchFocus))
-                AppendLog($"🎯 Foco de partida anterior activo: {_config.PreviousMatchFocus}");
+                AppendLog($"🧠 Memoria de partidas activa: {_config.PreviousMatchFocus}");
 
             try
             {
@@ -482,7 +490,9 @@ public partial class MainWindow : Window
                     AppendLog,
                     UpdateStatsUi,
                     OnPauseChanged,
-                    ToggleMicViaHotkey);
+                    ToggleMicViaHotkey,
+                    HandleMatchCompleted,
+                    ResolveContextForProfileSafe);
 
                 if (!result.Started)
                     return;
@@ -513,6 +523,54 @@ public partial class MainWindow : Window
         finally
         {
             BtnStartStop.IsEnabled = true;
+        }
+    }
+
+    private AssembledCoachContext ResolveContextForProfileSafe(GameProfile profile)
+    {
+        lock (_memoryIoLock)
+            return _repo.LoadAssembledCoachContext(profile.Manifest.GameId, _config, profile, CoachContextDepth.RealtimePlay);
+    }
+
+    private void SyncAssembledContext(string? gameId, GameProfile? profile, CoachContextDepth depth)
+    {
+        AssembledCoachContext assembled;
+        lock (_memoryIoLock)
+            assembled = _repo.LoadAssembledCoachContext(gameId, _config, profile, depth);
+        CoachContextAssembler.ApplyToConfig(_config, assembled);
+    }
+
+    private void HandleMatchCompleted(MatchSessionSnapshot snap)
+    {
+        try
+        {
+            var gameId = string.IsNullOrWhiteSpace(snap.GameId) ? "universal" : snap.GameId;
+            var entry = PlayerMemoryStore.BuildEntryFromSessionSnapshot(snap);
+            PlayerGameMemory updated;
+            lock (_memoryIoLock)
+                updated = _repo.RecordMatchToRollingMemory(gameId, snap.DisplayName, entry, _config.MemoryMatchWindow);
+
+            var runningGameId = _coordinator.ActiveEngine?.ActiveGameId ?? string.Empty;
+            if (string.IsNullOrEmpty(runningGameId) || string.Equals(runningGameId, gameId, StringComparison.OrdinalIgnoreCase))
+            {
+                var prof = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, gameId, StringComparison.OrdinalIgnoreCase));
+                SyncAssembledContext(gameId, prof, CoachContextDepth.RealtimePlay);
+            }
+
+            if (!_shutdownComplete)
+            {
+                AppendLog($"🧠 Memoria actualizada ({updated.Matches.Count}/{PlayerMemoryStore.ClampWindowSize(_config.MemoryMatchWindow)} partidas) para {snap.DisplayName}.");
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (!_shutdownComplete)
+                        RefreshRollingMemoryUi();
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!_shutdownComplete)
+                AppendLog($"⚠ No se pudo guardar memoria de partida: {SecretRedactor.Redact(ex.Message)}");
         }
     }
 
@@ -932,12 +990,59 @@ public partial class MainWindow : Window
             TxtProfileExes.Text = "(Cualquier juego en foreground)";
             TxtProfileCooldown.Text = "8.0";
             TxtProfilePhash.Text = "6";
+            RefreshRollingMemoryUi("universal");
             return;
         }
 
         TxtProfileExes.Text = string.Join(", ", prof.Manifest.ProcessNames);
         TxtProfileCooldown.Text = prof.Manifest.CooldownSeconds.ToString("0.0", CultureInfo.InvariantCulture);
         TxtProfilePhash.Text = prof.Manifest.PhashThreshold.ToString(CultureInfo.InvariantCulture);
+        RefreshRollingMemoryUi(prof.Manifest.GameId);
+    }
+
+    private void RefreshRollingMemoryUi(string? gameId = null)
+    {
+        if (LblRollingMemorySummary is null || BtnResetGameMemory is null)
+            return;
+
+        var id = gameId ?? CmbRulesGame.SelectedValue?.ToString() ?? "universal";
+        PlayerGameMemory mem;
+        lock (_memoryIoLock)
+            mem = _repo.LoadPlayerGameMemory(id);
+
+        if (mem.WindowSize <= 0 || mem.Matches.Count == 0)
+            mem.WindowSize = _config.MemoryMatchWindow;
+
+        LblRollingMemorySummary.Text = PlayerMemoryStore.FormatForUiSummary(mem);
+        BtnResetGameMemory.IsEnabled = mem.Matches.Count > 0;
+    }
+
+    private void BtnResetGameMemory_Click(object sender, RoutedEventArgs e)
+    {
+        var id = CmbRulesGame.SelectedValue?.ToString() ?? "universal";
+        var prof = _profiles.FirstOrDefault(p => p.Manifest.GameId == id);
+        var displayName = prof?.Manifest.DisplayName ?? id;
+        var ans = System.Windows.MessageBox.Show(
+            $"¿Limpiar el historial de patrones aprendidos en las últimas partidas de '{displayName}'?",
+            "HUDMind · Limpiar memoria del coach",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (ans != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            lock (_memoryIoLock)
+                _repo.ResetPlayerGameMemory(id);
+            _config.PreviousMatchFocus = string.Empty;
+            _coordinator.RefreshPersona("memoria reseteada");
+            RefreshRollingMemoryUi(id);
+            AppendLog($"🧹 Memoria de últimas partidas limpiada para {displayName}.");
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(SecretRedactor.Redact(ex.Message), "Error al limpiar memoria", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void TxtCustomRules_TextChanged(object sender, TextChangedEventArgs e)
@@ -1170,6 +1275,32 @@ public partial class MainWindow : Window
         ApplyVoiceSettingsFromUi(GetSelectedTag(CmbVoiceGender), GetSelectedTag(CmbVoiceStyle));
     }
 
+    private void CmbVoiceRate_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingUi || CmbVoiceRate is null) return;
+        string rate = GetSelectedTag(CmbVoiceRate, "+5%");
+        _config.TtsRate = rate;
+        _repo.SaveUserConfig(_config);
+        _sharedVoice.SetSpeechRate(rate);
+        _coordinator.ApplyLiveSettings(_config);
+        AppendLog($"Velocidad de voz ajustada: {rate}.");
+    }
+
+    private static string NormalizeVoiceRateBucket(string? rate)
+    {
+        var clean = (rate ?? "+5%").Trim().TrimEnd('%').Replace(',', '.');
+        if (!double.TryParse(clean, NumberStyles.Float, CultureInfo.InvariantCulture, out double pct))
+            return "+5%";
+        return pct switch
+        {
+            <= -5.0 => "-10%",
+            <= 2.0 => "+0%",
+            <= 10.0 => "+5%",
+            <= 20.0 => "+15%",
+            _ => "+25%"
+        };
+    }
+
     private void ApplyVoiceSettingsFromUi(string gender, string style)
     {
         _syncingUi = true;
@@ -1244,8 +1375,15 @@ public partial class MainWindow : Window
         BtnMatchReview.IsEnabled = false;
         try
         {
+            var (_, metaGameId, _, _) = _coordinator.GetLastMatchMeta();
+            var targetId = string.IsNullOrWhiteSpace(metaGameId)
+                ? (CmbGameProfile.SelectedValue?.ToString() ?? "universal")
+                : metaGameId;
+            var targetProfile = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, targetId, StringComparison.OrdinalIgnoreCase));
+            SyncAssembledContext(targetId, targetProfile, CoachContextDepth.AnalyticalReflection);
+
             AppendLog($"📊 Analizando partida reciente ({gameName})...");
-            var (review, ms, model) = await _coordinator.GeneratePostMatchReviewAsync(_accounts, _config, AppendLog);
+            var (review, ms, model) = await _coordinator.GeneratePostMatchReviewAsync(_accounts, _config, AppendLog, profile: targetProfile);
             if (string.IsNullOrWhiteSpace(review))
             {
                 AppendLog($"No se pudo generar el resumen post-partida [{model}].");
@@ -1260,6 +1398,23 @@ public partial class MainWindow : Window
             {
                 var savedPath = _repo.SavePostMatchReview(gameName, model, review);
                 AppendLog($"💾 Resumen guardado: {savedPath}");
+
+                var (matchId, matchGameId, _, matchCount) = _coordinator.GetLastMatchMeta();
+                var targetGameId = string.IsNullOrWhiteSpace(matchGameId) ? targetId : matchGameId;
+                var aiEntry = PlayerMemoryStore.BuildEntryFromAiReview(matchId, targetGameId, gameName, matchCount, review);
+                PlayerGameMemory updatedMem;
+                lock (_memoryIoLock)
+                    updatedMem = _repo.RecordMatchToRollingMemory(
+                        targetGameId,
+                        gameName,
+                        aiEntry,
+                        _config.MemoryMatchWindow,
+                        Path.GetFileName(savedPath));
+
+                SyncAssembledContext(targetGameId, targetProfile, CoachContextDepth.RealtimePlay);
+                _coordinator.RefreshPersona("resumen post-partida guardado");
+                RefreshRollingMemoryUi();
+                AppendLog($"🧠 Memoria .md y rolling consolidados ({updatedMem.Matches.Count}/{PlayerMemoryStore.ClampWindowSize(_config.MemoryMatchWindow)} partidas).");
             }
             catch (Exception saveEx)
             {
@@ -1270,16 +1425,7 @@ public partial class MainWindow : Window
             {
                 string spoken = review.Replace("*", "").Replace("#", "").Trim();
                 if (spoken.Length > 280) spoken = spoken[..280];
-                string lang = _config.VoiceLanguage;
-                double vol = _config.TtsVolume;
-                string gender = _config.VoiceGender;
-                string style = _config.VoiceStyle;
-                _ = Task.Run(() =>
-                {
-                    _sharedVoice.WarmUp(lang, vol, gender, style);
-                    _sharedVoice.UpdateSettings(lang, vol, gender, style);
-                    _sharedVoice.SpeakInstant(spoken);
-                });
+                SpeakWithSharedVoiceAsync(spoken);
             }
         }
         catch (Exception ex)
@@ -1292,23 +1438,42 @@ public partial class MainWindow : Window
         }
     }
 
-    private void BtnOpenReviews_Click(object sender, RoutedEventArgs e)
+    private void BtnOpenReviews_Click(object sender, RoutedEventArgs e) =>
+        OpenSafeDirectory(_repo.ReviewsDir, "resúmenes");
+
+    private void BtnOpenGameMemory_Click(object sender, RoutedEventArgs e) =>
+        OpenSafeDirectory(_repo.MemoryDir, "memoria (.md)");
+
+    private void BtnOpenSoulFolder_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            var logsDir = Path.GetDirectoryName(_repo.ReviewsDir);
-            if ((!string.IsNullOrEmpty(logsDir) && Directory.Exists(logsDir) && (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) != 0) ||
-                (Directory.Exists(_repo.ReviewsDir) && (File.GetAttributes(_repo.ReviewsDir) & FileAttributes.ReparsePoint) != 0))
+            if (!File.Exists(_repo.CoachSoulPath))
+                _repo.SaveCoachSoulMarkdown(TxtCoachSoul.Text);
+            if (!File.Exists(_repo.PlayerProfilePath))
+                _repo.SavePlayerProfileMarkdown(TxtPlayerProfile.Text);
+        }
+        catch { }
+        OpenSafeDirectory(_repo.ConfigDir, "config (.md)");
+    }
+
+    private void OpenSafeDirectory(string dirPath, string label)
+    {
+        try
+        {
+            var parent = Path.GetDirectoryName(dirPath);
+            if ((!string.IsNullOrEmpty(parent) && Directory.Exists(parent) && (File.GetAttributes(parent) & FileAttributes.ReparsePoint) != 0) ||
+                (Directory.Exists(dirPath) && (File.GetAttributes(dirPath) & FileAttributes.ReparsePoint) != 0))
             {
-                AppendLog("⚠ Seguridad: carpeta logs/reviews es un enlace simbólico no permitido.");
+                AppendLog($"⚠ Seguridad: carpeta de {label} es un enlace simbólico no permitido.");
                 return;
             }
-            Directory.CreateDirectory(_repo.ReviewsDir);
-            Process.Start(new ProcessStartInfo(_repo.ReviewsDir) { UseShellExecute = true });
+            Directory.CreateDirectory(dirPath);
+            Process.Start(new ProcessStartInfo(dirPath) { UseShellExecute = true });
         }
         catch (Exception ex)
         {
-            AppendLog($"No se pudo abrir carpeta de resúmenes: {SecretRedactor.Redact(ex.Message)}");
+            AppendLog($"No se pudo abrir carpeta de {label}: {SecretRedactor.Redact(ex.Message)}");
         }
     }
 
@@ -1394,6 +1559,7 @@ public partial class MainWindow : Window
         _config.LiveAutoCoachSeconds = double.TryParse(GetSelectedTag(CmbLiveAutoRate), out double autoSec) ? autoSec : 12.0;
         _config.VoiceGender = GetSelectedTag(CmbVoiceGender);
         _config.VoiceStyle = GetSelectedTag(CmbVoiceStyle);
+        _config.TtsRate = GetSelectedTag(CmbVoiceRate, "+5%");
         _config.UseLiveConversational = GetSelectedTag(CmbEngineType) == "live";
         _config.SetCommunicationMode(GetSelectedTag(CmbCommMode));
         _config.MicInputMode = GetSelectedTag(CmbMicInputMode, "open_mic");
@@ -1403,6 +1569,9 @@ public partial class MainWindow : Window
         _config.TextLanguage = GetSelectedTag(CmbLanguage, "es");
         _config.VoiceLanguage = _config.TextLanguage;
         _config.TokenEfficiencyMode = GetSelectedTag(CmbEfficiency, "eco");
+        _config.MemoryMatchWindow = int.TryParse(GetSelectedTag(CmbMemoryWindow, "10"), out int memWin)
+            ? PlayerMemoryStore.ClampWindowSize(memWin)
+            : PlayerMemoryStore.DefaultWindowSize;
         _config.OverlayPosition = GetSelectedTag(CmbOverlayPos, "top-right");
         _config.CaptureMonitor = CmbMonitor.SelectedValue is int m ? m : 1;
         _config.EnableOverlay = ChkEnableOverlay.IsChecked == true;
@@ -1427,11 +1596,17 @@ public partial class MainWindow : Window
 
         RefreshMonitorsList();
         _repo.SaveUserConfig(_config);
+        _repo.SaveCoachSoulMarkdown(TxtCoachSoul.Text);
+        _repo.SavePlayerProfileMarkdown(TxtPlayerProfile.Text);
+        var activeGameId = CmbGameProfile.SelectedValue?.ToString() ?? "universal";
+        var activeProf = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, activeGameId, StringComparison.OrdinalIgnoreCase));
+        SyncAssembledContext(activeGameId, activeProf, CoachContextDepth.RealtimePlay);
         ConfigureOverlayFromCurrentConfig();
         if (!_config.EnableOverlay)
             _overlay.HideImmediately();
 
         _sharedVoice.SetOutputDevice(_config.AudioOutputDeviceName);
+        _sharedVoice.SetSpeechRate(_config.TtsRate);
         _sharedVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
         _coordinator.ApplyLiveSettings(_config);
         RefreshHotkeyButtonLabels();
@@ -1452,16 +1627,28 @@ public partial class MainWindow : Window
             return;
         }
 
+        SpeakWithSharedVoiceAsync(
+            "Rotá segundo palo, tenés dieciocho de boost.",
+            ms => AppendLog($"Preview Voz [{_sharedVoice.EngineName}] ({_config.TtsRate}) disparado en {ms:F1} ms."));
+    }
+
+    private void SpeakWithSharedVoiceAsync(string text, Action<double>? onDispatched = null)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
         string lang = _config.VoiceLanguage;
         string gender = _config.VoiceGender;
         string style = _config.VoiceStyle;
+        string rate = _config.TtsRate;
         double vol = _config.TtsVolume;
         _ = Task.Run(() =>
         {
+            _sharedVoice.SetSpeechRate(rate);
             _sharedVoice.WarmUp(lang, vol, gender, style);
             _sharedVoice.UpdateSettings(lang, vol, gender, style);
-            double ms = _sharedVoice.SpeakInstant("Rotá segundo palo, tenés dieciocho de boost.");
-            AppendLog($"Preview Voz [{_sharedVoice.EngineName}] disparado en {ms:F1} ms.");
+            double ms = _sharedVoice.SpeakInstant(text);
+            onDispatched?.Invoke(ms);
         });
     }
 

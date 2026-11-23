@@ -1225,6 +1225,429 @@ await RunTest("36. GitHubReleaseUpdateService validates GitHub redirects, verifi
     }
 });
 
+// 37. Rolling N-Match Player Memory (FIFO Eviction, Habit Clustering, Upgrade & Evaporation)
+await RunTest("37. PlayerMemoryStore enforces rolling N-match eviction, upgrades AI review & drops aged habits", () =>
+{
+    var mem = new PlayerGameMemory { GameId = "rocket_league", DisplayName = "Rocket League" };
+    var t0 = DateTimeOffset.UtcNow.AddMinutes(-50);
+
+    // Match 1 & Match 2 share boost-conservation mistake (clustered across distinct matches)
+    var m1 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+        new MatchSessionSnapshot("m1", "rocket_league", "Rocket League", 4, "", ["Cuidá el boost al rotar a segundo palo"]), t0);
+    var m2 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+        new MatchSessionSnapshot("m2", "rocket_league", "Rocket League", 3, "", ["Rotá a segundo palo cuidando boost"]), t0.AddMinutes(10));
+
+    PlayerMemoryStore.ApplyRollingMatch(mem, m1, windowSize: 3);
+    PlayerMemoryStore.ApplyRollingMatch(mem, m2, windowSize: 3);
+
+    var recInitial = PlayerMemoryStore.ComputeRecurringHabits(mem, minOccurrences: 2);
+    Assert(recInitial.Count == 1 && recInitial[0].Occurrences == 2 && recInitial[0].WindowMatchCount == 2,
+        $"Expected 1 recurring boost pattern x2/2, got count={recInitial.Count}");
+
+    // Upgrading m2 with full AI review replaces in-place instead of duplicating
+    var m2Upgraded = PlayerMemoryStore.BuildEntryFromAiReview(
+        "m2", "rocket_league", "Rocket League", 5,
+        "1) Hábitos:\n- Rotá con boost guardado hacia segundo palo\n- Evitá double commit en sk-test1234567890abcdefghijklmnop\n2) Acierto: Buen saque\n3) Ejercicio: 5m de rotación defensiva en Freeplay",
+        t0.AddMinutes(11));
+    PlayerMemoryStore.ApplyRollingMatch(mem, m2Upgraded, windowSize: 3);
+    Assert(mem.Matches.Count == 2 && mem.Matches[1].IsAiReviewed && !string.Join(',', mem.Matches[1].Habits).Contains("sk-test"),
+        "In-place upgrade must preserve match count and redact secrets");
+
+    // Add 3 newer matches WITHOUT boost habit -> windowSize=3 evicts m1 and m2 so boost habit vanishes completely!
+    for (int i = 3; i <= 5; i++)
+    {
+        var mi = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+            new MatchSessionSnapshot($"m{i}", "rocket_league", "Rocket League", 2, "", ["Mantené distancia con tu compañero al atacar"]),
+            t0.AddMinutes(i * 10));
+        PlayerMemoryStore.ApplyRollingMatch(mem, mi, windowSize: 3);
+    }
+
+    Assert(mem.Matches.Count == 3 && mem.Matches[0].MatchId == "m3" && mem.Matches[^1].MatchId == "m5",
+        $"Rolling window must retain only 3 newest matches (m3..m5), got {mem.Matches.Count} starting at {mem.Matches[0].MatchId}");
+
+    var recAfterEviction = PlayerMemoryStore.ComputeRecurringHabits(mem, minOccurrences: 2);
+    Assert(recAfterEviction.Count == 1 && recAfterEviction[0].Summary.Contains("distancia", StringComparison.OrdinalIgnoreCase) &&
+           !recAfterEviction.Any(r => r.Summary.Contains("boost", StringComparison.OrdinalIgnoreCase)),
+        "Aged-out boost habit must evaporate after N newer matches push it out of the rolling window");
+    return Task.CompletedTask;
+});
+
+// 38. ConfigRepository Rolling Memory Persistence, CWE-22 Guard & Persona Injection
+await RunTest("38. ConfigRepository persists rolling N-match memory safely, blocks CWE-22 & injects into coach prompt", () =>
+{
+    var tmpRoot = Path.Combine(Path.GetTempPath(), $"hudmind_t38_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmpRoot);
+    try
+    {
+        var repo = new ConfigRepository(tmpRoot);
+        var e1 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+            new MatchSessionSnapshot("cs1", "cs2", "Counter-Strike 2", 3, "", ["No compres solo sin chaleco en ronda eco"]), DateTimeOffset.UtcNow.AddMinutes(-20));
+        var e2 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+            new MatchSessionSnapshot("cs2", "cs2", "Counter-Strike 2", 4, "", ["Respetá ronda eco sin comprar solo sin chaleco"]), DateTimeOffset.UtcNow.AddMinutes(-10));
+
+        repo.RecordMatchToRollingMemory("cs2", "Counter-Strike 2", e1, windowSize: 5);
+        repo.RecordMatchToRollingMemory("cs2", "Counter-Strike 2", e2, windowSize: 5);
+
+        var promptFocus = repo.LoadPlayerMemoryPromptContext("cs2", "Counter-Strike 2", maxChars: 340, isEn: false);
+        Assert(promptFocus.Contains("x2/2") && promptFocus.Contains("eco", StringComparison.OrdinalIgnoreCase),
+            $"Rolling prompt context missing recurring x2 pattern: {promptFocus}");
+
+        var cfg = new UserConfig { VoiceLanguage = "es", PreviousMatchFocus = promptFocus };
+        var prof = new GameProfile { DirectoryPath = tmpRoot, Manifest = new GameManifest { GameId = "cs2", DisplayName = "Counter-Strike 2" } };
+        var liveSys = CoachingPersonaBuilder.BuildLiveSystemInstruction(cfg, prof);
+        var wirePrompt = CompactWireProtocol.BuildRealtimePrompt(prof, cfg, "", false);
+        Assert(liveSys.Contains("x2/2") && wirePrompt.Contains("x2/2"),
+            "Both Live and Classic prompts must carry recurring N-match pattern");
+
+        bool blockedTraversal = false;
+        try { repo.ResetPlayerGameMemory("../outside"); } catch (UnauthorizedAccessException) { blockedTraversal = true; }
+        Assert(blockedTraversal, "Path traversal gameId must throw UnauthorizedAccessException");
+
+        repo.ResetPlayerGameMemory("cs2");
+        Assert(repo.LoadPlayerGameMemory("cs2").Matches.Count == 0, "ResetPlayerGameMemory must delete stored rolling matches");
+    }
+    finally
+    {
+        if (Directory.Exists(tmpRoot)) Directory.Delete(tmpRoot, true);
+    }
+    return Task.CompletedTask;
+});
+
+// 39. TacticalSignalEvaluator Deterministic Telemetry & Smart Event-Driven Triggers
+await RunTest("39. TacticalSignalEvaluator computes CS2/LoL/Dota2/RL facts, combat throttle, 1-shot death review & match boundaries", () =>
+{
+    var tracker = new TacticalSignalTracker();
+    var csProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "Counter-Strike 2" } };
+
+    // CS2 freezetime ECO without armor triggers immediately at faster cooldown
+    var buyEval = TacticalSignalEvaluator.Evaluate(
+        "CS2_GSI: de_mirage phase=live score=2:4 round=freezetime side=CT HP=100 Armor=0 Kit=0 $1450",
+        csProf, tracker, isEn: false);
+    Assert(buyEval.PhaseTag == "BUY_PHASE" && buyEval.TriggerImmediate && buyEval.CooldownMultiplier < 0.7 &&
+           buyEval.DeterministicFact.Contains("ECO", StringComparison.OrdinalIgnoreCase),
+        $"Expected BUY_PHASE ECO immediate trigger, got {buyEval}");
+
+    // CS2 active damage triggers combat pacing delay
+    _ = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=100 Armor=100 $1450", csProf, tracker, isEn: false);
+    var combatEval = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=58 Armor=85 $1450", csProf, tracker, isEn: false);
+    Assert(combatEval.PhaseTag == "COMBAT" && combatEval.ShouldDelayNonUrgent && combatEval.CooldownMultiplier > 1.2,
+        $"Expected COMBAT delay on HP drop, got {combatEval}");
+
+    // CS2 C4 < 12s without kit triggers urgent POST_PLANT
+    var c4Eval = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live C4=planted(~9s) side=CT HP=58 Armor=85 Kit=0 $1450", csProf, tracker, isEn: false);
+    Assert(c4Eval.PhaseTag == "POST_PLANT" && c4Eval.TriggerImmediate && c4Eval.DeterministicFact.Contains("SIN kit"),
+        $"Expected critical C4 without kit alert, got {c4Eval}");
+
+    // First death triggers DEAD_REVIEW once, second consecutive DEAD silences until respawn
+    var death1 = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=0 Armor=0 $2100", csProf, tracker, isEn: false);
+    var death2 = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=0 Armor=0 $2100", csProf, tracker, isEn: false);
+    Assert(death1.PhaseTag == "DEAD_REVIEW" && death1.TriggerImmediate && !death1.ShouldSilence && death2.ShouldSilence,
+        $"Death review should fire once then silence: d1={death1}, d2={death2}");
+
+    // CS2 gameover emits MatchEnded cleanly once
+    var end1 = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=gameover score=13:8", csProf, tracker, isEn: false);
+    var end2 = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=gameover score=13:8", csProf, tracker, isEn: false);
+    Assert(end1.MatchEnded && !end2.MatchEnded, "MatchEnded must fire exactly once per finished match");
+
+    // LoL CS/min + DEAD
+    var lolProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "league_of_legends", DisplayName = "LoL" } };
+    var lolEval = TacticalSignalEvaluator.Evaluate("LoL_API: Tiempo 10:00, Nivel 8, Oro 1550, Vida 0%, CS 75, Wards 6, DEAD", lolProf, tracker, isEn: false);
+    Assert(lolEval.PhaseTag == "DEAD_REVIEW" && lolEval.DeterministicFact.Contains("7.5 CS/m") && lolEval.DeterministicFact.Contains("1550g"),
+        $"LoL deterministic stats unexpected: {lolEval.DeterministicFact}");
+
+    // Dota 2 stack / rune window
+    var dotaProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "dota2", DisplayName = "Dota 2" } };
+    var runeEval = TacticalSignalEvaluator.Evaluate("DOTA2_GSI: 05:50 GAME_IN_PROGRESS juggernaut Lv6 HP=90% MP=70% Gold=1100", dotaProf, tracker, isEn: false);
+    Assert(runeEval.PhaseTag == "OBJECTIVE_WINDOW" && runeEval.TriggerImmediate && runeEval.DeterministicFact.Contains("10s"),
+        $"Dota 2 power rune countdown missing: {runeEval}");
+
+    return Task.CompletedTask;
+});
+
+// 40. Interconnected Markdown System (coach_soul.md, player_profile.md, custom_rules, memory/*.md, INDEX.md & Mastery Graduation)
+await RunTest("40. CoachContextAssembler links soul/profile/rules/memory .md files with dedup, cross-links & habit graduation", () =>
+{
+    var tmpRoot = Path.Combine(Path.GetTempPath(), $"hudmind_t40_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmpRoot);
+    try
+    {
+        var repo = new ConfigRepository(tmpRoot);
+        var csProf = repo.CreateNewGameProfile("cs2", "Counter-Strike 2", ["cs2.exe"]);
+        repo.SaveCustomRules(csProf, "No pushear solo sin flash en rondas de compra");
+        repo.SaveCoachSoulMarkdown("# Soul\n- Decí la verdad sin humo aunque duela.\n- Si no se ve claro, admitilo.");
+        repo.SavePlayerProfileMarkdown("# Perfil\n- No pushear solo sin flash en rondas de compra\n- Juego en monitor 60Hz con ping estable");
+
+        // Record 2 matches with recurring eco mistake, then graduate it by evicting with 3 clean matches
+        var m1 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+            new MatchSessionSnapshot("g1", "cs2", "Counter-Strike 2", 3, "", ["No forzar compra en ronda eco"]), DateTimeOffset.UtcNow.AddMinutes(-40));
+        var m2 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+            new MatchSessionSnapshot("g2", "cs2", "Counter-Strike 2", 4, "", ["Evitá forzar ronda eco sin plata"]), DateTimeOffset.UtcNow.AddMinutes(-30));
+        repo.RecordMatchToRollingMemory("cs2", "Counter-Strike 2", m1, windowSize: 3, latestReviewFileName: "20261122_cs2.md");
+        repo.RecordMatchToRollingMemory("cs2", "Counter-Strike 2", m2, windowSize: 3, latestReviewFileName: "20261122_cs2.md");
+
+        // Evict m1 & m2 with 3 clean matches on a new focus -> eco habit graduates into MasteredHabits!
+        for (int i = 3; i <= 5; i++)
+        {
+            var mi = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+                new MatchSessionSnapshot($"g{i}", "cs2", "Counter-Strike 2", 2, "", ["Usá humo de ventana antes de cruzar mid"]),
+                DateTimeOffset.UtcNow.AddMinutes(-25 + i * 3));
+            repo.RecordMatchToRollingMemory("cs2", "Counter-Strike 2", mi, windowSize: 3);
+        }
+
+        var mem = repo.LoadPlayerGameMemory("cs2");
+        Assert(mem.MasteredHabits.Any(h => h.Summary.Contains("eco", StringComparison.OrdinalIgnoreCase)),
+            "Graduated eco habit must be promoted to MasteredHabits once aged out cleanly");
+
+        var mdPath = Path.Combine(repo.MemoryDir, "cs2.md");
+        var idxPath = Path.Combine(repo.MemoryDir, "INDEX.md");
+        Assert(File.Exists(mdPath) && File.Exists(idxPath), "Both cs2.md and INDEX.md must be auto-generated");
+
+        var mdBody = File.ReadAllText(mdPath);
+        Assert(mdBody.Contains("../../config/coach_soul.md") &&
+               mdBody.Contains("../../config/player_profile.md") &&
+               mdBody.Contains("../../profiles/cs2/custom_rules.md") &&
+               mdBody.Contains("../reviews/20261122_cs2.md") &&
+               mdBody.Contains("Hábitos superados"),
+            $"cs2.md missing cross-links or mastered section:\n{mdBody}");
+
+        var cfg = new UserConfig { VoiceLanguage = "es", CoachStyle = "honest" };
+        var assembledPlay = repo.LoadAssembledCoachContext("cs2", cfg, csProf, CoachContextDepth.RealtimePlay);
+        var assembledReflect = repo.LoadAssembledCoachContext("cs2", cfg, csProf, CoachContextDepth.AnalyticalReflection);
+
+        Assert(assembledPlay.CoachSoulSummary.Contains("humo", StringComparison.OrdinalIgnoreCase), "Soul summary missing");
+        Assert(assembledPlay.PlayerProfileSummary.Contains("60Hz") &&
+               !assembledPlay.PlayerProfileSummary.Contains("pushear solo", StringComparison.OrdinalIgnoreCase),
+            $"Global profile must dedupe bullet already inside custom_rules.md: {assembledPlay.PlayerProfileSummary}");
+        Assert(assembledReflect.CoachSoulSummary.Length >= assembledPlay.CoachSoulSummary.Length,
+            "Reflection depth should retain full context vs trimmed play context");
+
+        CoachContextAssembler.ApplyToConfig(cfg, assembledReflect);
+        var reviewPrompt = CoachingPersonaBuilder.BuildPostMatchReviewPrompt("Counter-Strike 2", "22:10 [PLAY] test", cfg, csProf);
+        Assert(reviewPrompt.Contains("Reglas personales") && reviewPrompt.Contains("coach_soul", StringComparison.OrdinalIgnoreCase) == false &&
+               reviewPrompt.Contains("Personalidad (soul)") && reviewPrompt.Contains("Perfil global"),
+            "Post-match review must cross-link soul, global profile, custom rules, and rolling memory");
+    }
+    finally
+    {
+        if (Directory.Exists(tmpRoot)) Directory.Delete(tmpRoot, true);
+    }
+    return Task.CompletedTask;
+});
+
+// 41. 3-Death Anti-Tilt Detection & Dynamic Honest Tone Switching
+await RunTest("41. TacticalSignalEvaluator detects 3-death Anti-Tilt streak, resets on survival & injects honest directive", () =>
+{
+    var tracker = new TacticalSignalTracker();
+    var csProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "Counter-Strike 2" } };
+
+    // Die 3 consecutive rounds -> triggers IsTiltRisk on round 3
+    for (int round = 1; round <= 3; round++)
+    {
+        var d = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=0 Armor=0 $2000", csProf, tracker, isEn: false);
+        bool expectTilt = round >= 3;
+        Assert(d.ConsecutiveDeaths == round && d.IsTiltRisk == expectTilt,
+            $"Round {round} death expected ConsecutiveDeaths={round}, IsTiltRisk={expectTilt}, got {d.ConsecutiveDeaths}, {d.IsTiltRisk}");
+        _ = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=freezetime side=CT HP=100 Armor=100 $2000", csProf, tracker, isEn: false);
+    }
+
+    // Play a live round and survive into next freezetime -> streak resets cleanly
+    _ = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=84 Armor=100 $2000", csProf, tracker, isEn: false);
+    var survivedFreeze = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=freezetime side=CT HP=100 Armor=100 $4400", csProf, tracker, isEn: false);
+    Assert(survivedFreeze.ConsecutiveDeaths == 0 && !survivedFreeze.IsTiltRisk,
+        $"Surviving a round must reset consecutive death streak, got {survivedFreeze.ConsecutiveDeaths}");
+
+    var cfg = new UserConfig { VoiceLanguage = "es", CoachStyle = "honest", RuntimeTiltRisk = true };
+    var directive = CoachingPersonaBuilder.BuildCompactRankDirective(cfg);
+    Assert(directive.Contains("sin adulaciones") && directive.Contains("ANTI-TILT"),
+        $"Honest style + RuntimeTiltRisk directive mismatch: {directive}");
+
+    return Task.CompletedTask;
+});
+
+// 42. Cross-Game Switch Isolation (Flush Prior Match, Clear Tilt/Memory/Epoch & Reload Next Game .md Context)
+await RunTest("42. Switching games flushes old match cleanly, clears tilt/epoch, preserves Discord Alt-Tab & swaps .md context", async () =>
+{
+    var csProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "CS2", ProcessNames = ["cs2.exe"], CooldownSeconds = 1.0, PhashThreshold = 1 } };
+    var rlProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League", ProcessNames = ["RocketLeague.exe"], CooldownSeconds = 1.0, PhashThreshold = 1 } };
+
+    AssembledCoachContext ResolveGameCtx(GameProfile p) => p.Manifest.GameId switch
+    {
+        "cs2" => new AssembledCoachContext("soul_cs2", "global_cs2", "MEMORY_CS2"),
+        "rocket_league" => new AssembledCoachContext("soul_rl", "global_rl", "MEMORY_RL"),
+        _ => new AssembledCoachContext("soul_u", "global_u", "MEMORY_U")
+    };
+
+    // Part A: Classic CoachOrchestrator game switch + Alt-Tab preservation
+    var winDet = new MutableWindowDetector("cs2.exe");
+    var cfg = new UserConfig { MinInferenceIntervalSeconds = 0.05, RuntimeTiltRisk = true };
+    cfg.SetCommunicationMode("text_only");
+    var flushed = new List<MatchSessionSnapshot>();
+    int csCalls = 0;
+
+    var acc = new ProviderAccount { Id = "p1", Label = "Stub", Provider = "openai", Model = "gpt-4o", ApiKey = "sk-test-stub", Priority = 1 };
+    await using var router = new ProviderFailoverRouter([acc], _ => new CallbackStubProvider(acc, _ =>
+    {
+        int n = Interlocked.Increment(ref csCalls);
+        return new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Medium, $"Tip #{n}", $"Tip #{n}"), 5, "gpt-4o");
+    }));
+
+    await using (var orch = new CoachOrchestrator(
+        cfg, [csProf, rlProf], router, winDet, new StubCapture(), new RecordingVoice(), new RecordingOverlay(),
+        testMode: false, onMatchCompleted: s => flushed.Add(s), resolveContextForProfile: ResolveGameCtx))
+    {
+        await orch.StartAsync();
+        for (int i = 0; i < 60 && (orch.ActiveGameId != "cs2" || orch.CaptureMatchSnapshot()?.InterventionsCount < 1); i++)
+            await Task.Delay(40);
+        Assert(orch.ActiveGameId == "cs2" && (orch.CaptureMatchSnapshot()?.InterventionsCount ?? 0) >= 1, "CS2 session must capture >= 1 tip");
+
+        cfg.RuntimeTiltRisk = true; // simulate streak right before quitting CS2
+        winDet.CurrentExe = "RocketLeague.exe";
+        for (int i = 0; i < 60 && orch.ActiveGameId != "rocket_league"; i++)
+            await Task.Delay(40);
+
+        Assert(orch.ActiveGameId == "rocket_league", $"Expected switch to rocket_league, got {orch.ActiveGameId}");
+        Assert(!cfg.RuntimeTiltRisk, "RuntimeTiltRisk must reset to false on game switch");
+        Assert(cfg.PreviousMatchFocus == "MEMORY_RL", $"Expected MEMORY_RL loaded on switch, got {cfg.PreviousMatchFocus}");
+        Assert(flushed.Count == 1 && flushed[0].GameId == "cs2" && flushed[0].InterventionsCount >= 1,
+            "Prior CS2 match must flush cleanly before switching to Rocket League");
+
+        // Alt-Tabbing to Discord must keep Rocket League active without flushing or corrupting current match
+        int flushedBeforeDiscord = flushed.Count;
+        winDet.CurrentExe = "Discord.exe";
+        await Task.Delay(200);
+        Assert(orch.ActiveGameId == "rocket_league" && flushed.Count == flushedBeforeDiscord,
+            "Brief Alt-Tab to Discord must not split or corrupt active Rocket League session");
+
+        await orch.StopAsync();
+    }
+
+    // Part B: RealtimeLiveCoachOrchestrator flushes old game & reloads Live backend persona with new game context
+    var liveStub = new StubLiveBackend();
+    var liveDet = new MutableWindowDetector("cs2.exe");
+    var liveCfg = new UserConfig { LiveAutoCoachSeconds = 0, RuntimeTiltRisk = true };
+    liveCfg.SetCommunicationMode("coach_voice");
+    var liveFlushed = new List<MatchSessionSnapshot>();
+
+    await using (var live = new RealtimeLiveCoachOrchestrator(
+        liveStub, liveCfg, [csProf, rlProf], liveDet,
+        new StubCapture(), new StubStreamingPlayer(), new StubStreamingMic(), new RecordingOverlay(),
+        testMode: false, onMatchCompleted: s => liveFlushed.Add(s), resolveContextForProfile: ResolveGameCtx))
+    {
+        await live.StartAsync();
+        for (int i = 0; i < 50 && (!liveStub.IsConnected || liveStub.LastProfile?.Manifest.GameId != "cs2"); i++)
+            await Task.Delay(30);
+        Assert(liveCfg.PreviousMatchFocus == "MEMORY_CS2", $"Live startup must load MEMORY_CS2, got {liveCfg.PreviousMatchFocus}");
+
+        liveStub.EmitTurnComplete("Jugá más lento en mid");
+        Assert((live.CaptureMatchSnapshot()?.InterventionsCount ?? 0) == 1, "Live turn must be recorded under CS2");
+
+        liveDet.CurrentExe = "RocketLeague.exe";
+        for (int i = 0; i < 60 && liveStub.LastProfile?.Manifest.GameId != "rocket_league"; i++)
+            await Task.Delay(40);
+
+        Assert(liveStub.LastProfile?.Manifest.GameId == "rocket_league" && liveCfg.PreviousMatchFocus == "MEMORY_RL" && !liveCfg.RuntimeTiltRisk,
+            $"Live switch must reload backend for Rocket League cleanly (focus={liveCfg.PreviousMatchFocus})");
+        Assert(liveFlushed.Count == 1 && liveFlushed[0].GameId == "cs2" && liveFlushed[0].Digest.Contains("Jugá más lento en mid"),
+            "CS2 Live match must flush cleanly without leaking into Rocket League memory");
+        Assert((live.CaptureMatchSnapshot()?.InterventionsCount ?? 0) == 0,
+            "New Rocket League Live match must start with empty fresh match log");
+
+        await live.StopAsync();
+    }
+});
+
+// 43. Audio Output Clarity (Catmull-Rom resample, edge fades, sustained barge-in & TtsRate/IsSpeaking guards)
+await RunTest("43. Audio DSP smoothing, sustained open-mic barge-in & TtsRate/IsSpeaking voice guards work cleanly", async () =>
+{
+    // 1) Fade-in & Fade-out ramps eliminate sudden sample jumps at utterance start/end
+    byte[] raw = MakeSinePcm16(samples: 600, amplitude: 3000);
+    AudioPcmUtilities.ApplyFadeIn16(raw, fadeSamples: 60);
+    AudioPcmUtilities.ApplyFadeOut16(raw, fadeSamples: 60);
+    short firstSample = BitConverter.ToInt16(raw, 0);
+    short lastSample = BitConverter.ToInt16(raw, raw.Length - 2);
+    short midSample = BitConverter.ToInt16(raw, (300) * 2);
+    Assert(firstSample == 0 && Math.Abs(lastSample) < 120 && Math.Abs(midSample) > 1500,
+        $"Edge fades invalid: first={firstSample}, mid={midSample}, last={lastSample}");
+
+    // 2) Catmull-Rom 16kHz -> 24kHz mono and stereo 48kHz -> 24kHz mono resampling preserve bounded amplitude
+    byte[] src16k = MakeSinePcm16(samples: 320, amplitude: 2500);
+    byte[] out24k = AudioPcmUtilities.ResampleMonoPcm16(src16k, channels: 1, srcRate: 16000, dstRate: 24000);
+    Assert(out24k.Length == 480 * 2 && AudioPcmUtilities.ComputeRms16(out24k) > 1200.0,
+        $"Catmull-Rom 16k->24k resample unexpected: len={out24k.Length}");
+
+    byte[] stereo48k = new byte[480 * 4];
+    for (int i = 0; i < 480; i++)
+    {
+        short v = (short)(Math.Sin(i * 0.2) * 2000);
+        BitConverter.GetBytes(v).CopyTo(stereo48k, i * 4);
+        BitConverter.GetBytes(v).CopyTo(stereo48k, i * 4 + 2);
+    }
+    byte[] down24k = AudioPcmUtilities.ResampleMonoPcm16(stereo48k, channels: 2, srcRate: 48000, dstRate: 24000);
+    Assert(down24k.Length == 240 * 2 && AudioPcmUtilities.ComputeRms16(down24k) > 900.0,
+        $"Stereo 48k->24k downmix resample unexpected: len={down24k.Length}");
+
+    // 3) Live open-mic barge-in ignores single 100ms transient click (amplitude 2000) while coach speaks,
+    //    then cleanly interrupts on 2nd consecutive sustained frame!
+    var stubBackend = new StubLiveBackend();
+    var stubPlayer = new StubStreamingPlayer();
+    var stubMic = new StubStreamingMic();
+    var liveCfg = new UserConfig { LiveAutoCoachSeconds = 0 };
+    liveCfg.SetCommunicationMode("conversation");
+
+    await using (var live = new RealtimeLiveCoachOrchestrator(
+        stubBackend, liveCfg,
+        [new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "RL" } }],
+        new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), stubPlayer, stubMic, new RecordingOverlay(), testMode: true))
+    {
+        await live.StartAsync();
+        for (int i = 0; i < 40 && !stubMic.IsCapturing; i++) await Task.Delay(25);
+
+        stubBackend.EmitIncomingAudio([9, 9]); // _modelSpeaking = true
+        byte[] transientClick = MakeSinePcm16(samples: 1600, amplitude: 2000);
+        stubMic.PushChunk(transientClick);
+        await Task.Delay(35);
+        Assert(stubPlayer.InterruptCount == 0 && stubBackend.SentMicChunks == 0,
+            $"Single 100ms medium spike must NOT chop active coach audio (int={stubPlayer.InterruptCount}, sent={stubBackend.SentMicChunks})");
+
+        // Second sustained frame confirms intentional speech -> interrupts & forwards cleanly
+        stubMic.PushChunk(transientClick);
+        for (int i = 0; i < 40 && stubBackend.SentMicChunks == 0; i++) await Task.Delay(20);
+        Assert(stubPlayer.InterruptCount == 1 && stubBackend.SentMicChunks >= 1,
+            $"Two consecutive medium speech chunks must trigger clean barge-in (int={stubPlayer.InterruptCount}, sent={stubBackend.SentMicChunks})");
+
+        stubBackend.EmitTurnComplete("Ok.");
+        await live.StopAsync();
+    }
+
+    // 4) Classic CoachOrchestrator propagates TtsRate & skips auto-cut when routine tip arrives while IsSpeaking==true
+    var voice = new RecordingVoice { IsSpeaking = true };
+    var prof = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "RL", CooldownSeconds = 1.0 } };
+    var clsCfg = new UserConfig { TtsRate = "-10%", MinInferenceIntervalSeconds = 1.0, OverlayDurationSeconds = 2.0 };
+    clsCfg.SetCommunicationMode("coach_voice");
+    var expected = new CoachResponse(true, UrgencyLevel.Medium, "Rotá segundo palo", "Rotá segundo palo");
+    var router = new ProviderFailoverRouter(
+        [new ProviderAccount { Label = "V", Provider = "gemini", ApiKey = "AIzaSyTest1234567890", Model = "gemini-2.5-flash", Priority = 1 }],
+        acc => new StubProvider(acc, 5, new ProviderCallResult(expected)));
+
+    await using var cls = new CoachOrchestrator(
+        clsCfg, [prof], router, new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), voice, new RecordingOverlay(), testMode: true, forcedGameId: "rl");
+
+    await cls.StartAsync();
+    Assert(voice.LastRate == "-10%", $"StartAsync must propagate initial TtsRate (-10%), got '{voice.LastRate}'");
+
+    for (int i = 0; i < 45 && cls.GetMatchSessionDigest().Count == 0; i++) await Task.Delay(40);
+    Assert(cls.GetMatchSessionDigest().Count >= 1 && voice.Spoken.Count == 0,
+        $"Routine medium tip while already speaking must NOT cut off previous utterance (spoken={voice.Spoken.Count})");
+
+    clsCfg.TtsRate = "+0%";
+    cls.UpdateAudioLive(clsCfg);
+    Assert(voice.LastRate == "+0%", $"UpdateAudioLive must propagate new TtsRate (+0%), got '{voice.LastRate}'");
+
+    await cls.StopAsync();
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -1326,9 +1749,12 @@ sealed class StubCapture : IScreenCaptureService
 sealed class RecordingVoice : IVoiceOutputService
 {
     public List<string> Spoken { get; } = [];
+    public string? LastRate { get; private set; }
+    public bool IsSpeaking { get; set; }
     public string EngineName => "recording-test";
     public void WarmUp(string language, double volume, string gender = "male", string style = "neural") { }
     public void UpdateSettings(string language, double volume, string gender = "male", string style = "neural") { }
+    public void SetSpeechRate(string? rate) => LastRate = rate;
     public double SpeakInstant(string text) { Spoken.Add(text); return 1.0; }
     public void StopSpeaking() { }
     public void Dispose() { }

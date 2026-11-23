@@ -31,8 +31,10 @@ public interface IScreenCaptureService : IDisposable
 public interface IVoiceOutputService : IDisposable
 {
     string EngineName { get; }
+    bool IsSpeaking => false;
     void WarmUp(string language, double volume, string gender = "male", string style = "neural");
     void UpdateSettings(string language, double volume, string gender = "male", string style = "neural");
+    void SetSpeechRate(string? rate) { }
     void SetOutputDevice(string? deviceName) { }
     double SpeakInstant(string text);
     void StopSpeaking();
@@ -44,12 +46,12 @@ public interface IOverlayOutputService
 }
 
 /// <summary>
-/// Lazy sensor layer (WinRT OCR + read-only Game Logs/APIs) invoked ONLY for text-only ("blind") AI models.
-/// Vision models never invoke this interface (0ms overhead on Vision hot path).
+/// Sensor layer combining local passive game telemetry/logs (~0-5ms) and optional WinRT OCR for text-only models.
 /// </summary>
 public interface ITextOnlySensorService
 {
     Task<HudSensorSnapshot> ExtractAsync(byte[] jpegBytes, GameProfile profile, CancellationToken ct = default);
+    Task<string> ReadTelemetryAsync(GameProfile profile, CancellationToken ct = default) => Task.FromResult(string.Empty);
     void Reset();
 }
 
@@ -100,6 +102,7 @@ public interface ICoachEngine : IAsyncDisposable
     string EngineBadge { get; }
     string ActiveChannelStatus { get; }
     string ActiveVoiceDisplay { get; }
+    string ActiveGameId => string.Empty;
 
     Task StartAsync();
     Task StopAsync();
@@ -111,4 +114,5 @@ public interface ICoachEngine : IAsyncDisposable
     void UpdateAudioLive(UserConfig config);
     void ApplyLiveSettings(UserConfig config);
     (string GameName, string Digest, int Count) GetMatchSessionDigest(bool isEn = false);
+    MatchSessionSnapshot? CaptureMatchSnapshot(bool isEn = false) => null;
 }

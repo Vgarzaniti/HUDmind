@@ -25,6 +25,7 @@ public sealed class HybridVoiceService : IVoiceOutputService
     }
 
     public bool IsNeuralWorkerPresent => _winRt.IsAvailable;
+    public bool IsSpeaking => _style == "neural" && _winRt.IsAvailable && _winRt.IsSpeaking;
 
     public string EngineName =>
         _style == "neural" && _winRt.IsAvailable
@@ -63,7 +64,11 @@ public sealed class HybridVoiceService : IVoiceOutputService
 
     public void SetOutputDevice(string? deviceName) => _winRt.SetOutputDevice(deviceName);
 
-    public void SetSpeechRate(string? rate) => _winRt.SetSpeechRate(rate);
+    public void SetSpeechRate(string? rate)
+    {
+        _winRt.SetSpeechRate(rate);
+        _instant.SetSpeechRate(rate);
+    }
 
     public double SpeakInstant(string text)
     {

@@ -17,6 +17,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
 
     private ICoachEngine? _activeEngine;
+    private string _lastMatchId = string.Empty;
+    private string _lastMatchGameId = string.Empty;
     private string _lastMatchGameName = string.Empty;
     private string _lastMatchDigest = string.Empty;
     private int _lastMatchCount;
@@ -41,13 +43,34 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
         Action<string> onLog,
         Action<CoachRuntimeStats> onStats,
         Action<bool> onPauseChanged,
-        Action onMicHotkey)
+        Action onMicHotkey,
+        Action<MatchSessionSnapshot>? onMatchCompleted = null,
+        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null)
     {
         await _lifecycleLock.WaitAsync();
         try
         {
             if (_disposed || IsRunning)
                 return (false, false, string.Empty, string.Empty);
+
+            _lastMatchId = string.Empty;
+            _lastMatchGameId = string.Empty;
+            _lastMatchGameName = string.Empty;
+            _lastMatchDigest = string.Empty;
+            _lastMatchCount = 0;
+
+            Action<MatchSessionSnapshot>? wrappedMatchCompleted = snap =>
+            {
+                if (snap.InterventionsCount > 0 && !string.IsNullOrWhiteSpace(snap.Digest))
+                {
+                    _lastMatchId = snap.MatchId;
+                    _lastMatchGameId = snap.GameId;
+                    _lastMatchGameName = snap.DisplayName;
+                    _lastMatchDigest = snap.Digest;
+                    _lastMatchCount = snap.InterventionsCount;
+                }
+                onMatchCompleted?.Invoke(snap);
+            };
 
             if (_gsiService.TryStart())
                 onLog($"📡 Receptor Valve GSI oficial activo (127.0.0.1:{LoopbackGsiService.DefaultPort}) para CS2 / Dota 2.");
@@ -87,7 +110,9 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                             if (held && prev == 0 && config.IsPushToTalkMode && config.EnableAudioCues && !config.IsTextOnlyMode)
                                 Win32AudioCue.Play(AudioCueKind.SoftOn);
                             return held;
-                        }
+                        },
+                        onMatchCompleted: wrappedMatchCompleted,
+                        resolveContextForProfile: resolveContextForProfile
                     );
                 }
                 catch
@@ -119,7 +144,10 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                     onLog: onLog,
                     onStats: onStats,
                     onPauseChanged: onPauseChanged,
-                    disposeVoice: false
+                    disposeVoice: false,
+                    telemetrySensor: textOnlySensor,
+                    onMatchCompleted: wrappedMatchCompleted,
+                    resolveContextForProfile: resolveContextForProfile
                 );
             }
 
@@ -195,16 +223,31 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
     {
         if (_activeEngine is not null)
         {
-            var (g, d, count) = _activeEngine.GetMatchSessionDigest(isEn);
-            if (count > 0 && !string.IsNullOrWhiteSpace(d))
+            var snap = _activeEngine.CaptureMatchSnapshot(isEn);
+            if (snap is not null && snap.InterventionsCount > 0 && !string.IsNullOrWhiteSpace(snap.Digest))
             {
-                _lastMatchGameName = g;
-                _lastMatchDigest = d;
-                _lastMatchCount = count;
+                _lastMatchId = snap.MatchId;
+                _lastMatchGameId = snap.GameId;
+                _lastMatchGameName = snap.DisplayName;
+                _lastMatchDigest = snap.Digest;
+                _lastMatchCount = snap.InterventionsCount;
+            }
+            else
+            {
+                var (g, d, count) = _activeEngine.GetMatchSessionDigest(isEn);
+                if (count > 0 && !string.IsNullOrWhiteSpace(d))
+                {
+                    _lastMatchGameName = g;
+                    _lastMatchDigest = d;
+                    _lastMatchCount = count;
+                }
             }
         }
         return (_lastMatchGameName, _lastMatchDigest, _lastMatchCount);
     }
+
+    public (string MatchId, string GameId, string GameName, int Count) GetLastMatchMeta() =>
+        (_lastMatchId, _lastMatchGameId, _lastMatchGameName, _lastMatchCount);
 
     public (int InstalledCount, string Message) InstallValveGsiConfigs()
     {
@@ -218,7 +261,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
         IReadOnlyList<ProviderAccount> accounts,
         UserConfig config,
         Action<string> onLog,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        GameProfile? profile = null)
     {
         bool isEn = CoachingPersonaBuilder.IsEnglish(config, preferTextLang: true);
         var (gameName, digest, _) = SnapshotLastMatchSession(isEn);
@@ -226,7 +270,7 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
             return (null, 0, "empty");
 
         await using var router = new ProviderFailoverRouter(accounts, onLog: onLog);
-        return await router.GenerateMatchReviewAsync(gameName, digest, config, ct);
+        return await router.GenerateMatchReviewAsync(gameName, digest, config, ct, profile);
     }
 
     public async ValueTask DisposeAsync()

@@ -31,8 +31,11 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private readonly Action<string>? _onLog;
     private readonly Action<CoachRuntimeStats>? _onStats;
     private readonly Action<bool>? _onPauseChanged;
+    private readonly Action<MatchSessionSnapshot>? _onMatchCompleted;
+    private readonly Func<GameProfile, AssembledCoachContext>? _resolveContextForProfile;
 
     private readonly InterventionMemory _memory = new(maxItems: 12, ttlSeconds: 75.0);
+    private readonly TacticalSignalTracker _tacticalTracker = new();
     private readonly BlackScreenDiagnostic _blackScreenDiagnostic = new();
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
@@ -50,6 +53,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private Task? _micSendTask;
 
     private volatile GameProfile? _activeProfile;
+    private long _profileEpoch;
     private volatile bool _userPaused;
     private volatile bool _micEnabled;
     private volatile bool _modelSpeaking;
@@ -65,6 +69,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private double _lastTtfaMs;
     private long _lastTurnRequestTick;
     private int _waitingFirstAudioInt;
+    private int _bargeInConsecutiveFrames;
     private long _lastOverlayPartialTick;
     private long _lastAutoNudgeUtcTicks;
     private long _lastMicVoiceUtcTicks;
@@ -77,6 +82,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     public string ActiveVoiceLabel => _backend.ResolveVoiceName(_config.VoiceGender);
     public string ActiveProviderName => _backend.ProviderName;
     public string ActiveVoiceDisplay => ActiveVoiceLabel;
+    public string ActiveGameId => _activeProfile?.Manifest.GameId ?? string.Empty;
     public string ActiveChannelStatus => _config.IsTextOnlyMode
         ? $"💬 {_backend.ProviderName} · Solo texto"
         : _config.IsCoachVoiceOnlyMode
@@ -116,7 +122,9 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         Action<CoachRuntimeStats>? onStats = null,
         Action<bool>? onPauseChanged = null,
         ITextOnlySensorService? localPhaseGate = null,
-        Func<bool>? isPttKeyPressed = null)
+        Func<bool>? isPttKeyPressed = null,
+        Action<MatchSessionSnapshot>? onMatchCompleted = null,
+        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null)
     {
         _backend = backend;
         _config = config;
@@ -133,6 +141,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         _onLog = onLog;
         _onStats = onStats;
         _onPauseChanged = onPauseChanged;
+        _onMatchCompleted = onMatchCompleted;
+        _resolveContextForProfile = resolveContextForProfile;
         _micEnabled = config.IsMicActive;
     }
 
@@ -141,6 +151,21 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
     public (string GameName, string Digest, int Count) GetMatchSessionDigest(bool isEn = false) =>
         _memory.BuildMatchReviewDigest(isEn: isEn);
+
+    public MatchSessionSnapshot? CaptureMatchSnapshot(bool isEn = false) =>
+        _memory.BuildSessionSnapshot(isEn);
+
+    private void FlushMatchSnapshot(bool resetMatchLog)
+    {
+        bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+        var snap = _memory.BuildSessionSnapshot(isEn);
+        if (snap is not null && snap.InterventionsCount > 0)
+        {
+            try { _onMatchCompleted?.Invoke(snap); } catch { }
+        }
+        if (resetMatchLog)
+            _memory.Clear(clearMatchLog: true);
+    }
 
     public void SetAudioDevicesLive(string? inputDeviceName, string? outputDeviceName)
     {
@@ -166,10 +191,14 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _pcmPlayer.SetVolume(_config.TtsVolume);
             _mic.SetDevice(_config.AudioInputDeviceName);
             _userPaused = false;
+            _config.RuntimeTiltRisk = false;
             _micEnabled = _config.IsMicActive;
             _bargeInMuted = false;
             _suppressCurrentTurnAudio = false;
             _memory.Clear(clearMatchLog: true);
+            _tacticalTracker.Reset();
+            _blackScreenDiagnostic.Reset();
+            Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, 0);
             Interlocked.Exchange(ref _lastPttHeldUtcTicks, 0);
             lock (_hashLock) _lastSentHash = null;
 
@@ -184,6 +213,9 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 _activeProfile = MatchForegroundProfile(_windowDetector.GetForegroundExecutable());
                 _gameFocused = _activeProfile is not null;
             }
+
+            if (_activeProfile is not null && _resolveContextForProfile is not null)
+                CoachContextAssembler.ApplyToConfig(_config, _resolveContextForProfile(_activeProfile));
 
             var cts = new CancellationTokenSource();
             Volatile.Write(ref _runCts, cts);
@@ -470,15 +502,17 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             Volatile.Write(ref _reconnectCts, localReconnectCts);
             Task? videoTask = null;
             bool hadValidSession = false;
+            long sessionEpoch = Volatile.Read(ref _profileEpoch);
+            var sessionProfile = _activeProfile;
 
             try
             {
                 await _backend.RunSessionLoopAsync(
                     _config,
-                    _activeProfile,
-                    onPcm24kAudio: HandleIncomingAudioChunk,
-                    onPartialTranscript: HandlePartialTranscript,
-                    onTurnComplete: HandleTurnComplete,
+                    sessionProfile,
+                    onPcm24kAudio: pcm => HandleIncomingAudioChunk(sessionEpoch, pcm),
+                    onPartialTranscript: line => HandlePartialTranscript(sessionEpoch, sessionProfile, line),
+                    onTurnComplete: spoken => HandleTurnComplete(sessionEpoch, sessionProfile, spoken),
                     onInterrupted: HandleInterrupted,
                     onLog: msg => _onLog?.Invoke(SecretRedactor.Redact(msg)),
                     onConnected: () =>
@@ -546,6 +580,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     _pcmPlayer.InterruptAndClear();
                 }
                 Interlocked.Exchange(ref _waitingFirstAudioInt, 0);
+                Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
                 StopMicAndDrainChannel();
                 if (videoTask is not null)
                 {
@@ -563,9 +598,9 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         }
     }
 
-    private void HandleIncomingAudioChunk(byte[] pcm24k)
+    private void HandleIncomingAudioChunk(long sessionEpoch, byte[] pcm24k)
     {
-        if (pcm24k.Length == 0) return;
+        if (pcm24k.Length == 0 || Volatile.Read(ref _profileEpoch) != sessionEpoch) return;
         lock (_audioStateLock)
         {
             if (!_config.IsCoachVoiceActive || _userPaused || _bargeInMuted || _suppressCurrentTurnAudio)
@@ -582,9 +617,9 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         }
     }
 
-    private void HandlePartialTranscript(string currentLine)
+    private void HandlePartialTranscript(long sessionEpoch, GameProfile? sessionProfile, string currentLine)
     {
-        if (string.IsNullOrWhiteSpace(currentLine)) return;
+        if (string.IsNullOrWhiteSpace(currentLine) || Volatile.Read(ref _profileEpoch) != sessionEpoch) return;
 
         if (_config.IsTextOnlyMode && Interlocked.Exchange(ref _waitingFirstAudioInt, 0) == 1)
         {
@@ -600,33 +635,38 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             if (prevTick == 0 || Stopwatch.GetElapsedTime(prevTick).TotalMilliseconds >= 90.0)
             {
                 Interlocked.Exchange(ref _lastOverlayPartialTick, Stopwatch.GetTimestamp());
+                var title = (sessionProfile ?? _activeProfile)?.Manifest.DisplayName ?? "HUDMind Live";
                 _overlay.ShowCallout(
                     currentLine,
                     UrgencyLevel.Medium,
-                    _activeProfile?.Manifest.DisplayName ?? "HUDMind Live",
+                    title,
                     _config.OverlayDurationSeconds);
             }
         }
     }
 
-    private void HandleTurnComplete(string spoken)
+    private void HandleTurnComplete(long sessionEpoch, GameProfile? sessionProfile, string spoken)
     {
+        bool staleEpoch = Volatile.Read(ref _profileEpoch) != sessionEpoch;
         bool allowFlush;
         lock (_audioStateLock)
         {
-            allowFlush = _config.IsCoachVoiceActive && !_userPaused && !_bargeInMuted && !_suppressCurrentTurnAudio;
+            allowFlush = !staleEpoch && _config.IsCoachVoiceActive && !_userPaused && !_bargeInMuted && !_suppressCurrentTurnAudio;
             if (allowFlush)
                 _pcmPlayer.FlushBuffered();
+            else
+                _pcmPlayer.InterruptAndClear();
             _modelSpeaking = false;
             _bargeInMuted = false;
             _suppressCurrentTurnAudio = false;
         }
         Interlocked.Exchange(ref _waitingFirstAudioInt, 0);
+        Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
         Interlocked.Exchange(ref _lastOverlayPartialTick, 0);
 
-        if (!string.IsNullOrWhiteSpace(spoken))
+        if (!staleEpoch && !string.IsNullOrWhiteSpace(spoken))
         {
-            var prof = _activeProfile;
+            var prof = sessionProfile ?? _activeProfile;
             _memory.RecordMatchEvent(
                 prof?.Manifest.GameId ?? string.Empty,
                 prof?.Manifest.DisplayName ?? "HUDMind Live",
@@ -660,6 +700,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _suppressCurrentTurnAudio = false;
         }
         Interlocked.Exchange(ref _waitingFirstAudioInt, 0);
+        Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
     }
 
     private void StartMicIfEnabled()
@@ -668,6 +709,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         {
             if (_disposed || !_micEnabled || _userPaused || !_backend.IsConnected) return;
 
+            Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
             StopMicAndDrainChannelLocked();
 
             var micChan = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(2)
@@ -722,16 +764,29 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     double rms = AudioPcmUtilities.ComputeRms16(pcmChunk);
                     bool coachAudible = _modelSpeaking || _pcmPlayer.IsPlayingAudio;
 
-                    // Acoustic Echo Suppression: ignore speaker bleed while coach speaks, trigger clean barge-in above threshold
+                    // Acoustic Echo Suppression: ignore speaker bleed & brief key clacks while coach speaks, trigger clean barge-in on real voice
                     if (coachAudible)
                     {
                         if (pttInReleaseTail)
                             return; // Do not trigger false echo barge-in on post-release silence tail
 
-                        double bargeThreshold = (pttMode && pttHeld) ? 650.0 : 1800.0;
-                        if (rms < bargeThreshold)
-                            return;
+                        if (pttMode && pttHeld)
+                        {
+                            if (rms < 650.0)
+                                return;
+                        }
+                        else
+                        {
+                            if (rms < 1600.0)
+                            {
+                                Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
+                                return;
+                            }
+                            if (rms < 2700.0 && Interlocked.Increment(ref _bargeInConsecutiveFrames) < 2)
+                                return; // Require >=200ms sustained medium speech to avoid mechanical key clicks cutting off coach
+                        }
 
+                        Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
                         lock (_audioStateLock)
                         {
                             // Mute residual dying chunks ONLY when server stream is still active (_modelSpeaking == true)!
@@ -741,6 +796,10 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             _modelSpeaking = false;
                             _pcmPlayer.InterruptAndClear();
                         }
+                    }
+                    else
+                    {
+                        Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
                     }
 
                     if (pttMode)
@@ -854,9 +913,19 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             if (!ReferenceEquals(matched, _activeProfile))
                             {
                                 var prev = _activeProfile;
-                                _activeProfile = matched;
+                                if (prev is not null)
+                                    FlushMatchSnapshot(resetMatchLog: true);
+
+                                Interlocked.Increment(ref _profileEpoch);
+                                _config.RuntimeTiltRisk = false;
+                                Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, 0);
                                 lock (_hashLock) _lastSentHash = null;
                                 _localPhaseGate?.Reset();
+                                _tacticalTracker.Reset(matched.Manifest.GameId);
+                                _blackScreenDiagnostic.Reset();
+                                if (_resolveContextForProfile is not null)
+                                    CoachContextAssembler.ApplyToConfig(_config, _resolveContextForProfile(matched));
+                                _activeProfile = matched;
                                 _onLog?.Invoke($"Juego detectado automáticamente: {matched.Manifest.DisplayName} ({fg})");
                                 if (_config.EnableOverlay)
                                     _overlay.ShowCallout("Coach Live ACTIVO — observando", UrgencyLevel.Low, matched.Manifest.DisplayName, 3.0);
@@ -882,16 +951,27 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     {
                         Interlocked.Increment(ref _framesSent);
 
+                        bool isEnEval = CoachingPersonaBuilder.IsEnglish(_config);
+                        string rawTelemetry = _localPhaseGate is not null && _activeProfile is not null
+                            ? await _localPhaseGate.ReadTelemetryAsync(_activeProfile, ct)
+                            : string.Empty;
+                        var tactical = TacticalSignalEvaluator.Evaluate(rawTelemetry, _activeProfile, _tacticalTracker, isEnEval);
+                        _config.RuntimeTiltRisk = tactical.IsTiltRisk;
+                        if (tactical.MatchEnded)
+                            FlushMatchSnapshot(resetMatchLog: true);
+
                         double autoSec = _config.LiveAutoCoachSeconds;
                         long nowTicks = DateTimeOffset.UtcNow.UtcTicks;
                         long lastMicTicks = Interlocked.Read(ref _lastMicVoiceUtcTicks);
                         long lastNudgeTicks = Interlocked.Read(ref _lastAutoNudgeUtcTicks);
                         bool userRecentlySpoke = lastMicTicks > 0 && (nowTicks - lastMicTicks) < TimeSpan.FromSeconds(3.0).Ticks;
-                        bool shouldNudge = autoSec > 0 &&
-                            !_modelSpeaking &&
-                            !_pcmPlayer.IsPlayingAudio &&
-                            !userRecentlySpoke &&
-                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(autoSec).Ticks);
+                        bool canVoiceTurn = autoSec > 0 && !_modelSpeaking && !_pcmPlayer.IsPlayingAudio && !userRecentlySpoke;
+                        double scaledAutoSec = autoSec * tactical.CooldownMultiplier;
+                        bool regularDue = canVoiceTurn &&
+                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(scaledAutoSec).Ticks);
+                        bool eventDue = canVoiceTurn && tactical.TriggerImmediate &&
+                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(Math.Max(3.5, autoSec * 0.45)).Ticks);
+                        bool shouldNudge = (regularDue || eventDue) && !tactical.ShouldSilence;
 
                         bool sentAsTurn = false;
                         if (shouldNudge)
@@ -917,10 +997,14 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                 {
                                     Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
                                     Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
-                                    bool isEn = CoachingPersonaBuilder.IsEnglish(_config);
-                                    string prompt = isEn
-                                        ? "Look at this exact live game frame. Give 1 crisp, helpful tactical tip in 8-14 words based strictly on what you see."
-                                        : "Mirá esta captura exacta de la partida actual. Da 1 solo consejo táctico claro, natural y útil en español (8 a 14 palabras) basado únicamente en lo que ves en pantalla.";
+                                    string factNote = string.IsNullOrWhiteSpace(tactical.DeterministicFact)
+                                        ? string.Empty
+                                        : (isEnEval
+                                            ? $" Verified sensor fact: {tactical.DeterministicFact}."
+                                            : $" Dato exacto del juego: {tactical.DeterministicFact}.");
+                                    string prompt = isEnEval
+                                        ? $"Look at this exact live game frame.{factNote} Give 1 crisp, helpful tactical tip in 8-14 words based strictly on what you see."
+                                        : $"Mirá esta captura exacta de la partida actual.{factNote} Da 1 solo consejo táctico claro, natural y útil en español (8 a 14 palabras) basado únicamente en lo que ves en pantalla.";
                                     await _backend.SendImageAndPromptTurnAsync(jpeg, prompt, ct);
                                 }
                                 finally
@@ -998,6 +1082,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 try { await Task.WhenAll(tasksToAwait); } catch { /* clean stop */ }
             }
 
+            FlushMatchSnapshot(resetMatchLog: false);
             _sessionTask = null;
             _micSendTask = null;
             cts.Dispose();

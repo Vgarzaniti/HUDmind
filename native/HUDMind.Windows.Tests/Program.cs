@@ -301,6 +301,55 @@ await RunTest("W8. KnownFolders.GetDownloadsDirectory resolves an existing direc
     return Task.CompletedTask;
 });
 
+// W9. Enriched Telemetry Sensors (CS2 C4 Countdown/Kit/Helmet, LoL allgamedata CS/Dead, ReadTelemetryAsync)
+await RunTest("W9. Enriched GSI C4 countdown/kit, LoL allgamedata CS/DEAD & ReadTelemetryAsync bridge cleanly", async () =>
+{
+    int port = FindFreeLoopbackPort();
+    using var gsi = new LoopbackGsiService(port);
+    Assert(gsi.TryStart(), "GSI server start");
+
+    var cs2Json = "{\"provider\":{\"appid\":730},\"map\":{\"name\":\"de_inferno\",\"phase\":\"live\"},\"round\":{\"phase\":\"live\",\"bomb\":\"planted\"},\"player\":{\"team\":\"CT\",\"state\":{\"health\":90,\"armor\":100,\"helmet\":true,\"defusekit\":true,\"money\":4150}}}";
+    var req = $"POST / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {Encoding.UTF8.GetByteCount(cs2Json)}\r\nConnection: close\r\n\r\n{cs2Json}";
+    await SendRawLoopbackHttpAsync(port, req);
+    var summary = gsi.GetRecentSummary("cs2");
+    Assert(summary.Contains("Helmet=1") && summary.Contains("Kit=1") && summary.Contains("C4=planted(~"),
+        $"Expected Helmet, Kit and C4 countdown in CS2 summary: {summary}");
+
+    var sensor = new TextOnlySensorService(gsi);
+    var csProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "Counter-Strike 2", ProcessNames = ["cs2.exe"] } };
+    var bridged = await sensor.ReadTelemetryAsync(csProf);
+    Assert(bridged.Contains("CS2_GSI:") && bridged.Contains("Kit=1"),
+        $"ReadTelemetryAsync must forward GSI telemetry without image capture: {bridged}");
+
+    using var lolDoc = System.Text.Json.JsonDocument.Parse("{\"activePlayer\":{\"riotId\":\"Test#LAS\",\"level\":9,\"currentGold\":1420,\"championStats\":{\"currentHealth\":0,\"maxHealth\":1200}},\"gameData\":{\"gameTime\":615.0},\"allPlayers\":[{\"riotId\":\"Test#LAS\",\"isDead\":true,\"scores\":{\"creepScore\":72,\"wardScore\":8.4}}]}");
+    var lolParsed = LeagueLiveClientSensor.ParseAllGameData(lolDoc.RootElement);
+    Assert(lolParsed.Contains("10:15") && lolParsed.Contains("CS 72") && lolParsed.Contains("Wards 8") && lolParsed.Contains("DEAD"),
+        $"ParseAllGameData missing CS/Wards/DEAD fields: {lolParsed}");
+});
+
+// W10. Win32StreamingPcmPlayer jitter prebuffer/flush/odd-byte + SAPI5 TtsRate parity
+await RunTest("W10. Win32StreamingPcmPlayer prebuffer/flush/interrupt & WinRt/SAPI5 speech rate parity hold cleanly", () =>
+{
+    Assert(Math.Abs(WinRtNaturalVoiceService.ParseRateFactor(null) - 1.05) < 0.001, "Default natural rate should be +5% (1.05)");
+    Assert(WinRtNaturalVoiceService.ParseSapiRateOffset("-10%") == -1, "-10% -> SAPI rate -1");
+    Assert(WinRtNaturalVoiceService.ParseSapiRateOffset("+5%") == 0, "+5% -> SAPI rate 0");
+    Assert(WinRtNaturalVoiceService.ParseSapiRateOffset("+15%") == 1, "+15% -> SAPI rate 1");
+    Assert(WinRtNaturalVoiceService.ParseSapiRateOffset("+25%") == 2, "+25% -> SAPI rate 2");
+
+    using var player = new Win32StreamingPcmPlayer();
+    player.SetVolume(0.6);
+    player.EnqueuePcm24k(new byte[2401]); // under 160ms prebuffer + odd byte
+    player.EnqueuePcm24k(new byte[6000]); // crosses prebuffer -> submits smoothed block
+    player.FlushBuffered();               // adds fade-out + trailing silence padding & clears odd state
+    player.InterruptAndClear();           // resets safely even if audio hardware is absent on headless runner
+    Assert(!player.IsPlayingAudio, "InterruptAndClear must clear IsPlayingAudio immediately");
+
+    using var voice = new HybridVoiceService();
+    voice.SetSpeechRate("+5%");
+    voice.SetSpeechRate("+0%");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

@@ -1,8 +1,10 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using HUDMind.Core.Engine;
+using HUDMind.Core.Pipeline;
 using Windows.Media.SpeechSynthesis;
 using WinRtGender = Windows.Media.SpeechSynthesis.VoiceGender;
 
@@ -27,7 +29,7 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
     private string? _pendingText;
     private string _language = "es";
     private string _gender = "male";
-    private double _rateFactor = 1.15;
+    private double _rateFactor = 1.05;
     private string _selectedVoiceName = "WinRT";
     private bool _initAttempted;
     private bool _available;
@@ -41,6 +43,8 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
             return _available;
         }
     }
+
+    public bool IsSpeaking => _player.IsPlayingAudio;
 
     public string EngineName => _available ? $"winrt-natural({_selectedVoiceName})" : "winrt-unavailable";
 
@@ -97,8 +101,9 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
         {
             if (_disposed || !_available) return 0;
             _pendingText = text.Trim();
+            // Cancel only pending text synthesis; wait until the new PCM is ready before swapping playback
+            // so the current sentence is never chopped into dead silence prematurely.
             try { _utteranceCts?.Cancel(); } catch { }
-            _player.InterruptAndClear();
         }
         try { _signal.Release(); } catch (SemaphoreFullException) { }
         return Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
@@ -248,6 +253,8 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
                 var pcm24k = ConvertWavToPcm24kMono(ms.GetBuffer(), (int)ms.Length);
                 if (!uttCts.IsCancellationRequested && pcm24k.Length > 0)
                 {
+                    AudioPcmUtilities.ApplyFadeOut16(pcm24k, fadeSamples: 96);
+                    _player.InterruptAndClear();
                     _player.EnqueuePcm24k(pcm24k);
                     _player.FlushBuffered();
                 }
@@ -312,57 +319,33 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
         }
 
         int frameBytes = channels * 2;
-        int srcFrames = dataSize / frameBytes;
+        int validDataSize = Math.Min(dataSize, length - dataOffset);
+        int srcFrames = validDataSize / frameBytes;
         if (srcFrames <= 0)
             return [];
 
-        // Fast exact copy if already 24kHz mono
-        if (sampleRate == 24000 && channels == 1)
-        {
-            var exact = new byte[srcFrames * 2];
-            Buffer.BlockCopy(wavBytes, dataOffset, exact, 0, exact.Length);
-            return exact;
-        }
-
-        int dstFrames = Math.Max(1, (int)((long)srcFrames * 24000 / sampleRate));
-        var dst = new byte[dstFrames * 2];
-        double ratio = (double)sampleRate / 24000.0;
-
-        for (int i = 0; i < dstFrames; i++)
-        {
-            double srcIdx = i * ratio;
-            int idx0 = Math.Min((int)srcIdx, srcFrames - 1);
-            int idx1 = Math.Min(idx0 + 1, srcFrames - 1);
-            double frac = srcIdx - idx0;
-
-            short s0 = ReadMonoSample(wavBytes, dataOffset, idx0, channels);
-            short s1 = ReadMonoSample(wavBytes, dataOffset, idx1, channels);
-            int interp = (int)Math.Round(s0 + (s1 - s0) * frac);
-            short clamped = (short)Math.Clamp(interp, short.MinValue, short.MaxValue);
-            BinaryPrimitives.WriteInt16LittleEndian(dst.AsSpan(i * 2, 2), clamped);
-        }
-
-        return dst;
-    }
-
-    private static short ReadMonoSample(byte[] wavBytes, int dataOffset, int frameIndex, int channels)
-    {
-        int byteOff = dataOffset + frameIndex * channels * 2;
-        short left = BinaryPrimitives.ReadInt16LittleEndian(wavBytes.AsSpan(byteOff, 2));
-        if (channels == 1)
-            return left;
-        short right = BinaryPrimitives.ReadInt16LittleEndian(wavBytes.AsSpan(byteOff + 2, 2));
-        return (short)((left + right) / 2);
+        return AudioPcmUtilities.ResampleMonoPcm16(
+            wavBytes.AsSpan(dataOffset, srcFrames * frameBytes),
+            channels,
+            sampleRate,
+            24000);
     }
 
     internal static double ParseRateFactor(string? rate)
     {
         if (string.IsNullOrWhiteSpace(rate))
-            return 1.15;
-        var clean = rate.Trim().TrimEnd('%');
-        if (double.TryParse(clean, out double pct))
+            return 1.05;
+        var clean = rate.Trim().TrimEnd('%').Replace(',', '.');
+        if (double.TryParse(clean, NumberStyles.Float, CultureInfo.InvariantCulture, out double pct))
             return Math.Clamp(1.0 + pct / 100.0, 0.65, 1.75);
-        return 1.15;
+        return 1.05;
+    }
+
+    internal static int ParseSapiRateOffset(string? rate)
+    {
+        double factor = ParseRateFactor(rate);
+        double pct = (factor - 1.0) * 100.0;
+        return Math.Clamp((int)Math.Round(pct / 12.0), -4, 4);
     }
 
     public void Dispose()

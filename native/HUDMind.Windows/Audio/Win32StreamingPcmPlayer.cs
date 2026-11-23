@@ -3,18 +3,21 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using HUDMind.Core.Engine;
+using HUDMind.Core.Pipeline;
 
 namespace HUDMind.Windows;
 
 /// <summary>
-/// Zero-NuGet Win32 `winmm.dll` streaming 24kHz 16-bit mono PCM player for Live Native Audio.
-/// Preserves odd-byte PCM alignment across chunks, safely verifies waveOutUnprepareHeader
-/// to prevent Use-After-Free on DMA drivers, and uses lock-free monotonic timing for Acoustic Echo Suppression.
+/// Zero-NuGet Win32 `winmm.dll` streaming 24kHz 16-bit mono PCM player for Live Native Audio &amp; WinRT Voice.
+/// Uses adaptive startup jitter pre-buffering (160ms prime -> 80ms steady chunks), 4-5ms anti-click edge fades,
+/// 48ms trailing silence padding, odd-byte PCM alignment, and lock-free monotonic timing for Acoustic Echo Suppression.
 /// </summary>
 public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
 {
     private const int BytesPerSecond24k16 = 48000;
-    private const int MinCoalesceBytes = 1920; // 40ms smooth audio write granularity
+    private const int StartupPrebufferBytes = 7680;   // 160ms initial jitter pre-buffer when starting from silence
+    private const int SteadyCoalesceBytes = 3840;    // 80ms smooth streaming granularity once DMA queue is primed
+    private const int TailSilencePaddingBytes = 2304; // 48ms zero-tail padding so DAC drivers do not clip final syllables
 
     [DllImport("winmm.dll")]
     private static extern int waveOutOpen(out IntPtr phwo, int uDeviceID, ref WAVEFORMATEX pwfx, IntPtr dwCallback, IntPtr dwInstance, uint fdwOpen);
@@ -42,11 +45,13 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
 
     private readonly object _sync = new();
     private readonly Queue<ActiveBuffer> _inFlight = new();
-    private readonly MemoryStream _coalesce = new(4096);
+    private readonly MemoryStream _coalesce = new(16384);
     private IntPtr _hWaveOut;
     private string _targetDeviceName = string.Empty;
     private double _volume = 0.85;
     private long _playbackEndsAtTick;
+    private bool _needsStreamPrime = true;
+    private bool _streamEmittedAudio;
     private bool _disposed;
 
     private static readonly long EchoHangoverTicks = (long)(0.48 * Stopwatch.Frequency);
@@ -110,9 +115,24 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
             if (_disposed || !EnsureOpenLocked())
                 return;
 
+            ReclaimCompletedLocked();
+            if (_inFlight.Count == 0 && Stopwatch.GetTimestamp() >= Volatile.Read(ref _playbackEndsAtTick))
+            {
+                _needsStreamPrime = true;
+                _streamEmittedAudio = false;
+            }
+
             _coalesce.Write(pcmBytes, 0, pcmBytes.Length);
-            if (_coalesce.Length >= MinCoalesceBytes)
-                WriteCoalescedLocked();
+            int threshold = _needsStreamPrime ? StartupPrebufferBytes : SteadyCoalesceBytes;
+            if (_coalesce.Length >= threshold)
+            {
+                bool priming = _needsStreamPrime;
+                if (WriteCoalescedLocked(applyFadeIn: priming, applyFadeOut: false, trailingZeroBytes: 0))
+                {
+                    _needsStreamPrime = false;
+                    _streamEmittedAudio = true;
+                }
+            }
         }
     }
 
@@ -123,26 +143,36 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
             if (_disposed) return;
             ReclaimCompletedLocked();
             if (_coalesce.Length >= 2 && EnsureOpenLocked())
-                WriteCoalescedLocked();
-            if (_coalesce.Length == 1)
-                _coalesce.SetLength(0);
+            {
+                WriteCoalescedLocked(
+                    applyFadeIn: _needsStreamPrime,
+                    applyFadeOut: true,
+                    trailingZeroBytes: TailSilencePaddingBytes);
+            }
+            else if (_streamEmittedAudio && EnsureOpenLocked())
+            {
+                SubmitSilencePaddingLocked(TailSilencePaddingBytes);
+            }
+
+            _coalesce.SetLength(0);
+            _needsStreamPrime = true;
+            _streamEmittedAudio = false;
         }
     }
 
-    private void WriteCoalescedLocked()
+    private bool WriteCoalescedLocked(bool applyFadeIn, bool applyFadeOut, int trailingZeroBytes)
     {
         int total = (int)_coalesce.Length;
         int len = total & ~1;
-        if (len < 2) return;
+        if (len < 2) return false;
 
         byte[] bufAll = _coalesce.GetBuffer();
-        byte[] raw = ArrayPool<byte>.Shared.Rent(len);
-        IntPtr dataPtr = IntPtr.Zero;
-        IntPtr hdrPtr = IntPtr.Zero;
+        int allocBytes = len + trailingZeroBytes;
+        byte[] raw = ArrayPool<byte>.Shared.Rent(allocBytes);
         try
         {
             Buffer.BlockCopy(bufAll, 0, raw, 0, len);
-            if (total > len)
+            if (trailingZeroBytes == 0 && total > len)
             {
                 byte odd = bufAll[len];
                 _coalesce.SetLength(0);
@@ -155,25 +185,62 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
 
             ReclaimCompletedLocked();
 
+            var pcmSpan = raw.AsSpan(0, len);
+            if (applyFadeIn)
+                AudioPcmUtilities.ApplyFadeIn16(pcmSpan, fadeSamples: 120);
+            if (applyFadeOut)
+                AudioPcmUtilities.ApplyFadeOut16(pcmSpan, fadeSamples: 96);
+            if (trailingZeroBytes > 0)
+                raw.AsSpan(len, trailingZeroBytes).Clear();
+
             double vol = Volatile.Read(ref _volume);
-            dataPtr = Marshal.AllocHGlobal(len);
             if (vol < 0.99)
                 ApplyVolumeInPlace(raw, len, vol);
-            Marshal.Copy(raw, 0, dataPtr, len);
+
+            return SubmitWaveOutBufferLocked(raw, allocBytes);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(raw);
+        }
+    }
+
+    private void SubmitSilencePaddingLocked(int silenceBytes)
+    {
+        if (silenceBytes < 2 || _hWaveOut == IntPtr.Zero)
+            return;
+
+        byte[] zeros = ArrayPool<byte>.Shared.Rent(silenceBytes);
+        try
+        {
+            zeros.AsSpan(0, silenceBytes).Clear();
+            _ = SubmitWaveOutBufferLocked(zeros, silenceBytes);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(zeros);
+        }
+    }
+
+    private bool SubmitWaveOutBufferLocked(byte[] managedBytes, int byteCount)
+    {
+        if (byteCount < 2 || _hWaveOut == IntPtr.Zero)
+            return false;
+
+        IntPtr dataPtr = IntPtr.Zero;
+        IntPtr hdrPtr = IntPtr.Zero;
+        try
+        {
+            dataPtr = Marshal.AllocHGlobal(byteCount);
+            Marshal.Copy(managedBytes, 0, dataPtr, byteCount);
 
             uint hdrSize = (uint)Marshal.SizeOf<WAVEHDR>();
-            var hdr = new WAVEHDR { lpData = dataPtr, dwBufferLength = (uint)len };
+            var hdr = new WAVEHDR { lpData = dataPtr, dwBufferLength = (uint)byteCount };
             hdrPtr = Marshal.AllocHGlobal((int)hdrSize);
             Marshal.StructureToPtr(hdr, hdrPtr, false);
 
             if (waveOutPrepareHeader(_hWaveOut, hdrPtr, hdrSize) != 0)
-            {
-                Marshal.FreeHGlobal(hdrPtr);
-                Marshal.FreeHGlobal(dataPtr);
-                hdrPtr = IntPtr.Zero;
-                dataPtr = IntPtr.Zero;
-                return;
-            }
+                return false;
 
             if (waveOutWrite(_hWaveOut, hdrPtr, hdrSize) != 0)
             {
@@ -186,7 +253,7 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
                 ReclaimAllLocked(maxSpinMs: 40);
                 _ = waveOutClose(_hWaveOut);
                 _hWaveOut = IntPtr.Zero;
-                return;
+                return false;
             }
 
             _inFlight.Enqueue(new ActiveBuffer { HeaderPtr = hdrPtr, DataPtr = dataPtr });
@@ -196,12 +263,12 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
             long nowTick = Stopwatch.GetTimestamp();
             long curEnd = Volatile.Read(ref _playbackEndsAtTick);
             long baseTick = curEnd > nowTick ? curEnd : nowTick;
-            long durTicks = (long)((len / (double)BytesPerSecond24k16) * Stopwatch.Frequency);
+            long durTicks = (long)((byteCount / (double)BytesPerSecond24k16) * Stopwatch.Frequency);
             Volatile.Write(ref _playbackEndsAtTick, baseTick + durTicks);
+            return true;
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(raw);
             if (hdrPtr != IntPtr.Zero) Marshal.FreeHGlobal(hdrPtr);
             if (dataPtr != IntPtr.Zero) Marshal.FreeHGlobal(dataPtr);
         }
@@ -212,6 +279,8 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
         lock (_sync)
         {
             Volatile.Write(ref _playbackEndsAtTick, 0);
+            _needsStreamPrime = true;
+            _streamEmittedAudio = false;
             if (_disposed) return;
             _coalesce.SetLength(0);
             if (_hWaveOut == IntPtr.Zero) return;
@@ -281,6 +350,8 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
     private void CloseWaveOutLocked()
     {
         Volatile.Write(ref _playbackEndsAtTick, 0);
+        _needsStreamPrime = true;
+        _streamEmittedAudio = false;
         if (!_disposed)
             _coalesce.SetLength(0);
         if (_hWaveOut != IntPtr.Zero)

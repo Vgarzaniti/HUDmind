@@ -480,6 +480,7 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <DockPanel Grid.Row="0" Margin="0,0,0,10">
@@ -557,7 +558,18 @@
                         </Grid>
                     </Expander>
 
-                    <DockPanel Grid.Row="5" Margin="0,10,0,0">
+                    <!-- Compact Rolling N-Match Memory Status -->
+                    <Border Grid.Row="5" Background="#0F172A" CornerRadius="8" Padding="9,7" Margin="0,8,0,0" BorderBrush="#1E293B" BorderThickness="1">
+                        <DockPanel>
+                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                                <Button Content="📂 Memoria (.md)" Padding="10,4" FontSize="11.5" Margin="0,0,6,0" Click="BtnOpenGameMemory_Click" ToolTip="Abre la carpeta con los resúmenes Markdown por juego e índice INDEX.md" />
+                                <Button x:Name="BtnResetGameMemory" Content="🧹 Limpiar memoria" Padding="10,4" FontSize="11.5" Click="BtnResetGameMemory_Click" ToolTip="Borra los patrones repetidos guardados en las últimas partidas de este juego" />
+                            </StackPanel>
+                            <TextBlock x:Name="LblRollingMemorySummary" Text="🧠 Memoria del coach: sin partidas registradas aún (se actualiza sola al jugar)." Foreground="#CBD5E1" FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,10,0" />
+                        </DockPanel>
+                    </Border>
+
+                    <DockPanel Grid.Row="6" Margin="0,10,0,0">
                         <Button x:Name="BtnDeleteProfile" DockPanel.Dock="Left" Content="🗑 Eliminar Juego" Background="#7F1D1D" BorderBrush="#EF4444" Click="BtnDeleteProfile_Click" />
                         <Button Content="💾 Guardar Indicaciones" HorizontalAlignment="Right" Background="#0284C7" BorderBrush="#38BDF8" Padding="14,6" Click="BtnSaveRules_Click" />
                     </DockPanel>
@@ -591,6 +603,7 @@
                                             <RowDefinition Height="36" />
                                             <RowDefinition Height="36" />
                                             <RowDefinition Height="36" />
+                                            <RowDefinition Height="36" />
                                         </Grid.RowDefinitions>
 
                                         <TextBlock Grid.Row="0" Grid.Column="0" Text="Tu Nivel de Juego:" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -608,6 +621,7 @@
                                         <TextBlock Grid.Row="2" Grid.Column="0" Text="Personalidad del Coach:" VerticalAlignment="Center" />
                                         <ComboBox x:Name="CmbCoachStyle" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center">
                                             <ComboBoxItem Content="🤝 Amigable y motivador (celebra aciertos)" Tag="friendly" />
+                                            <ComboBoxItem Content="🪞 Sincero sin humo (directo + Anti-Tilt)" Tag="honest" />
                                             <ComboBoxItem Content="🎯 Directo y táctico (al punto)" Tag="tactical" />
                                             <ComboBoxItem Content="🔥 Exigente estilo torneo (sin filtro)" Tag="strict" />
                                         </ComboBox>
@@ -631,7 +645,31 @@
                                             <ComboBoxItem Content="⚖ Equilibrado (HD)" Tag="balanced" />
                                             <ComboBoxItem Content="💎 Máxima nitidez (Full HD)" Tag="high" />
                                         </ComboBox>
+
+                                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Memoria de partidas:" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="CmbMemoryWindow" Grid.Row="6" Grid.Column="1" VerticalAlignment="Center" ToolTip="Cantidad de partidas recientes que el coach recuerda (al entrar nuevas se borran las más viejas)">
+                                            <ComboBoxItem Content="🧠 Últimas 5 partidas (se adapta rápido)" Tag="5" />
+                                            <ComboBoxItem Content="🧠 Últimas 10 partidas (recomendado)" Tag="10" />
+                                            <ComboBoxItem Content="🧠 Últimas 20 partidas (historial largo)" Tag="20" />
+                                        </ComboBox>
                                     </Grid>
+
+                                    <!-- Editable Markdown Soul & Cross-Game Player Profile -->
+                                    <Expander Margin="0,10,0,0" IsExpanded="False">
+                                        <Expander.Header>
+                                            <TextBlock Text="🎭 Personalidad (coach_soul.md) y Perfil Global (player_profile.md)" Foreground="#94A3B8" FontSize="11.5" />
+                                        </Expander.Header>
+                                        <StackPanel Margin="0,6,0,0">
+                                            <DockPanel Margin="0,0,0,4">
+                                                <Button DockPanel.Dock="Right" Content="📂 Abrir archivos .md" Padding="9,3" FontSize="11" Click="BtnOpenSoulFolder_Click" ToolTip="Abre la carpeta config/ para editar o compartir coach_soul.md y player_profile.md" />
+                                                <TextBlock Text="Cómo querés que sea tu coach (coach_soul.md):" Foreground="#CBD5E1" FontSize="11.5" VerticalAlignment="Center" />
+                                            </DockPanel>
+                                            <TextBox x:Name="TxtCoachSoul" Height="64" MaxLength="700" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Margin="0,0,0,8" />
+
+                                            <TextBlock Text="Tus hábitos globales entre todos los juegos (player_profile.md):" Foreground="#CBD5E1" FontSize="11.5" Margin="0,0,0,4" />
+                                            <TextBox x:Name="TxtPlayerProfile" Height="56" MaxLength="700" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" />
+                                        </StackPanel>
+                                    </Expander>
                                 </StackPanel>
                             </Border>
 
@@ -649,6 +687,7 @@
                                             <ColumnDefinition Width="80" />
                                         </Grid.ColumnDefinitions>
                                         <Grid.RowDefinitions>
+                                            <RowDefinition Height="36" />
                                             <RowDefinition Height="36" />
                                             <RowDefinition Height="36" />
                                             <RowDefinition Height="36" />
@@ -678,24 +717,33 @@
                                             <ComboBoxItem Content="⚡ Instantánea ultra-rápida (~8ms)" Tag="instant" />
                                         </ComboBox>
 
-                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Uso del Micrófono (Live):" VerticalAlignment="Center" />
-                                        <ComboBox x:Name="CmbMicInputMode" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Velocidad de Voz:" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="CmbVoiceRate" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbVoiceRate_SelectionChanged" ToolTip="Bajá a Natural o Pausada si querés que se entienda con total claridad sobre el sonido del juego">
+                                            <ComboBoxItem Content="🐢 Pausada y muy clara (-10%)" Tag="-10%" />
+                                            <ComboBoxItem Content="🎯 Natural (0% · máxima dicción)" Tag="+0%" />
+                                            <ComboBoxItem Content="✨ Clara y ágil (+5% · recomendada)" Tag="+5%" />
+                                            <ComboBoxItem Content="⚡ Rápida (+15%)" Tag="+15%" />
+                                            <ComboBoxItem Content="🚀 Muy rápida (+25%)" Tag="+25%" />
+                                        </ComboBox>
+
+                                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Uso del Micrófono (Live):" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="CmbMicInputMode" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center">
                                             <ComboBoxItem Content="🎙 Mic Abierto (hablás cuando querés)" Tag="open_mic" />
                                             <ComboBoxItem Content="⌨ Push-to-Talk (mantener tecla para hablar)" Tag="push_to_talk" />
                                         </ComboBox>
 
-                                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Tecla Push-to-Talk:" VerticalAlignment="Center" />
-                                        <TextBox x:Name="TxtPttKey" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" ToolTip="Ej: V, Alt, CapsLock, Space, Mouse4, Mouse5" />
+                                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Tecla Push-to-Talk:" VerticalAlignment="Center" />
+                                        <TextBox x:Name="TxtPttKey" Grid.Row="5" Grid.Column="1" VerticalAlignment="Center" ToolTip="Ej: V, Alt, CapsLock, Space, Mouse4, Mouse5" />
 
-                                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Micrófono:" VerticalAlignment="Center" />
-                                        <ComboBox x:Name="CmbMicDevice" Grid.Row="5" Grid.Column="1" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Micrófono:" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="CmbMicDevice" Grid.Row="6" Grid.Column="1" VerticalAlignment="Center" />
 
-                                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Auriculares / Parlantes:" VerticalAlignment="Center" />
-                                        <ComboBox x:Name="CmbSpeakerDevice" Grid.Row="6" Grid.Column="1" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Row="7" Grid.Column="0" Text="Auriculares / Parlantes:" VerticalAlignment="Center" />
+                                        <ComboBox x:Name="CmbSpeakerDevice" Grid.Row="7" Grid.Column="1" VerticalAlignment="Center" />
 
-                                        <TextBlock Grid.Row="7" Grid.Column="0" Text="Volumen de Voz:" VerticalAlignment="Center" />
-                                        <Slider x:Name="SldVolume" Grid.Row="7" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldVolume_ValueChanged" />
-                                        <TextBlock x:Name="LblVolumePct" Grid.Row="7" Grid.Column="2" Text="75%" Foreground="#38BDF8" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                        <TextBlock Grid.Row="8" Grid.Column="0" Text="Volumen de Voz:" VerticalAlignment="Center" />
+                                        <Slider x:Name="SldVolume" Grid.Row="8" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldVolume_ValueChanged" />
+                                        <TextBlock x:Name="LblVolumePct" Grid.Row="8" Grid.Column="2" Text="75%" Foreground="#38BDF8" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
                                     </Grid>
                                     <CheckBox x:Name="ChkEnableAudioCues" Content="Sonidos suaves de confirmación (al pausar, mutear mic o pulsar Push-to-Talk)" Margin="0,6,0,0" ToolTip="Emite un tono sutil al usar atajos (silenciado en modo Solo Texto)." />
                                 </StackPanel>

@@ -5,6 +5,8 @@
 config/accounts.json
 config/user_config.json
 config/telemetry.json
+config/coach_soul.md
+config/player_profile.md
 profiles/*/custom_rules.md
 
 # Python artifacts

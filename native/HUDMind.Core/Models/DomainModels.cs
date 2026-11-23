@@ -172,7 +172,7 @@ public sealed class UserConfig
     public string TtsEngine { get; set; } = "pyttsx3";
 
     [JsonPropertyName("tts_rate")]
-    public string TtsRate { get; set; } = "+15%";
+    public string TtsRate { get; set; } = "+5%";
 
     [JsonPropertyName("voice_gender")]
     public string VoiceGender { get; set; } = "male";
@@ -304,8 +304,20 @@ public sealed class UserConfig
     [JsonPropertyName("check_updates_on_startup")]
     public bool CheckUpdatesOnStartup { get; set; } = true;
 
+    [JsonPropertyName("memory_match_window")]
+    public int MemoryMatchWindow { get; set; } = 10;
+
     [JsonIgnore]
     public string PreviousMatchFocus { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public string CoachSoulSummary { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public string PlayerProfileSummary { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public bool RuntimeTiltRisk { get; set; }
 
     /// <summary>
     /// Synchronizes mutable runtime preferences when a caller provides a separate UserConfig instance.
@@ -341,7 +353,11 @@ public sealed class UserConfig
         TokenEfficiencyMode = source.TokenEfficiencyMode;
         EnableAudioCues = source.EnableAudioCues;
         CheckUpdatesOnStartup = source.CheckUpdatesOnStartup;
+        MemoryMatchWindow = Math.Clamp(source.MemoryMatchWindow, 3, 30);
         PreviousMatchFocus = source.PreviousMatchFocus;
+        CoachSoulSummary = source.CoachSoulSummary;
+        PlayerProfileSummary = source.PlayerProfileSummary;
+        RuntimeTiltRisk = source.RuntimeTiltRisk;
         SetCommunicationMode(source.CommunicationMode);
     }
 
@@ -480,4 +496,13 @@ public sealed record CoachRuntimeStats(
     string ActiveProvider,
     string ActiveGame,
     bool IsPaused = false
+);
+
+public sealed record MatchSessionSnapshot(
+    string MatchId,
+    string GameId,
+    string DisplayName,
+    int InterventionsCount,
+    string Digest,
+    IReadOnlyList<string> AdvicesSample
 );
