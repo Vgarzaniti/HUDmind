@@ -8,6 +8,6 @@
     <IsPublishable>false</IsPublishable>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="..\HUDMind.Core\Security\ProfileVaultCodec.cs" Link="ProfileVaultCodec.cs" />
+    <Compile Include="../HUDMind.Core/Security/ProfileVaultCodec.cs" Link="ProfileVaultCodec.cs" />
   </ItemGroup>
 </Project>
