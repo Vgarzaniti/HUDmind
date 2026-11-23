@@ -310,6 +310,15 @@ public sealed class UserConfig
     [JsonIgnore]
     public string PreviousMatchFocus { get; set; } = string.Empty;
 
+    [JsonIgnore]
+    public string CoachSoulSummary { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public string PlayerProfileSummary { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public bool RuntimeTiltRisk { get; set; }
+
     /// <summary>
     /// Synchronizes mutable runtime preferences when a caller provides a separate UserConfig instance.
     /// </summary>
@@ -346,6 +355,9 @@ public sealed class UserConfig
         CheckUpdatesOnStartup = source.CheckUpdatesOnStartup;
         MemoryMatchWindow = Math.Clamp(source.MemoryMatchWindow, 3, 30);
         PreviousMatchFocus = source.PreviousMatchFocus;
+        CoachSoulSummary = source.CoachSoulSummary;
+        PlayerProfileSummary = source.PlayerProfileSummary;
+        RuntimeTiltRisk = source.RuntimeTiltRisk;
         SetCommunicationMode(source.CommunicationMode);
     }
 

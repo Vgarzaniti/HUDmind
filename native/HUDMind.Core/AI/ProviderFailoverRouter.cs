@@ -288,12 +288,13 @@ public sealed class ProviderFailoverRouter : IAsyncDisposable
         string gameDisplayName,
         string sessionDigest,
         UserConfig config,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        GameProfile? profile = null)
     {
         if (_providers.Count == 0 || string.IsNullOrWhiteSpace(sessionDigest))
             return (null, 0, "none");
 
-        var prompt = CoachingPersonaBuilder.BuildPostMatchReviewPrompt(gameDisplayName, sessionDigest, config);
+        var prompt = CoachingPersonaBuilder.BuildPostMatchReviewPrompt(gameDisplayName, sessionDigest, config, profile);
         var now = DateTimeOffset.UtcNow;
         var candidates = _providers
             .Select((prov, idx) => (idx, prov))

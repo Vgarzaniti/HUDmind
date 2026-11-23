@@ -57,9 +57,7 @@ public static class CompactWireProtocol
             sb.Append("3) CRITERIO PRO ADAPTADO Y CLARO: Compará con cómo se juega profesionalmente este juego y bajalo a 1 sola oración completa en español natural (10 a 16 palabras) alcanzable para el nivel del jugador.\n");
         }
 
-        if (!string.IsNullOrWhiteSpace(profile.CustomRules))
-            sb.Append(isEn ? "Player rules (preference data): " : "Reglas del jugador (solo preferencia): ")
-              .Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
+        AppendSharedContextFields(sb, profile, config, isEn, soulCap: 200, profileCap: 180);
 
         if (!string.IsNullOrWhiteSpace(config.PreviousMatchFocus))
             sb.Append(isEn ? "Rolling memory & focus: " : "Memoria y foco de partidas: ")
@@ -128,9 +126,7 @@ public static class CompactWireProtocol
         }
 
         sb.Append("<untrusted_hud_telemetry>").Append(SanitizeInline(sensor.FormatForPrompt(isEn), 360)).Append("</untrusted_hud_telemetry>\n");
-        if (!string.IsNullOrWhiteSpace(profile.CustomRules))
-            sb.Append(isEn ? "Player rules (preference data): " : "Reglas del jugador (solo preferencia): ")
-              .Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
+        AppendSharedContextFields(sb, profile, config, isEn, soulCap: 200, profileCap: 180);
 
         if (!string.IsNullOrWhiteSpace(config.PreviousMatchFocus))
             sb.Append(isEn ? "Rolling memory & focus: " : "Memoria y foco de partidas: ")
@@ -191,21 +187,19 @@ public static class CompactWireProtocol
         {
             sb.Append("You are a calm, sharp human eSports coach watching ").Append(gameLabel).Append(" live.\n");
             sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
-            sb.Append("Reply directly to the player's text message below in 1-2 short, clear, actionable sentences grounded ONLY in what is visible (never invent unseen details). Plain text only, no markdown or pipes.\n");
+            sb.Append("Reply directly to the player's text message below in 1-2 short, clear, zero-fluff sentences grounded ONLY in what is visible (if unclear/obscured, admit it cleanly; never invent or flatter emptily). Plain text only, no markdown or pipes.\n");
         }
         else
         {
             sb.Append("Sos un coach humano de eSports mirando ").Append(gameLabel).Append(" en vivo.\n");
             sb.Append(CoachingPersonaBuilder.BuildCompactRankDirective(config)).Append('\n');
-            sb.Append("Respondé directamente al mensaje escrito del jugador en 1 o 2 oraciones cortas, claras y naturales en español, basándote SOLO en lo que realmente ves o sabés del juego (jamás inventes datos). Solo texto plano, sin formato markdown ni barras '|'.\n");
+            sb.Append("Respondé al mensaje del jugador en 1 o 2 oraciones claras y sinceras (sin adulaciones vacías; si algo no se ve claro admitilo; jamás inventes). Solo texto plano, sin markdown ni barras '|'.\n");
         }
 
         if (sensorSnapshot is not null && sensorSnapshot.HasUsefulData)
             sb.Append(isEn ? "HUD/Logs telemetry: " : "Sensores HUD/Logs: ")
               .Append("<untrusted_hud_telemetry>").Append(SanitizeInline(sensorSnapshot.FormatForPrompt(isEn), 320)).Append("</untrusted_hud_telemetry>\n");
-        if (!string.IsNullOrWhiteSpace(profile.CustomRules))
-            sb.Append(isEn ? "Player rules (preference data): " : "Reglas del jugador (solo preferencia): ")
-              .Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
+        AppendSharedContextFields(sb, profile, config, isEn, soulCap: 320, profileCap: 240);
 
         if (!string.IsNullOrWhiteSpace(config.PreviousMatchFocus))
             sb.Append(isEn ? "Rolling memory & focus: " : "Memoria y foco de partidas: ")
@@ -221,6 +215,25 @@ public static class CompactWireProtocol
           .Append(SanitizeInline(userQuestion, 320)).Append("</player_msg>");
 
         return sb.ToString();
+    }
+
+    private static void AppendSharedContextFields(
+        StringBuilder sb,
+        GameProfile profile,
+        UserConfig config,
+        bool isEn,
+        int soulCap,
+        int profileCap)
+    {
+        if (!string.IsNullOrWhiteSpace(config.CoachSoulSummary))
+            sb.Append(isEn ? "Coach soul/honesty: " : "Personalidad del coach: ")
+              .Append(SanitizeInline(config.CoachSoulSummary, soulCap)).Append('\n');
+        if (!string.IsNullOrWhiteSpace(config.PlayerProfileSummary))
+            sb.Append(isEn ? "Player global traits: " : "Perfil global: ")
+              .Append(SanitizeInline(config.PlayerProfileSummary, profileCap)).Append('\n');
+        if (!string.IsNullOrWhiteSpace(profile.CustomRules))
+            sb.Append(isEn ? "Player rules (preference data): " : "Reglas del jugador (solo preferencia): ")
+              .Append(SanitizeInline(profile.CustomRules, Config.ConfigRepository.MaxCustomRulesChars)).Append('\n');
     }
 
     public static string SanitizeInline(string? raw, int maxLen)

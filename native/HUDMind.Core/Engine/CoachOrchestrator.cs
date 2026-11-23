@@ -474,6 +474,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                     ? await _telemetrySensor.ReadTelemetryAsync(profile, ct)
                     : string.Empty;
                 var tactical = TacticalSignalEvaluator.Evaluate(rawTelemetry, profile, _tacticalTracker, isEnEval);
+                _config.RuntimeTiltRisk = tactical.IsTiltRisk;
                 Volatile.Write(ref _latestDeterministicFact, tactical.DeterministicFact);
 
                 if (tactical.MatchEnded)

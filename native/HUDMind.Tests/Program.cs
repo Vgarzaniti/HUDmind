@@ -1364,6 +1364,106 @@ await RunTest("39. TacticalSignalEvaluator computes CS2/LoL/Dota2/RL facts, comb
     return Task.CompletedTask;
 });
 
+// 40. Interconnected Markdown System (coach_soul.md, player_profile.md, custom_rules, memory/*.md, INDEX.md & Mastery Graduation)
+await RunTest("40. CoachContextAssembler links soul/profile/rules/memory .md files with dedup, cross-links & habit graduation", () =>
+{
+    var tmpRoot = Path.Combine(Path.GetTempPath(), $"hudmind_t40_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmpRoot);
+    try
+    {
+        var repo = new ConfigRepository(tmpRoot);
+        var csProf = repo.CreateNewGameProfile("cs2", "Counter-Strike 2", ["cs2.exe"]);
+        repo.SaveCustomRules(csProf, "No pushear solo sin flash en rondas de compra");
+        repo.SaveCoachSoulMarkdown("# Soul\n- Decí la verdad sin humo aunque duela.\n- Si no se ve claro, admitilo.");
+        repo.SavePlayerProfileMarkdown("# Perfil\n- No pushear solo sin flash en rondas de compra\n- Juego en monitor 60Hz con ping estable");
+
+        // Record 2 matches with recurring eco mistake, then graduate it by evicting with 3 clean matches
+        var m1 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+            new MatchSessionSnapshot("g1", "cs2", "Counter-Strike 2", 3, "", ["No forzar compra en ronda eco"]), DateTimeOffset.UtcNow.AddMinutes(-40));
+        var m2 = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+            new MatchSessionSnapshot("g2", "cs2", "Counter-Strike 2", 4, "", ["Evitá forzar ronda eco sin plata"]), DateTimeOffset.UtcNow.AddMinutes(-30));
+        repo.RecordMatchToRollingMemory("cs2", "Counter-Strike 2", m1, windowSize: 3, latestReviewFileName: "20261122_cs2.md");
+        repo.RecordMatchToRollingMemory("cs2", "Counter-Strike 2", m2, windowSize: 3, latestReviewFileName: "20261122_cs2.md");
+
+        // Evict m1 & m2 with 3 clean matches on a new focus -> eco habit graduates into MasteredHabits!
+        for (int i = 3; i <= 5; i++)
+        {
+            var mi = PlayerMemoryStore.BuildEntryFromSessionSnapshot(
+                new MatchSessionSnapshot($"g{i}", "cs2", "Counter-Strike 2", 2, "", ["Usá humo de ventana antes de cruzar mid"]),
+                DateTimeOffset.UtcNow.AddMinutes(-25 + i * 3));
+            repo.RecordMatchToRollingMemory("cs2", "Counter-Strike 2", mi, windowSize: 3);
+        }
+
+        var mem = repo.LoadPlayerGameMemory("cs2");
+        Assert(mem.MasteredHabits.Any(h => h.Summary.Contains("eco", StringComparison.OrdinalIgnoreCase)),
+            "Graduated eco habit must be promoted to MasteredHabits once aged out cleanly");
+
+        var mdPath = Path.Combine(repo.MemoryDir, "cs2.md");
+        var idxPath = Path.Combine(repo.MemoryDir, "INDEX.md");
+        Assert(File.Exists(mdPath) && File.Exists(idxPath), "Both cs2.md and INDEX.md must be auto-generated");
+
+        var mdBody = File.ReadAllText(mdPath);
+        Assert(mdBody.Contains("../../config/coach_soul.md") &&
+               mdBody.Contains("../../config/player_profile.md") &&
+               mdBody.Contains("../../profiles/cs2/custom_rules.md") &&
+               mdBody.Contains("../reviews/20261122_cs2.md") &&
+               mdBody.Contains("Hábitos superados"),
+            $"cs2.md missing cross-links or mastered section:\n{mdBody}");
+
+        var cfg = new UserConfig { VoiceLanguage = "es", CoachStyle = "honest" };
+        var assembledPlay = repo.LoadAssembledCoachContext("cs2", cfg, csProf, CoachContextDepth.RealtimePlay);
+        var assembledReflect = repo.LoadAssembledCoachContext("cs2", cfg, csProf, CoachContextDepth.AnalyticalReflection);
+
+        Assert(assembledPlay.CoachSoulSummary.Contains("humo", StringComparison.OrdinalIgnoreCase), "Soul summary missing");
+        Assert(assembledPlay.PlayerProfileSummary.Contains("60Hz") &&
+               !assembledPlay.PlayerProfileSummary.Contains("pushear solo", StringComparison.OrdinalIgnoreCase),
+            $"Global profile must dedupe bullet already inside custom_rules.md: {assembledPlay.PlayerProfileSummary}");
+        Assert(assembledReflect.CoachSoulSummary.Length >= assembledPlay.CoachSoulSummary.Length,
+            "Reflection depth should retain full context vs trimmed play context");
+
+        CoachContextAssembler.ApplyToConfig(cfg, assembledReflect);
+        var reviewPrompt = CoachingPersonaBuilder.BuildPostMatchReviewPrompt("Counter-Strike 2", "22:10 [PLAY] test", cfg, csProf);
+        Assert(reviewPrompt.Contains("Reglas personales") && reviewPrompt.Contains("coach_soul", StringComparison.OrdinalIgnoreCase) == false &&
+               reviewPrompt.Contains("Personalidad (soul)") && reviewPrompt.Contains("Perfil global"),
+            "Post-match review must cross-link soul, global profile, custom rules, and rolling memory");
+    }
+    finally
+    {
+        if (Directory.Exists(tmpRoot)) Directory.Delete(tmpRoot, true);
+    }
+    return Task.CompletedTask;
+});
+
+// 41. 3-Death Anti-Tilt Detection & Dynamic Honest Tone Switching
+await RunTest("41. TacticalSignalEvaluator detects 3-death Anti-Tilt streak, resets on survival & injects honest directive", () =>
+{
+    var tracker = new TacticalSignalTracker();
+    var csProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "Counter-Strike 2" } };
+
+    // Die 3 consecutive rounds -> triggers IsTiltRisk on round 3
+    for (int round = 1; round <= 3; round++)
+    {
+        var d = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=0 Armor=0 $2000", csProf, tracker, isEn: false);
+        bool expectTilt = round >= 3;
+        Assert(d.ConsecutiveDeaths == round && d.IsTiltRisk == expectTilt,
+            $"Round {round} death expected ConsecutiveDeaths={round}, IsTiltRisk={expectTilt}, got {d.ConsecutiveDeaths}, {d.IsTiltRisk}");
+        _ = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=freezetime side=CT HP=100 Armor=100 $2000", csProf, tracker, isEn: false);
+    }
+
+    // Play a live round and survive into next freezetime -> streak resets cleanly
+    _ = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=live side=CT HP=84 Armor=100 $2000", csProf, tracker, isEn: false);
+    var survivedFreeze = TacticalSignalEvaluator.Evaluate("CS2_GSI: de_mirage phase=live round=freezetime side=CT HP=100 Armor=100 $4400", csProf, tracker, isEn: false);
+    Assert(survivedFreeze.ConsecutiveDeaths == 0 && !survivedFreeze.IsTiltRisk,
+        $"Surviving a round must reset consecutive death streak, got {survivedFreeze.ConsecutiveDeaths}");
+
+    var cfg = new UserConfig { VoiceLanguage = "es", CoachStyle = "honest", RuntimeTiltRisk = true };
+    var directive = CoachingPersonaBuilder.BuildCompactRankDirective(cfg);
+    Assert(directive.Contains("sin adulaciones") && directive.Contains("ANTI-TILT"),
+        $"Honest style + RuntimeTiltRisk directive mismatch: {directive}");
+
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

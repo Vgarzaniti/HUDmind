@@ -911,6 +911,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             ? await _localPhaseGate.ReadTelemetryAsync(_activeProfile, ct)
                             : string.Empty;
                         var tactical = TacticalSignalEvaluator.Evaluate(rawTelemetry, _activeProfile, _tacticalTracker, isEnEval);
+                        _config.RuntimeTiltRisk = tactical.IsTiltRisk;
                         if (tactical.MatchEnded)
                             FlushMatchSnapshot(resetMatchLog: true);
 

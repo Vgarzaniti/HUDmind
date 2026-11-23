@@ -34,6 +34,15 @@ public sealed class MatchMemoryEntry
     public bool IsAiReviewed { get; set; }
 }
 
+public sealed class MasteredHabitRecord
+{
+    [JsonPropertyName("summary")]
+    public string Summary { get; set; } = string.Empty;
+
+    [JsonPropertyName("mastered_at_utc")]
+    public DateTimeOffset MasteredAtUtc { get; set; } = DateTimeOffset.UtcNow;
+}
+
 public sealed class PlayerGameMemory
 {
     [JsonPropertyName("game_id")]
@@ -47,6 +56,12 @@ public sealed class PlayerGameMemory
 
     [JsonPropertyName("updated_at_utc")]
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+
+    [JsonPropertyName("latest_review_file")]
+    public string LatestReviewFile { get; set; } = string.Empty;
+
+    [JsonPropertyName("mastered_habits")]
+    public List<MasteredHabitRecord> MasteredHabits { get; set; } = [];
 
     [JsonPropertyName("matches")]
     public List<MatchMemoryEntry> Matches { get; set; } = [];
@@ -143,6 +158,8 @@ public static class PlayerMemoryStore
         if (entry.Habits.Count == 0 && string.IsNullOrWhiteSpace(entry.NextDrill) && entry.InterventionsCount <= 0)
             return;
 
+        var beforeRecurring = ComputeRecurringHabits(memory, minOccurrences: 2);
+
         memory.WindowSize = clamped;
         memory.UpdatedAtUtc = entry.RecordedAtUtc;
         if (!string.IsNullOrWhiteSpace(entry.GameId))
@@ -175,6 +192,52 @@ public static class PlayerMemoryStore
 
         while (memory.Matches.Count > clamped)
             memory.Matches.RemoveAt(0);
+
+        UpdateHabitGraduation(memory, beforeRecurring, entry);
+    }
+
+    private static void UpdateHabitGraduation(
+        PlayerGameMemory memory,
+        List<RecurringHabitStat> beforeRecurring,
+        MatchMemoryEntry latestEntry)
+    {
+        var afterRecurring = ComputeRecurringHabits(memory, minOccurrences: 2);
+        var latestKeywords = latestEntry.Habits
+            .Select(InterventionMemory.ExtractKeywords)
+            .Where(k => k.Count > 0)
+            .ToList();
+
+        // Revoke graduation if a recurring mistake comes back or appears in the latest match
+        memory.MasteredHabits.RemoveAll(m =>
+        {
+            var mk = InterventionMemory.ExtractKeywords(m.Summary);
+            if (mk.Count == 0) return true;
+            return afterRecurring.Any(r => InterventionMemory.AreKeywordSetsSimilar(mk, InterventionMemory.ExtractKeywords(r.Summary), 0.50)) ||
+                   latestKeywords.Any(lk => InterventionMemory.AreKeywordSetsSimilar(mk, lk, 0.50));
+        });
+
+        // Promote a previously recurring habit to mastered once older matches age out and latest match is clean
+        foreach (var prev in beforeRecurring)
+        {
+            var pk = InterventionMemory.ExtractKeywords(prev.Summary);
+            if (pk.Count == 0) continue;
+
+            bool stillRecurring = afterRecurring.Any(r => InterventionMemory.AreKeywordSetsSimilar(pk, InterventionMemory.ExtractKeywords(r.Summary), 0.50));
+            bool seenInLatest = latestKeywords.Any(lk => InterventionMemory.AreKeywordSetsSimilar(pk, lk, 0.50));
+            bool alreadyMastered = memory.MasteredHabits.Any(m => InterventionMemory.AreKeywordSetsSimilar(pk, InterventionMemory.ExtractKeywords(m.Summary), 0.50));
+
+            if (!stillRecurring && !seenInLatest && !alreadyMastered)
+            {
+                memory.MasteredHabits.Add(new MasteredHabitRecord
+                {
+                    Summary = prev.Summary,
+                    MasteredAtUtc = latestEntry.RecordedAtUtc
+                });
+            }
+        }
+
+        if (memory.MasteredHabits.Count > 5)
+            memory.MasteredHabits = memory.MasteredHabits.OrderByDescending(m => m.MasteredAtUtc).Take(5).ToList();
     }
 
     /// <summary>
@@ -274,6 +337,12 @@ public static class PlayerMemoryStore
             parts.Add(isEn ? $"Active drill: {latestDrill}" : $"Foco activo: {latestDrill}");
         }
 
+        if (memory.MasteredHabits.Count > 0)
+        {
+            var latestMastered = memory.MasteredHabits[^1].Summary;
+            parts.Add(isEn ? $"Improved lately: {latestMastered}" : $"Ya superado: {latestMastered}");
+        }
+
         if (parts.Count == 0)
             return string.Empty;
 
@@ -290,17 +359,120 @@ public static class PlayerMemoryStore
         int n = memory.Matches.Count;
         int cap = ClampWindowSize(memory.WindowSize);
         var recurring = ComputeRecurringHabits(memory, minOccurrences: 2);
+        string masteredTag = memory.MasteredHabits.Count > 0
+            ? $" · 🏆 Superado: {memory.MasteredHabits[^1].Summary}"
+            : string.Empty;
+
         if (recurring.Count > 0)
         {
             var top = string.Join(" · ", recurring.Take(2).Select(r => $"x{r.Occurrences} {r.Summary}"));
-            return $"🧠 Memoria ({n}/{cap} partidas): repetido {top}";
+            return $"🧠 Memoria ({n}/{cap} partidas): repetido {top}{masteredTag}";
         }
 
         var latest = memory.Matches[^1];
         var hint = !string.IsNullOrWhiteSpace(latest.NextDrill)
             ? latest.NextDrill
             : (latest.Habits.FirstOrDefault() ?? $"{latest.InterventionsCount} consejos guardados");
-        return $"🧠 Memoria ({n}/{cap} partidas): último foco — {hint}";
+        return $"🧠 Memoria ({n}/{cap} partidas): último foco — {hint}{masteredTag}";
+    }
+
+    public static string RenderGameMemoryMarkdown(
+        PlayerGameMemory memory,
+        string? customRulesRelPath = null,
+        string? latestReviewRelPath = null)
+    {
+        var gameTitle = string.IsNullOrWhiteSpace(memory.DisplayName) ? memory.GameId : memory.DisplayName;
+        int cap = ClampWindowSize(memory.WindowSize);
+        var recurring = ComputeRecurringHabits(memory, minOccurrences: 2);
+
+        var sb = new StringBuilder(1024);
+        sb.Append("# 🧠 Memoria del Coach — ").AppendLine(gameTitle);
+        sb.AppendLine();
+        sb.Append("- **Ventana rodante:** ").Append(memory.Matches.Count).Append('/').Append(cap).AppendLine(" partidas (se borra automáticamente la más vieja)");
+        sb.Append("- **Última actualización:** ").AppendLine(memory.UpdatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture));
+        sb.Append("- **Documentos vinculados:** [Personalidad / Soul](../../config/coach_soul.md) · [Perfil Global](../../config/player_profile.md)");
+        if (!string.IsNullOrWhiteSpace(customRulesRelPath))
+            sb.Append(" · [Reglas del Juego](").Append(customRulesRelPath).Append(')');
+        if (!string.IsNullOrWhiteSpace(latestReviewRelPath))
+            sb.Append(" · [Último Resumen](").Append(latestReviewRelPath).Append(')');
+        sb.AppendLine();
+        sb.AppendLine("- **Índice global:** [INDEX.md](INDEX.md)");
+        sb.AppendLine();
+
+        sb.AppendLine("## 🔁 Patrones repetidos en la ventana actual");
+        if (recurring.Count == 0)
+        {
+            sb.AppendLine("_Todavía no hay patrones repetidos (2+ partidas) en esta ventana._");
+        }
+        else
+        {
+            foreach (var r in recurring)
+                sb.Append("- **x").Append(r.Occurrences).Append('/').Append(r.WindowMatchCount).Append("**: ").AppendLine(r.Summary);
+        }
+        sb.AppendLine();
+
+        sb.AppendLine("## 🏆 Hábitos superados recientemente");
+        if (memory.MasteredHabits.Count == 0)
+        {
+            sb.AppendLine("_Ningún patrón graduado todavía (cuando un hábito deja de repetirse y sale de la ventana, aparece acá)._");
+        }
+        else
+        {
+            foreach (var m in memory.MasteredHabits)
+                sb.Append("- ✅ ").Append(m.Summary).Append(" _(").Append(m.MasteredAtUtc.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).AppendLine(")_");
+        }
+        sb.AppendLine();
+
+        sb.AppendLine("## 📋 Últimas partidas registradas");
+        foreach (var match in memory.Matches.AsEnumerable().Reverse())
+        {
+            var stamp = match.RecordedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+            var tag = match.IsAiReviewed ? "Resumen IA" : "Sesión auto";
+            sb.Append("### ").Append(stamp).Append(" · ").Append(tag).Append(" (").Append(match.InterventionsCount).AppendLine(" consejos)");
+            foreach (var h in match.Habits)
+                sb.Append("- ").AppendLine(h);
+            if (!string.IsNullOrWhiteSpace(match.NextDrill))
+                sb.Append("- **Foco / Ejercicio:** ").AppendLine(match.NextDrill);
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
+    }
+
+    public static string RenderGlobalIndexMarkdown(IEnumerable<PlayerGameMemory> memories)
+    {
+        var list = memories
+            .Where(m => m.Matches.Count > 0)
+            .OrderByDescending(m => m.UpdatedAtUtc)
+            .ToList();
+
+        var sb = new StringBuilder(768);
+        sb.AppendLine("# 🗂 Índice de Memoria del Coach (`HUDMind`)");
+        sb.AppendLine();
+        sb.AppendLine("- [🎭 Personalidad del Coach (`coach_soul.md`)](../../config/coach_soul.md)");
+        sb.AppendLine("- [🧭 Perfil Global del Jugador (`player_profile.md`)](../../config/player_profile.md)");
+        sb.AppendLine();
+
+        if (list.Count == 0)
+        {
+            sb.AppendLine("_Todavía no hay partidas guardadas en memoria._");
+            return sb.ToString();
+        }
+
+        sb.AppendLine("| Juego | Ventana | Repetidos | Superados | Archivo |");
+        sb.AppendLine("| :--- | :---: | :---: | :---: | :--- |");
+        foreach (var m in list)
+        {
+            var name = string.IsNullOrWhiteSpace(m.DisplayName) ? m.GameId : m.DisplayName;
+            int recCount = ComputeRecurringHabits(m, 2).Count;
+            sb.Append("| ").Append(name)
+              .Append(" | ").Append(m.Matches.Count).Append('/').Append(ClampWindowSize(m.WindowSize))
+              .Append(" | ").Append(recCount)
+              .Append(" | ").Append(m.MasteredHabits.Count)
+              .Append(" | [").Append(m.GameId).Append(".md](").Append(m.GameId).AppendLine(".md) |");
+        }
+
+        return sb.ToString();
     }
 
     private static (List<string> Habits, string Drill) ParseReviewHabitsAndDrill(string? reviewText)

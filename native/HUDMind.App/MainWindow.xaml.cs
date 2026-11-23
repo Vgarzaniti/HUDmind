@@ -236,6 +236,8 @@ public partial class MainWindow : Window
         ChkMinimizeToTray.IsChecked = _config.MinimizeToTray;
         ChkEnableAudioCues.IsChecked = _config.EnableAudioCues;
         ChkCheckUpdatesOnStartup.IsChecked = _config.CheckUpdatesOnStartup;
+        TxtCoachSoul.Text = _repo.LoadCoachSoulMarkdown();
+        TxtPlayerProfile.Text = _repo.LoadPlayerProfileMarkdown();
         TxtPauseKey.Text = _config.HotkeyTogglePause;
         TxtAnalyzeKey.Text = _config.HotkeyAnalyzeNow;
         TxtMicKey.Text = _config.HotkeyToggleMic;
@@ -466,11 +468,10 @@ public partial class MainWindow : Window
             bool testMode = GetSelectedTag(CmbRunMode) == "test";
             string? forcedId = CmbGameProfile.SelectedValue?.ToString();
             bool wantLive = GetSelectedTag(CmbEngineType) == "live";
-            var hintGameName = forcedId is not null
-                ? _profiles.FirstOrDefault(p => p.Manifest.GameId == forcedId)?.Manifest.DisplayName
+            var hintProf = forcedId is not null
+                ? _profiles.FirstOrDefault(p => p.Manifest.GameId == forcedId)
                 : null;
-            bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
-            _config.PreviousMatchFocus = _repo.LoadPlayerMemoryPromptContext(forcedId ?? "universal", hintGameName, maxChars: 340, isEn: isEn);
+            SyncAssembledContext(forcedId ?? "universal", hintProf, CoachContextDepth.RealtimePlay);
             if (!string.IsNullOrWhiteSpace(_config.PreviousMatchFocus))
                 AppendLog($"🧠 Memoria de partidas activa: {_config.PreviousMatchFocus}");
 
@@ -523,6 +524,14 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SyncAssembledContext(string? gameId, GameProfile? profile, CoachContextDepth depth)
+    {
+        AssembledCoachContext assembled;
+        lock (_memoryIoLock)
+            assembled = _repo.LoadAssembledCoachContext(gameId, _config, profile, depth);
+        CoachContextAssembler.ApplyToConfig(_config, assembled);
+    }
+
     private void HandleMatchCompleted(MatchSessionSnapshot snap)
     {
         try
@@ -533,8 +542,8 @@ public partial class MainWindow : Window
             lock (_memoryIoLock)
                 updated = _repo.RecordMatchToRollingMemory(gameId, snap.DisplayName, entry, _config.MemoryMatchWindow);
 
-            bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
-            _config.PreviousMatchFocus = _repo.LoadPlayerMemoryPromptContext(gameId, snap.DisplayName, maxChars: 340, isEn: isEn);
+            var prof = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, gameId, StringComparison.OrdinalIgnoreCase));
+            SyncAssembledContext(gameId, prof, CoachContextDepth.RealtimePlay);
 
             if (!_shutdownComplete)
             {
@@ -1328,8 +1337,15 @@ public partial class MainWindow : Window
         BtnMatchReview.IsEnabled = false;
         try
         {
+            var (_, metaGameId, _, _) = _coordinator.GetLastMatchMeta();
+            var targetId = string.IsNullOrWhiteSpace(metaGameId)
+                ? (CmbGameProfile.SelectedValue?.ToString() ?? "universal")
+                : metaGameId;
+            var targetProfile = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, targetId, StringComparison.OrdinalIgnoreCase));
+            SyncAssembledContext(targetId, targetProfile, CoachContextDepth.AnalyticalReflection);
+
             AppendLog($"📊 Analizando partida reciente ({gameName})...");
-            var (review, ms, model) = await _coordinator.GeneratePostMatchReviewAsync(_accounts, _config, AppendLog);
+            var (review, ms, model) = await _coordinator.GeneratePostMatchReviewAsync(_accounts, _config, AppendLog, profile: targetProfile);
             if (string.IsNullOrWhiteSpace(review))
             {
                 AppendLog($"No se pudo generar el resumen post-partida [{model}].");
@@ -1346,18 +1362,21 @@ public partial class MainWindow : Window
                 AppendLog($"💾 Resumen guardado: {savedPath}");
 
                 var (matchId, matchGameId, _, matchCount) = _coordinator.GetLastMatchMeta();
-                var targetGameId = string.IsNullOrWhiteSpace(matchGameId)
-                    ? (CmbGameProfile.SelectedValue?.ToString() ?? "universal")
-                    : matchGameId;
+                var targetGameId = string.IsNullOrWhiteSpace(matchGameId) ? targetId : matchGameId;
                 var aiEntry = PlayerMemoryStore.BuildEntryFromAiReview(matchId, targetGameId, gameName, matchCount, review);
                 PlayerGameMemory updatedMem;
                 lock (_memoryIoLock)
-                    updatedMem = _repo.RecordMatchToRollingMemory(targetGameId, gameName, aiEntry, _config.MemoryMatchWindow);
+                    updatedMem = _repo.RecordMatchToRollingMemory(
+                        targetGameId,
+                        gameName,
+                        aiEntry,
+                        _config.MemoryMatchWindow,
+                        Path.GetFileName(savedPath));
 
-                _config.PreviousMatchFocus = _repo.LoadPlayerMemoryPromptContext(targetGameId, gameName, maxChars: 340, isEn: isEn);
+                SyncAssembledContext(targetGameId, targetProfile, CoachContextDepth.RealtimePlay);
                 _coordinator.RefreshPersona("resumen post-partida guardado");
                 RefreshRollingMemoryUi();
-                AppendLog($"🧠 Memoria del coach consolidada ({updatedMem.Matches.Count}/{PlayerMemoryStore.ClampWindowSize(_config.MemoryMatchWindow)} partidas).");
+                AppendLog($"🧠 Memoria .md y rolling consolidados ({updatedMem.Matches.Count}/{PlayerMemoryStore.ClampWindowSize(_config.MemoryMatchWindow)} partidas).");
             }
             catch (Exception saveEx)
             {
@@ -1390,23 +1409,42 @@ public partial class MainWindow : Window
         }
     }
 
-    private void BtnOpenReviews_Click(object sender, RoutedEventArgs e)
+    private void BtnOpenReviews_Click(object sender, RoutedEventArgs e) =>
+        OpenSafeDirectory(_repo.ReviewsDir, "resúmenes");
+
+    private void BtnOpenGameMemory_Click(object sender, RoutedEventArgs e) =>
+        OpenSafeDirectory(_repo.MemoryDir, "memoria (.md)");
+
+    private void BtnOpenSoulFolder_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            var logsDir = Path.GetDirectoryName(_repo.ReviewsDir);
-            if ((!string.IsNullOrEmpty(logsDir) && Directory.Exists(logsDir) && (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) != 0) ||
-                (Directory.Exists(_repo.ReviewsDir) && (File.GetAttributes(_repo.ReviewsDir) & FileAttributes.ReparsePoint) != 0))
+            if (!File.Exists(_repo.CoachSoulPath))
+                _repo.SaveCoachSoulMarkdown(TxtCoachSoul.Text);
+            if (!File.Exists(_repo.PlayerProfilePath))
+                _repo.SavePlayerProfileMarkdown(TxtPlayerProfile.Text);
+        }
+        catch { }
+        OpenSafeDirectory(_repo.ConfigDir, "config (.md)");
+    }
+
+    private void OpenSafeDirectory(string dirPath, string label)
+    {
+        try
+        {
+            var parent = Path.GetDirectoryName(dirPath);
+            if ((!string.IsNullOrEmpty(parent) && Directory.Exists(parent) && (File.GetAttributes(parent) & FileAttributes.ReparsePoint) != 0) ||
+                (Directory.Exists(dirPath) && (File.GetAttributes(dirPath) & FileAttributes.ReparsePoint) != 0))
             {
-                AppendLog("⚠ Seguridad: carpeta logs/reviews es un enlace simbólico no permitido.");
+                AppendLog($"⚠ Seguridad: carpeta de {label} es un enlace simbólico no permitido.");
                 return;
             }
-            Directory.CreateDirectory(_repo.ReviewsDir);
-            Process.Start(new ProcessStartInfo(_repo.ReviewsDir) { UseShellExecute = true });
+            Directory.CreateDirectory(dirPath);
+            Process.Start(new ProcessStartInfo(dirPath) { UseShellExecute = true });
         }
         catch (Exception ex)
         {
-            AppendLog($"No se pudo abrir carpeta de resúmenes: {SecretRedactor.Redact(ex.Message)}");
+            AppendLog($"No se pudo abrir carpeta de {label}: {SecretRedactor.Redact(ex.Message)}");
         }
     }
 
@@ -1528,6 +1566,11 @@ public partial class MainWindow : Window
 
         RefreshMonitorsList();
         _repo.SaveUserConfig(_config);
+        _repo.SaveCoachSoulMarkdown(TxtCoachSoul.Text);
+        _repo.SavePlayerProfileMarkdown(TxtPlayerProfile.Text);
+        var activeGameId = CmbGameProfile.SelectedValue?.ToString() ?? "universal";
+        var activeProf = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, activeGameId, StringComparison.OrdinalIgnoreCase));
+        SyncAssembledContext(activeGameId, activeProf, CoachContextDepth.RealtimePlay);
         ConfigureOverlayFromCurrentConfig();
         if (!_config.EnableOverlay)
             _overlay.HideImmediately();

@@ -239,7 +239,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
         IReadOnlyList<ProviderAccount> accounts,
         UserConfig config,
         Action<string> onLog,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        GameProfile? profile = null)
     {
         bool isEn = CoachingPersonaBuilder.IsEnglish(config, preferTextLang: true);
         var (gameName, digest, _) = SnapshotLastMatchSession(isEn);
@@ -247,7 +248,7 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
             return (null, 0, "empty");
 
         await using var router = new ProviderFailoverRouter(accounts, onLog: onLog);
-        return await router.GenerateMatchReviewAsync(gameName, digest, config, ct);
+        return await router.GenerateMatchReviewAsync(gameName, digest, config, ct, profile);
     }
 
     public async ValueTask DisposeAsync()

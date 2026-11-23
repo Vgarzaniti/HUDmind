@@ -262,6 +262,7 @@ public static class HotkeyParser
 public sealed partial class ConfigRepository
 {
     public const int MaxCustomRulesChars = 600;
+    public const int MaxMarkdownProfileChars = 700;
     private const long MaxConfigFileBytes = 64 * 1024;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -282,6 +283,8 @@ public sealed partial class ConfigRepository
     public string MemoryDir => Path.Combine(WorkspaceRoot, "logs", "memory");
     public string AccountsPath => Path.Combine(ConfigDir, "accounts.json");
     public string UserConfigPath => Path.Combine(ConfigDir, "user_config.json");
+    public string CoachSoulPath => Path.Combine(ConfigDir, "coach_soul.md");
+    public string PlayerProfilePath => Path.Combine(ConfigDir, "player_profile.md");
     public string? LastLoadWarning { get; private set; }
 
     public ConfigRepository(string? workspaceRoot = null)
@@ -872,11 +875,15 @@ public sealed partial class ConfigRepository
         string? gameId,
         string? displayName,
         Pipeline.MatchMemoryEntry entry,
-        int windowSize = Pipeline.PlayerMemoryStore.DefaultWindowSize)
+        int windowSize = Pipeline.PlayerMemoryStore.DefaultWindowSize,
+        string? latestReviewFileName = null)
     {
         var normId = string.IsNullOrWhiteSpace(gameId) ? "universal" : gameId.Trim().ToLowerInvariant();
-        if (!TryResolveSafeMemoryPath(normId, out var destPath))
+        if (!TryResolveSafeMemoryPath(normId, ".json", out var destPath) ||
+            !TryResolveSafeMemoryPath(normId, ".md", out var mdPath))
+        {
             throw new UnauthorizedAccessException("Ruta de memoria de juego inválida o insegura (CWE-22).");
+        }
 
         var memoryDir = Path.GetDirectoryName(destPath)!;
         Directory.CreateDirectory(memoryDir);
@@ -885,20 +892,73 @@ public sealed partial class ConfigRepository
         if (string.IsNullOrWhiteSpace(mem.DisplayName) && !string.IsNullOrWhiteSpace(displayName))
             mem.DisplayName = displayName.Trim();
 
+        if (!string.IsNullOrWhiteSpace(latestReviewFileName))
+            mem.LatestReviewFile = Path.GetFileName(latestReviewFileName.Trim());
+
         Pipeline.PlayerMemoryStore.ApplyRollingMatch(mem, entry, windowSize);
         var json = JsonSerializer.Serialize(mem, JsonOpts);
         AtomicWrite(destPath, json);
+
+        string customRulesFull = Path.Combine(ProfilesDir, normId, "custom_rules.md");
+        string? customRel = File.Exists(customRulesFull) ? $"../../profiles/{normId}/custom_rules.md" : null;
+        string? reviewRel = !string.IsNullOrWhiteSpace(mem.LatestReviewFile) ? $"../reviews/{mem.LatestReviewFile}" : null;
+        AtomicWrite(mdPath, Pipeline.PlayerMemoryStore.RenderGameMemoryMarkdown(mem, customRel, reviewRel));
+        RefreshMemoryIndexMarkdown();
         return mem;
     }
 
     public void ResetPlayerGameMemory(string? gameId)
     {
         var normId = string.IsNullOrWhiteSpace(gameId) ? "universal" : gameId.Trim().ToLowerInvariant();
-        if (!TryResolveSafeMemoryPath(normId, out var destPath))
+        if (!TryResolveSafeMemoryPath(normId, ".json", out var destPath) ||
+            !TryResolveSafeMemoryPath(normId, ".md", out var mdPath))
+        {
             throw new UnauthorizedAccessException("Ruta de memoria de juego inválida o insegura (CWE-22).");
+        }
 
         if (File.Exists(destPath) && (File.GetAttributes(destPath) & FileAttributes.ReparsePoint) == 0)
             File.Delete(destPath);
+        if (File.Exists(mdPath) && (File.GetAttributes(mdPath) & FileAttributes.ReparsePoint) == 0)
+            File.Delete(mdPath);
+
+        if (Directory.Exists(MemoryDir))
+            RefreshMemoryIndexMarkdown();
+    }
+
+    public string LoadCoachSoulMarkdown() =>
+        ReadSafeConfigMarkdown(CoachSoulPath, AI.CoachContextAssembler.DefaultCoachSoulMarkdown);
+
+    public void SaveCoachSoulMarkdown(string? markdown) =>
+        WriteSafeConfigMarkdown(CoachSoulPath, markdown);
+
+    public string LoadPlayerProfileMarkdown() =>
+        ReadSafeConfigMarkdown(PlayerProfilePath, AI.CoachContextAssembler.DefaultPlayerProfileMarkdown);
+
+    public void SavePlayerProfileMarkdown(string? markdown) =>
+        WriteSafeConfigMarkdown(PlayerProfilePath, markdown);
+
+    public AI.AssembledCoachContext LoadAssembledCoachContext(
+        string? gameId,
+        UserConfig config,
+        GameProfile? profile,
+        AI.CoachContextDepth depth = AI.CoachContextDepth.RealtimePlay)
+    {
+        var normId = string.IsNullOrWhiteSpace(gameId) ? "universal" : gameId.Trim().ToLowerInvariant();
+        var mem = LoadPlayerGameMemory(normId);
+        var fallbackFocus = mem.Matches.Count == 0
+            ? LoadLatestPostMatchFocus(profile?.Manifest.DisplayName, 240)
+            : string.Empty;
+
+        bool isEn = AI.CoachingPersonaBuilder.IsEnglish(config, preferTextLang: true);
+        return AI.CoachContextAssembler.Assemble(
+            config,
+            profile,
+            mem,
+            LoadCoachSoulMarkdown(),
+            LoadPlayerProfileMarkdown(),
+            isEn,
+            depth,
+            fallbackFocus);
     }
 
     public string LoadPlayerMemoryPromptContext(
@@ -916,7 +976,89 @@ public sealed partial class ConfigRepository
         return LoadLatestPostMatchFocus(gameDisplayName, Math.Min(maxChars, 240));
     }
 
-    private bool TryResolveSafeMemoryPath(string normId, out string destPath)
+    private void RefreshMemoryIndexMarkdown()
+    {
+        try
+        {
+            if (!TryResolveSafeMemoryPath("index", ".md", out _))
+                return;
+
+            var memoryFull = Path.GetFullPath(MemoryDir);
+            var indexPath = Path.GetFullPath(Path.Combine(memoryFull, "INDEX.md"));
+            if (!indexPath.StartsWith(memoryFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                return;
+            if (File.Exists(indexPath) && (File.GetAttributes(indexPath) & FileAttributes.ReparsePoint) != 0)
+                return;
+
+            var allMems = new List<Pipeline.PlayerGameMemory>();
+            foreach (var jsonFile in Directory.GetFiles(memoryFull, "*.json", SearchOption.TopDirectoryOnly))
+            {
+                var baseId = Path.GetFileNameWithoutExtension(jsonFile);
+                if (!SafeGameIdRegex().IsMatch(baseId))
+                    continue;
+                var m = LoadPlayerGameMemory(baseId);
+                if (m.Matches.Count > 0)
+                    allMems.Add(m);
+            }
+
+            AtomicWrite(indexPath, Pipeline.PlayerMemoryStore.RenderGlobalIndexMarkdown(allMems));
+        }
+        catch
+        {
+            // Index generation is best-effort
+        }
+    }
+
+    private string ReadSafeConfigMarkdown(string path, string fallbackContent)
+    {
+        try
+        {
+            var configFull = Path.GetFullPath(ConfigDir);
+            var fullTarget = Path.GetFullPath(path);
+            if (!fullTarget.StartsWith(configFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                return fallbackContent;
+            if (Directory.Exists(configFull) && (File.GetAttributes(configFull) & FileAttributes.ReparsePoint) != 0)
+                return fallbackContent;
+
+            if (!File.Exists(fullTarget))
+                return fallbackContent;
+
+            var info = new FileInfo(fullTarget);
+            if (info.Length > MaxConfigFileBytes || (info.Attributes & FileAttributes.ReparsePoint) != 0)
+                return fallbackContent;
+
+            var raw = File.ReadAllText(fullTarget, Encoding.UTF8);
+            return raw.Length <= MaxMarkdownProfileChars * 2 ? raw : raw[..(MaxMarkdownProfileChars * 2)];
+        }
+        catch
+        {
+            return fallbackContent;
+        }
+    }
+
+    private void WriteSafeConfigMarkdown(string path, string? rawContent)
+    {
+        var configFull = Path.GetFullPath(ConfigDir);
+        if (Directory.Exists(configFull) && (File.GetAttributes(configFull) & FileAttributes.ReparsePoint) != 0)
+            throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en config.");
+
+        Directory.CreateDirectory(configFull);
+        var fullTarget = Path.GetFullPath(path);
+        if (!fullTarget.StartsWith(configFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("Ruta de perfil markdown inválida (CWE-22).");
+        if (File.Exists(fullTarget) && (File.GetAttributes(fullTarget) & FileAttributes.ReparsePoint) != 0)
+            throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en archivos config.");
+
+        var cleaned = SecretRedactor.Redact((rawContent ?? string.Empty).Trim());
+        if (cleaned.Length > MaxMarkdownProfileChars)
+            cleaned = cleaned[..MaxMarkdownProfileChars];
+        AtomicWrite(fullTarget, string.IsNullOrEmpty(cleaned) ? string.Empty : cleaned + Environment.NewLine);
+    }
+
+    private bool TryResolveSafeMemoryPath(string normId, out string destPath) =>
+        TryResolveSafeMemoryPath(normId, ".json", out destPath);
+
+    private bool TryResolveSafeMemoryPath(string normId, string extension, out string destPath)
     {
         destPath = string.Empty;
         if (!SafeGameIdRegex().IsMatch(normId))
@@ -930,7 +1072,7 @@ public sealed partial class ConfigRepository
             return false;
         }
 
-        var candidate = Path.GetFullPath(Path.Combine(memoryFull, $"{normId}.json"));
+        var candidate = Path.GetFullPath(Path.Combine(memoryFull, $"{normId}{extension}"));
         if (!candidate.StartsWith(memoryFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
             return false;
 

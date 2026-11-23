@@ -11,7 +11,9 @@ public sealed record TacticalEvaluation(
     bool TriggerImmediate,
     bool MatchEnded,
     double CooldownMultiplier,
-    string DeterministicFact
+    string DeterministicFact,
+    bool IsTiltRisk = false,
+    int ConsecutiveDeaths = 0
 )
 {
     public static TacticalEvaluation Neutral { get; } = new(
@@ -42,6 +44,9 @@ public sealed class TacticalSignalTracker
     private string _lastGoalMarker = string.Empty;
     private string _lastObjectiveWindow = string.Empty;
     private string _lastLogState = string.Empty;
+    private int _consecutiveDeaths;
+    private bool _diedCurrentRound;
+    private double _lastDeathClockMins = -10.0;
 
     public void Reset(string? gameId = null)
     {
@@ -58,6 +63,9 @@ public sealed class TacticalSignalTracker
             _lastGoalMarker = string.Empty;
             _lastObjectiveWindow = string.Empty;
             _lastLogState = string.Empty;
+            _consecutiveDeaths = 0;
+            _diedCurrentRound = false;
+            _lastDeathClockMins = -10.0;
         }
     }
 
@@ -85,7 +93,10 @@ public sealed class TacticalSignalTracker
                 LastHp = _lastHp,
                 LastGoalMarker = _lastGoalMarker,
                 LastObjectiveWindow = _lastObjectiveWindow,
-                LastLogState = _lastLogState
+                LastLogState = _lastLogState,
+                ConsecutiveDeaths = _consecutiveDeaths,
+                DiedCurrentRound = _diedCurrentRound,
+                LastDeathClockMins = _lastDeathClockMins
             };
 
             var res = fn(state);
@@ -100,6 +111,9 @@ public sealed class TacticalSignalTracker
             _lastGoalMarker = state.LastGoalMarker;
             _lastObjectiveWindow = state.LastObjectiveWindow;
             _lastLogState = state.LastLogState;
+            _consecutiveDeaths = state.ConsecutiveDeaths;
+            _diedCurrentRound = state.DiedCurrentRound;
+            _lastDeathClockMins = state.LastDeathClockMins;
             return res;
         }
     }
@@ -116,6 +130,9 @@ public sealed class TacticalSignalTracker
         public string LastGoalMarker = string.Empty;
         public string LastObjectiveWindow = string.Empty;
         public string LastLogState = string.Empty;
+        public int ConsecutiveDeaths;
+        public bool DiedCurrentRound;
+        public double LastDeathClockMins = -10.0;
     }
 }
 
@@ -234,10 +251,19 @@ public static partial class TacticalSignalEvaluator
             {
                 bool firstDeath = !s.DeadReviewTriggered;
                 s.DeadReviewTriggered = true;
+                if (firstDeath)
+                {
+                    s.DiedCurrentRound = true;
+                    s.ConsecutiveDeaths++;
+                }
                 s.LastHp = 0;
-                var fact = money >= 0
+                bool tiltRisk = s.ConsecutiveDeaths >= 3;
+                var tiltSuffix = tiltRisk
+                    ? (isEn ? $" | {s.ConsecutiveDeaths} deaths streak (calm reset)" : $" | Racha {s.ConsecutiveDeaths} muertes (bajar ritmo/anti-tilt)")
+                    : string.Empty;
+                var fact = (money >= 0
                     ? (isEn ? $"CS2 DEAD | Next round bank: ${money}" : $"CS2 Muerto | Banco prox. ronda: ${money}")
-                    : (isEn ? "CS2 DEAD" : "CS2 Muerto");
+                    : (isEn ? "CS2 DEAD" : "CS2 Muerto")) + tiltSuffix;
                 return new TacticalEvaluation(
                     "DEAD_REVIEW",
                     ShouldSilence: !firstDeath,
@@ -245,7 +271,9 @@ public static partial class TacticalSignalEvaluator
                     TriggerImmediate: firstDeath,
                     MatchEnded: false,
                     CooldownMultiplier: 0.75,
-                    DeterministicFact: fact);
+                    DeterministicFact: fact,
+                    IsTiltRisk: tiltRisk,
+                    ConsecutiveDeaths: s.ConsecutiveDeaths);
             }
 
             s.DeadReviewTriggered = false;
@@ -253,7 +281,14 @@ public static partial class TacticalSignalEvaluator
             // Buy / freeze time -> ideal moment to coach economy + next round setup
             if (roundPhase == "freezetime")
             {
+                if (phaseChanged)
+                {
+                    if (!s.DiedCurrentRound)
+                        s.ConsecutiveDeaths = 0;
+                    s.DiedCurrentRound = false;
+                }
                 s.LastHp = hp;
+                bool tiltRisk = s.ConsecutiveDeaths >= 3;
                 string econTag = money switch
                 {
                     >= 3900 => "FULL BUY",
@@ -265,9 +300,12 @@ public static partial class TacticalSignalEvaluator
                 if (armor == 0 && money >= 650) extras.Add(isEn ? "no armor" : "sin chaleco");
                 if (side == "CT" && !hasKit && money >= 4000) extras.Add(isEn ? "no kit" : "sin kit");
                 string extraText = extras.Count > 0 ? $" ({string.Join(", ", extras)})" : string.Empty;
-                string fact = money >= 0
+                string tiltHint = tiltRisk
+                    ? (isEn ? $" | Reset ({s.ConsecutiveDeaths}d)" : $" | Calma/Reset ({s.ConsecutiveDeaths}m)")
+                    : string.Empty;
+                string fact = (money >= 0
                     ? (isEn ? $"CS2 Buy: {econTag} ${money}{extraText}" : $"CS2 Compra: {econTag} ${money}{extraText}")
-                    : (isEn ? "CS2 Buy Phase" : "CS2 Fase de compra");
+                    : (isEn ? "CS2 Buy Phase" : "CS2 Fase de compra")) + tiltHint;
 
                 return new TacticalEvaluation(
                     "BUY_PHASE",
@@ -276,7 +314,9 @@ public static partial class TacticalSignalEvaluator
                     TriggerImmediate: phaseChanged,
                     MatchEnded: false,
                     CooldownMultiplier: 0.55,
-                    DeterministicFact: fact);
+                    DeterministicFact: fact,
+                    IsTiltRisk: tiltRisk,
+                    ConsecutiveDeaths: s.ConsecutiveDeaths);
             }
 
             // Bomb critical threshold timing (~10s without kit / ~6s with kit)
@@ -340,8 +380,18 @@ public static partial class TacticalSignalEvaluator
             {
                 bool firstDeath = !s.DeadReviewTriggered;
                 s.DeadReviewTriggered = true;
+                if (firstDeath)
+                {
+                    s.ConsecutiveDeaths = (totalMins - s.LastDeathClockMins) <= 5.5
+                        ? s.ConsecutiveDeaths + 1
+                        : 1;
+                    s.LastDeathClockMins = totalMins;
+                }
                 s.LastHp = 0;
+                bool tiltRisk = s.ConsecutiveDeaths >= 3;
                 factParts.Add(isEn ? "DEAD" : "Muerto");
+                if (tiltRisk)
+                    factParts.Add(isEn ? $"Anti-tilt calm reset ({s.ConsecutiveDeaths}d)" : $"Calma/Anti-tilt ({s.ConsecutiveDeaths} muertes seg.)");
                 return new TacticalEvaluation(
                     "DEAD_REVIEW",
                     ShouldSilence: !firstDeath,
@@ -349,10 +399,14 @@ public static partial class TacticalSignalEvaluator
                     TriggerImmediate: firstDeath,
                     MatchEnded: false,
                     CooldownMultiplier: 0.75,
-                    DeterministicFact: string.Join(" | ", factParts));
+                    DeterministicFact: string.Join(" | ", factParts),
+                    IsTiltRisk: tiltRisk,
+                    ConsecutiveDeaths: s.ConsecutiveDeaths);
             }
 
             s.DeadReviewTriggered = false;
+            if (totalMins - s.LastDeathClockMins >= 4.0)
+                s.ConsecutiveDeaths = 0;
 
             // Early objective preparation windows (first dragon 5:00, voidgrubs 6:00, herald 14:00)
             string objWindow = string.Empty;
@@ -390,11 +444,27 @@ public static partial class TacticalSignalEvaluator
             int hpPct = TryInt(PctHpRegex(), text, 100);
             int mpPct = TryInt(DotaMpRegex(), text, 100);
 
+            var clock = DotaClockRegex().Match(text);
+            double dotaMins = (clock.Success && string.IsNullOrEmpty(clock.Groups[1].Value))
+                ? int.Parse(clock.Groups[2].Value, CultureInfo.InvariantCulture) + int.Parse(clock.Groups[3].Value, CultureInfo.InvariantCulture) / 60.0
+                : 0.0;
+
             if (isDead)
             {
                 bool firstDeath = !s.DeadReviewTriggered;
                 s.DeadReviewTriggered = true;
+                if (firstDeath)
+                {
+                    s.ConsecutiveDeaths = (dotaMins > 0 && (dotaMins - s.LastDeathClockMins) <= 5.5)
+                        ? s.ConsecutiveDeaths + 1
+                        : 1;
+                    s.LastDeathClockMins = dotaMins;
+                }
                 s.LastHp = 0;
+                bool tiltRisk = s.ConsecutiveDeaths >= 3;
+                var dotaFact = isEn ? "Dota 2 HERO DEAD — review buyback/next item" : "Dota 2 Héroe muerto — evaluá buyback y próximo ítem";
+                if (tiltRisk)
+                    dotaFact += isEn ? $" | Anti-tilt reset ({s.ConsecutiveDeaths}d)" : $" | Calma/Anti-tilt ({s.ConsecutiveDeaths} muertes seg.)";
                 return new TacticalEvaluation(
                     "DEAD_REVIEW",
                     ShouldSilence: !firstDeath,
@@ -402,12 +472,15 @@ public static partial class TacticalSignalEvaluator
                     TriggerImmediate: firstDeath,
                     MatchEnded: false,
                     CooldownMultiplier: 0.75,
-                    DeterministicFact: isEn ? "Dota 2 HERO DEAD — review buyback/next item" : "Dota 2 Héroe muerto — evaluá buyback y próximo ítem");
+                    DeterministicFact: dotaFact,
+                    IsTiltRisk: tiltRisk,
+                    ConsecutiveDeaths: s.ConsecutiveDeaths);
             }
 
             s.DeadReviewTriggered = false;
+            if (dotaMins > 0 && (dotaMins - s.LastDeathClockMins) >= 4.0)
+                s.ConsecutiveDeaths = 0;
 
-            var clock = DotaClockRegex().Match(text);
             string timingHint = string.Empty;
             string objWindow = string.Empty;
             if (clock.Success && string.IsNullOrEmpty(clock.Groups[1].Value))
