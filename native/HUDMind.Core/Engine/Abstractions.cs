@@ -96,6 +96,7 @@ public interface IStreamingPcmPlayer : IDisposable
 {
     bool IsPlayingAudio { get; }
     void SetDevice(string? deviceName) { }
+    void PreOpenDevice() { }
     void SetVolume(double volume);
     void EnqueuePcm24k(byte[] pcmBytes);
     void FlushBuffered();

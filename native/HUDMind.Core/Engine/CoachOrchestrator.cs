@@ -539,8 +539,12 @@ public sealed class CoachOrchestrator : ICoachEngine
                 else
                 {
                     double scaledCd = Math.Max(2.2, EffectiveCooldown(profile) * tactical.CooldownMultiplier);
-                    bool eventTriggerReady = tactical.TriggerImmediate &&
-                        _stateMachine.CanAnalyze(Math.Max(2.2, EffectiveCooldown(profile) * 0.45), _config.MinInferenceIntervalSeconds);
+                    double motionEnergy = _session.FrameRingBuffer.ComputeRecentMotionEnergy();
+                    bool visualSpike = motionEnergy >= 0.42 && _session.FrameRingBuffer.MacroCount >= 2;
+                    bool eventTriggerReady = (tactical.TriggerImmediate &&
+                        _stateMachine.CanAnalyze(Math.Max(2.2, EffectiveCooldown(profile) * 0.45), _config.MinInferenceIntervalSeconds)) ||
+                        (visualSpike &&
+                        _stateMachine.CanAnalyze(Math.Max(2.8, EffectiveCooldown(profile) * 0.50), _config.MinInferenceIntervalSeconds));
 
                     if (!eventTriggerReady)
                     {
@@ -549,7 +553,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                             _config.MinInferenceIntervalSeconds);
                         if (waitRem > TimeSpan.Zero)
                         {
-                            // Keep a dual-tier 0%-GPU temporal video buffer in RAM (~7.4 Hz burst + ~1 FPS macro 18s window)
+                            // Keep an OBS-style dual-tier 0%-GPU temporal replay buffer in RAM (~10 Hz burst + ~25s macro window)
                             // so silent proactive turns, F10, and chat questions see the entire recent play without gaps.
                             bool macroDue = _session.FrameRingBuffer.NeedsMacroKeyframe(DateTimeOffset.UtcNow);
                             var (ringFrame, ringSkipped) = _capture.CaptureIfChanged(
@@ -569,8 +573,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                                 _session.FrameRingBuffer.Record(ringFrame);
                             }
 
-                            var boundedWait = waitRem > TimeSpan.FromMilliseconds(135)
-                                ? TimeSpan.FromMilliseconds(135)
+                            var boundedWait = waitRem > TimeSpan.FromMilliseconds(100)
+                                ? TimeSpan.FromMilliseconds(100)
                                 : waitRem;
                             await WaitInterruptibleAsync(boundedWait, ct);
                             continue;

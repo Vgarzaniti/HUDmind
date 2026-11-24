@@ -25,6 +25,8 @@ async Task RunTest(string name, Func<Task> body)
     catch (Exception ex)
     {
         Console.WriteLine($"[FAIL] {name}: {ex.Message}");
+        if (string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+            Console.WriteLine($"::error::{name}: {ex.Message}");
         failed++;
     }
 }
@@ -369,7 +371,7 @@ await RunTest("14. LiveBackendFactory & GeminiLiveBackend select Fenrir/Aoede an
     var cfg = new UserConfig { VoiceGender = "female", VoiceLanguage = "es" };
     var prof = ConfigRepository.CreateUniversalProfile(".");
     var json31 = GeminiLiveBackend.BuildSetupPayloadJson("models/gemini-3.1-flash-live-preview", cfg, prof);
-    Assert(json31.Contains("\"Aoede\"") && json31.Contains("\"AUDIO\"") && json31.Contains("\"MINIMAL\"") && json31.Contains("\"MEDIA_RESOLUTION_MEDIUM\"") && json31.Contains("\"silenceDurationMs\":250") && json31.Contains("outputAudioTranscription"),
+    Assert(json31.Contains("\"Aoede\"") && json31.Contains("\"AUDIO\"") && json31.Contains("\"MINIMAL\"") && json31.Contains("\"MEDIA_RESOLUTION_MEDIUM\"") && json31.Contains("\"END_SENSITIVITY_LOW\"") && json31.Contains("\"silenceDurationMs\":520") && json31.Contains("outputAudioTranscription"),
         $"Invalid 3.1 live setup JSON: {json31}");
 
     var json25 = GeminiLiveBackend.BuildSetupPayloadJson("models/gemini-2.5-flash-native-audio-latest", cfg, prof);
@@ -2024,7 +2026,8 @@ await RunTest("46. High-FPS clip ring buffer, native multi-frame HTTP/Live paylo
         testMode: true, storyboardComposer: composer);
     await live.StartAsync();
     for (int i = 0; i < 40 && !stubMic.IsCapturing; i++) await Task.Delay(20);
-    await Task.Delay(480); // let 135ms continuous ring loop capture >= 3 motion frames
+    for (int i = 0; i < 60 && stubLive.SentVideoFrames < 1; i++) await Task.Delay(20);
+    await Task.Delay(450); // let 100ms continuous OBS ring loop capture >= 3 motion frames
 
     int framesBeforeVoice = stubLive.SentVideoFrames;
     stubMic.PushChunk(MakeSinePcm16(samples: 1600, amplitude: 900));
@@ -2160,11 +2163,82 @@ await RunTest("48. Coach watches full silent play via dual-tier macro+micro buff
         new StubCapture(), stubPlayer, stubMic, new RecordingOverlay(),
         testMode: true, storyboardComposer: composer);
     await silentLive.StartAsync();
-    for (int i = 0; i < 80 && stubLive.LastMultiFrameTurnCount < 2; i++) await Task.Delay(35);
+    for (int i = 0; i < 120 && stubLive.LastMultiFrameTurnCount < 2; i++) await Task.Delay(35);
     await silentLive.StopAsync();
 
     Assert(stubLive.SentTextTurns >= 1 && stubLive.LastMultiFrameTurnCount >= 2,
         $"Silent coach_voice mode must observe full play & deliver multi-frame proactive turns without user speaking (turns={stubLive.SentTextTurns}, frames={stubLive.LastMultiFrameTurnCount})");
+});
+
+// 49. OBS 25s Buffer Motion Energy, Anti-Chop Barge-In, Open-Mic Floor, Null-Capture Proactive Continuity & Retry Backoff
+await RunTest("49. OBS 25s macro motion energy, anti-chop 2400 transient guard, idle noise gate & LatestSample proactive resilience", async () =>
+{
+    // 1) OBS dual-tier ring defaults: 25s macro lookback + ComputeRecentMotionEnergy reflects camera/action spikes
+    var obsRing = new RecentFrameRingBuffer();
+    var tBase = DateTimeOffset.UtcNow.AddSeconds(-24);
+    for (int s = 0; s <= 24; s++)
+    {
+        ulong hash = s >= 21 ? ((s % 2 == 0) ? 0x0000000000000000UL : 0xFFFFFFFFFFFFFFFFUL) : 0x5555555555555555UL;
+        obsRing.Record(new CapturedFrameData([0xFF, 0xD8, (byte)(s + 1)], hash, s + 1, 1, 1, tBase.AddSeconds(s)));
+    }
+    Assert(obsRing.MacroCount >= 20, $"OBS ring must retain >=20 macro keyframes over 24s (got {obsRing.MacroCount})");
+    Assert(obsRing.ComputeRecentMotionEnergy() >= 0.45,
+        $"High hash deltas across recent tail must register visual motion spike (energy={obsRing.ComputeRecentMotionEnergy():F2})");
+
+    // 2) Single 100ms very loud transient (amplitude 3200) must NOT chop coach audio, and idle fan noise (380) must be dropped
+    var backend = new StubLiveBackend();
+    var player = new StubStreamingPlayer();
+    var mic = new StubStreamingMic();
+    var cfg = new UserConfig { LiveAutoCoachSeconds = 0, VoiceLanguage = "es", TextLanguage = "es" };
+    cfg.SetCommunicationMode("conversation");
+    var prof = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "RL", ProcessNames = ["RocketLeague.exe"] } };
+
+    await using (var live = new RealtimeLiveCoachOrchestrator(
+        backend, cfg, [prof], new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), player, mic, new RecordingOverlay(), testMode: true))
+    {
+        await live.StartAsync();
+        for (int i = 0; i < 40 && !mic.IsCapturing; i++) await Task.Delay(25);
+        Assert(player.PreOpenedCount >= 1, "StartAsync with voice active must pre-open WinMM DAC device to eliminate startup stutter");
+
+        // Idle noise RMS 380 < 460 must be ignored cleanly
+        mic.PushChunk(MakeSinePcm16(samples: 1600, amplitude: 380));
+        await Task.Delay(35);
+        Assert(backend.SentMicChunks == 0, $"Idle open_mic fan noise (380 RMS) must stay gated (sent={backend.SentMicChunks})");
+
+        // Single 100ms loud mechanical slam / gunshot spike (2400 RMS < 2850) while coach speaks MUST NOT chop playback
+        backend.EmitIncomingAudio([9, 9]);
+        mic.PushChunk(MakeSinePcm16(samples: 1600, amplitude: 2400));
+        await Task.Delay(35);
+        Assert(player.InterruptCount == 0 && backend.SentMicChunks == 0,
+            $"Single 100ms loud transient (2400 RMS) must NOT interrupt coach audio (int={player.InterruptCount}, sent={backend.SentMicChunks})");
+
+        backend.EmitTurnComplete("Ok.");
+        mic.PushChunk(MakeSinePcm16(samples: 1600, amplitude: 900));
+        for (int i = 0; i < 40 && backend.SentMicChunks == 0; i++) await Task.Delay(20);
+        Assert(backend.SentMicChunks >= 1, "Real open-mic voice (900 RMS) must transmit after turn completes");
+        await live.StopAsync();
+    }
+
+    // 3) Even when CaptureIfChanged skips frames after frame 1, LatestSample keeps proactive nudges firing & empty turn retries early
+    var oneShotBackend = new StubLiveBackend();
+    var silentCfg = new UserConfig { LiveAutoCoachSeconds = 5.5, VoiceLanguage = "es", TextLanguage = "es" };
+    silentCfg.SetCommunicationMode("coach_voice");
+    await using var silentLive = new RealtimeLiveCoachOrchestrator(
+        oneShotBackend, silentCfg, [prof], new StubWindowDetector("RocketLeague.exe"),
+        new OneShotThenNullCapture(), new StubStreamingPlayer(), new StubStreamingMic(), new RecordingOverlay(), testMode: true);
+    await silentLive.StartAsync();
+
+    for (int i = 0; i < 80 && oneShotBackend.SentTextTurns < 1; i++) await Task.Delay(25);
+    Assert(oneShotBackend.SentTextTurns >= 1, "Proactive OBS turn #1 must still fire using CaptureSharpFrame initial sample");
+
+    await Task.Delay(120);
+    oneShotBackend.EmitTurnComplete(string.Empty); // empty turn -> shortens retry from 5.5s to ~2.5s while CaptureIfChanged returns null!
+
+    for (int i = 0; i < 160 && oneShotBackend.SentTextTurns < 2; i++) await Task.Delay(25);
+    Assert(oneShotBackend.SentTextTurns >= 2,
+        $"Empty proactive turn + skipped capture must retry via LatestSample fallback within ~2.5s (turns={oneShotBackend.SentTextTurns})");
+    await silentLive.StopAsync();
 });
 
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
@@ -2289,13 +2363,30 @@ sealed class StubStreamingPlayer : IStreamingPcmPlayer
 {
     public bool IsPlayingAudio { get; set; }
     public string? LastDeviceName { get; private set; }
+    public int PreOpenedCount { get; private set; }
     public int EnqueuedCount { get; private set; }
     public int InterruptCount { get; private set; }
     public void SetDevice(string? deviceName) => LastDeviceName = deviceName;
+    public void PreOpenDevice() => PreOpenedCount++;
     public void SetVolume(double volume) { }
     public void EnqueuePcm24k(byte[] pcmBytes) => EnqueuedCount++;
     public void FlushBuffered() { }
     public void InterruptAndClear() { InterruptCount++; IsPlayingAudio = false; }
+    public void Dispose() { }
+}
+
+sealed class OneShotThenNullCapture : IScreenCaptureService
+{
+    private int _calls;
+    public (CapturedFrameData? Frame, bool SkippedByHash) CaptureIfChanged(
+        int monitorIndex, (int Left, int Top, int Width, int Height)? regionRect,
+        int targetWidth, int targetHeight, int jpegQuality, long frameId,
+        ulong? lastAcceptedHash, int phashThreshold, bool isForced)
+    {
+        if (Interlocked.Increment(ref _calls) == 1)
+            return (new CapturedFrameData([0xFF, 0xD8, 0xFF, 0xD9], 0x1234UL, frameId, 1.0, 1.0, DateTimeOffset.UtcNow, isForced), false);
+        return (null, true);
+    }
     public void Dispose() { }
 }
 

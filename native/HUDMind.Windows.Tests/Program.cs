@@ -440,6 +440,21 @@ await RunTest("W13. RuntimeHardeningGuard & encrypted ProfileVault integrity che
     return Task.CompletedTask;
 });
 
+// W14. Win32StreamingPcmPlayer hardware PreOpenDevice & mid-turn jitter recovery prebuffer (no choppy DMA starvation)
+await RunTest("W14. Win32StreamingPcmPlayer PreOpenDevice & recovery prebuffer handle mid-turn jitter gaps safely", () =>
+{
+    using var player = new Win32StreamingPcmPlayer();
+    player.PreOpenDevice();
+    player.SetVolume(0.8);
+    player.EnqueuePcm24k(new byte[16000]); // crosses 300ms startup prebuffer cleanly
+    player.EnqueuePcm24k(new byte[4000]);  // partial steady chunk buffered without throwing
+    player.EnqueuePcm24k(new byte[10000]); // completes recovery/steady threshold smoothly
+    player.FlushBuffered();
+    player.InterruptAndClear();
+    Assert(!player.IsPlayingAudio, "InterruptAndClear after PreOpenDevice must leave player quiescent");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

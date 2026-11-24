@@ -245,7 +245,7 @@ public sealed class UserConfig
                 EnableVoice = true;
                 EnableMic = false;
                 if (LiveAutoCoachSeconds <= 0)
-                    LiveAutoCoachSeconds = 8.0;
+                    LiveAutoCoachSeconds = 6.0;
                 break;
             default:
                 CommunicationMode = "conversation";
@@ -256,7 +256,7 @@ public sealed class UserConfig
     }
 
     [JsonPropertyName("live_auto_coach_seconds")]
-    public double LiveAutoCoachSeconds { get; set; } = 8.0;
+    public double LiveAutoCoachSeconds { get; set; } = 6.0;
 
     [JsonPropertyName("player_skill_tier")]
     public string PlayerSkillTier { get; set; } = "intermediate";

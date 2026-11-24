@@ -70,6 +70,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private long _lastPttHeldUtcTicks;
     private long _lastWebSocketFrameTick;
     private long _lastMicVisualBurstTick;
+    private long _proactivePendingUntilUtcTicks;
+    private int _proactiveTurnInFlight;
 
     public bool IsRunning => Volatile.Read(ref _runCts) is { IsCancellationRequested: false };
     public bool IsPaused => _userPaused;
@@ -180,6 +182,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
             _pcmPlayer.SetDevice(_config.AudioOutputDeviceName);
             _pcmPlayer.SetVolume(_config.TtsVolume);
+            if (_config.IsCoachVoiceActive)
+                _pcmPlayer.PreOpenDevice();
             _mic.SetDevice(_config.AudioInputDeviceName);
             _userPaused = false;
             _config.RuntimeTiltRisk = false;
@@ -190,6 +194,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             Interlocked.Exchange(ref _lastPttHeldUtcTicks, 0);
             Interlocked.Exchange(ref _lastWebSocketFrameTick, 0);
             Interlocked.Exchange(ref _lastMicVisualBurstTick, 0);
+            Interlocked.Exchange(ref _proactivePendingUntilUtcTicks, 0);
+            Interlocked.Exchange(ref _proactiveTurnInFlight, 0);
             lock (_hashLock) _lastSentHash = null;
 
             var initialProfile = _session.InitializeOnStart(_config, predetectInNonTestMode: true);
@@ -682,7 +688,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         }
 
         // Coalesce partial overlay updates (~90ms) to keep 0% GPU CPU rasterization ultra-light!
-        if (_config.EnableOverlay && !_userPaused && currentLine.Length >= 5)
+        bool isNoneMarker = currentLine.Trim().Trim('.', '!', ' ').Equals("NONE", StringComparison.OrdinalIgnoreCase);
+        if (!isNoneMarker && _config.EnableOverlay && !_userPaused && currentLine.Length >= 5)
         {
             long prevTick = Interlocked.Read(ref _lastOverlayPartialTick);
             if (prevTick == 0 || Stopwatch.GetElapsedTime(prevTick).TotalMilliseconds >= 90.0)
@@ -716,11 +723,28 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _bargeInMuted = false;
             _suppressCurrentTurnAudio = false;
         }
+        bool wasProactive = Interlocked.Exchange(ref _proactiveTurnInFlight, 0) == 1;
+        Interlocked.Exchange(ref _proactivePendingUntilUtcTicks, 0);
         Interlocked.Exchange(ref _waitingFirstAudioInt, 0);
         Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
         Interlocked.Exchange(ref _lastOverlayPartialTick, 0);
 
-        if (!staleEpoch && !string.IsNullOrWhiteSpace(spoken))
+        bool effectiveSilent = string.IsNullOrWhiteSpace(spoken) ||
+            spoken.Trim().Trim('.', '!', ' ').Equals("NONE", StringComparison.OrdinalIgnoreCase);
+        if (!staleEpoch && effectiveSilent)
+        {
+            // Proactive turn returned empty/NONE -> schedule retry cleanly within <=2.5s instead of sleeping full cooldown
+            if (wasProactive && _config.LiveAutoCoachSeconds > 0)
+            {
+                double retryDelay = Math.Min(_config.LiveAutoCoachSeconds, 2.5);
+                long backoffAgo = DateTimeOffset.UtcNow.UtcTicks - TimeSpan.FromSeconds(_config.LiveAutoCoachSeconds - retryDelay).Ticks;
+                Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, backoffAgo);
+            }
+            EmitStats();
+            return;
+        }
+
+        if (!staleEpoch && !effectiveSilent)
         {
             var prof = sessionProfile ?? _session.ActiveProfile;
             if (!outGuard.IsSafe)
@@ -773,6 +797,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _bargeInMuted = false;
             _suppressCurrentTurnAudio = false;
         }
+        Interlocked.Exchange(ref _proactiveTurnInFlight, 0);
+        Interlocked.Exchange(ref _proactivePendingUntilUtcTicks, 0);
         Interlocked.Exchange(ref _waitingFirstAudioInt, 0);
         Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
     }
@@ -826,10 +852,10 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         }
                         else
                         {
-                            // Keep sending ~420ms after PTT release (> 250ms Gemini / 260ms OpenAI server VAD silence window)
-                            // so server VAD detects end-of-utterance cleanly without waiting for more audio!
+                            // Keep sending ~650ms clean digital silence after PTT release (> 520ms Gemini / 260ms OpenAI server VAD silence window)
+                            // so server VAD detects end-of-utterance cleanly without ambient noise resetting the timer!
                             long prevPtt = Interlocked.Read(ref _lastPttHeldUtcTicks);
-                            if (prevPtt == 0 || (nowTicks - prevPtt) > TimeSpan.FromMilliseconds(420.0).Ticks)
+                            if (prevPtt == 0 || (nowTicks - prevPtt) > TimeSpan.FromMilliseconds(650.0).Ticks)
                                 return;
                             pttInReleaseTail = true;
                         }
@@ -837,9 +863,12 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
                     double rms = AudioPcmUtilities.ComputeRms16(pcmChunk);
                     bool coachAudible = _modelSpeaking || _pcmPlayer.IsPlayingAudio;
+                    bool awaitingProactiveAudio = !pttMode
+                        && Volatile.Read(ref _waitingFirstAudioInt) == 1
+                        && nowTicks <= Interlocked.Read(ref _proactivePendingUntilUtcTicks);
 
-                    // Acoustic Echo Suppression: ignore speaker bleed & brief key clacks while coach speaks, trigger clean barge-in on real voice
-                    if (coachAudible)
+                    // Acoustic Echo & Noise Shield: ignore speaker bleed, ambient fans & 100ms slams while coach speaks or prepares proactive audio
+                    if (coachAudible || awaitingProactiveAudio)
                     {
                         if (pttInReleaseTail)
                             return; // Do not trigger false echo barge-in on post-release silence tail
@@ -851,24 +880,33 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         }
                         else
                         {
-                            if (rms < 1600.0)
+                            // Require >=2 consecutive frames (~200ms sustained speech >=1750 RMS) so 100ms loud clicks/bangs NEVER chop audio;
+                            // allow single-frame override ONLY on genuine loud player shout (>=2850 RMS) while coach is actively speaking.
+                            if (rms < 1750.0)
                             {
                                 Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
                                 return;
                             }
-                            if (rms < 2700.0 && Interlocked.Increment(ref _bargeInConsecutiveFrames) < 2)
-                                return; // Require >=200ms sustained medium speech to avoid mechanical key clicks cutting off coach
+                            bool sustainedTwoFrames = Interlocked.Increment(ref _bargeInConsecutiveFrames) >= 2;
+                            bool urgentShoutOverride = coachAudible && rms >= 2850.0;
+                            if (!sustainedTwoFrames && !urgentShoutOverride)
+                                return;
                         }
 
                         Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
-                        lock (_audioStateLock)
+                        Interlocked.Exchange(ref _proactivePendingUntilUtcTicks, 0);
+                        Interlocked.Exchange(ref _proactiveTurnInFlight, 0);
+                        if (coachAudible)
                         {
-                            // Mute residual dying chunks ONLY when server stream is still active (_modelSpeaking == true)!
-                            // If server already emitted turnComplete (_modelSpeaking == false), do NOT mute future replies.
-                            if (_modelSpeaking)
-                                _bargeInMuted = true;
-                            _modelSpeaking = false;
-                            _pcmPlayer.InterruptAndClear();
+                            lock (_audioStateLock)
+                            {
+                                // Mute residual dying chunks ONLY when server stream is still active (_modelSpeaking == true)!
+                                // If server already emitted turnComplete (_modelSpeaking == false), do NOT mute future replies.
+                                if (_modelSpeaking)
+                                    _bargeInMuted = true;
+                                _modelSpeaking = false;
+                                _pcmPlayer.InterruptAndClear();
+                            }
                         }
                     }
                     else
@@ -887,7 +925,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     }
                     else
                     {
-                        if (rms >= 320.0)
+                        if (rms >= 460.0)
                         {
                             Interlocked.Exchange(ref _lastMicVoiceUtcTicks, nowTicks);
                             Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
@@ -902,7 +940,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         }
                     }
 
-                    micChan.Writer.TryWrite(pcmChunk);
+                    micChan.Writer.TryWrite(pttInReleaseTail ? new byte[pcmChunk.Length] : pcmChunk);
                 },
                 err => _onLog?.Invoke(err));
 
@@ -1062,11 +1100,11 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         }
                     }
 
-                    // Sample ~7.4 FPS continuously into local RAM ring buffer (0 API cost) so voice, F10 & chat get clip motion
+                    // Sample ~10 FPS continuously into local OBS-style dual-tier RAM replay buffer (0 API cost)
                     var captured = CaptureSharpFrame(force: false, frameId: ++frameCounter);
-                    if (captured is not null)
+                    byte[]? evalJpeg = captured?.JpegBytes ?? _session.FrameRingBuffer.LatestSample?.JpegBytes;
+                    if (evalJpeg is { Length: > 0 })
                     {
-                        var jpeg = captured.JpegBytes;
                         bool isEnEval = CoachingPersonaBuilder.IsEnglish(_config);
                         var activeProf = _session.ActiveProfile;
                         string rawTelemetry = _localPhaseGate is not null && activeProf is not null
@@ -1079,12 +1117,21 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         long lastMicTicks = Interlocked.Read(ref _lastMicVoiceUtcTicks);
                         long lastNudgeTicks = Interlocked.Read(ref _lastAutoNudgeUtcTicks);
                         bool userRecentlySpoke = lastMicTicks > 0 && (nowTicks - lastMicTicks) < TimeSpan.FromSeconds(3.0).Ticks;
-                        bool canVoiceTurn = autoSec > 0 && !_modelSpeaking && !_pcmPlayer.IsPlayingAudio && !userRecentlySpoke;
+                        double pendingShieldSec = Math.Min(2.4, Math.Max(0.25, autoSec * 0.6));
+                        long reqTick = Interlocked.Read(ref _lastTurnRequestTick);
+                        bool waitingPending = Volatile.Read(ref _waitingFirstAudioInt) == 1
+                            && reqTick > 0
+                            && Stopwatch.GetElapsedTime(reqTick).TotalSeconds < pendingShieldSec;
+                        bool canVoiceTurn = autoSec > 0 && !_modelSpeaking && !_pcmPlayer.IsPlayingAudio && !waitingPending && !userRecentlySpoke;
+
+                        double motionEnergy = _session.FrameRingBuffer.ComputeRecentMotionEnergy();
+                        bool visualSpike = motionEnergy >= 0.42 && _session.FrameRingBuffer.MacroCount >= 2;
                         double scaledAutoSec = autoSec * tactical.CooldownMultiplier;
                         bool regularDue = canVoiceTurn &&
                             (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(scaledAutoSec).Ticks);
-                        bool eventDue = canVoiceTurn && tactical.TriggerImmediate &&
-                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(Math.Max(3.0, autoSec * 0.45)).Ticks);
+                        double eventFloorSec = visualSpike ? Math.Max(3.2, autoSec * 0.55) : Math.Max(3.0, autoSec * 0.45);
+                        bool eventDue = canVoiceTurn && (tactical.TriggerImmediate || visualSpike) &&
+                            (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(eventFloorSec).Ticks);
                         bool shouldNudge = (regularDue || eventDue) && !tactical.ShouldSilence;
 
                         bool sentAsTurn = false;
@@ -1095,8 +1142,12 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             bool skipProactive = false;
                             if (_localPhaseGate is not null && activeProf is not null)
                             {
-                                var snap = await _localPhaseGate.ExtractAsync(jpeg, activeProf, ct);
-                                if (snap.Phase is "MENU" or "REPLAY" or "LOADING" or "DESKTOP")
+                                var snap = await _localPhaseGate.ExtractAsync(evalJpeg, activeProf, ct);
+                                bool trainingActive = string.Equals(_config.CoachMode, "training", StringComparison.OrdinalIgnoreCase);
+                                bool confirmedIdleScreen = !string.IsNullOrWhiteSpace(snap.LogSummary)
+                                    || snap.Phase is "REPLAY" or "LOADING" or "DESKTOP"
+                                    || (snap.Phase == "MENU" && !trainingActive && motionEnergy < 0.14);
+                                if (snap.Phase is "MENU" or "REPLAY" or "LOADING" or "DESKTOP" && confirmedIdleScreen)
                                 {
                                     skipProactive = true;
                                     _onLog?.Invoke($"Silencio local [{snap.Phase}] (sin molestar en menú/replay).");
@@ -1105,13 +1156,16 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
                             if (!skipProactive)
                             {
+                                captured ??= CaptureSharpFrame(force: true, frameId: ++frameCounter);
+                                byte[] turnJpeg = captured?.JpegBytes ?? evalJpeg;
+
                                 sentAsTurn = true;
                                 var (_, _, cfgQuality) = ResolveTargetResolution();
                                 var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
                                     _storyboardComposer,
                                     captured,
                                     maxFrames: 6,
-                                    maxAgeSeconds: 12.0,
+                                    maxAgeSeconds: 15.0,
                                     jpegQuality: Math.Max(cfgQuality, 82),
                                     isEn: isEnEval);
 
@@ -1120,6 +1174,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                 {
                                     Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
                                     Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
+                                    Interlocked.Exchange(ref _proactiveTurnInFlight, 1);
+                                    Interlocked.Exchange(ref _proactivePendingUntilUtcTicks, DateTimeOffset.UtcNow.AddSeconds(2.8).Ticks);
                                     string factNote = string.IsNullOrWhiteSpace(tactical.DeterministicFact)
                                         ? string.Empty
                                         : (isEnEval
@@ -1128,18 +1184,21 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                     string timelineNote = _session.Memory.FormatVisualTimeline(isEn: isEnEval);
                                     string ctxNote = string.IsNullOrWhiteSpace(timelineNote) ? string.Empty
                                         : (isEnEval ? $" Match context: {timelineNote}." : $" Contexto: {timelineNote}.");
+                                    string motionNote = visualSpike
+                                        ? (isEnEval ? " High-action play burst detected." : " Pico de acción detectado en pantalla.")
+                                        : string.Empty;
                                     string seqPrefix = clip.PanelCount >= 2 && !string.IsNullOrWhiteSpace(clip.SequenceNote)
                                         ? $"{clip.SequenceNote} "
                                         : string.Empty;
                                     string prompt = isEnEval
-                                        ? $"{seqPrefix}{factNote}{ctxNote} You watched the full recent play even in silence. Give 1 predictive tip (8-13 words) for the next 2s ONLY on clearly seen pixels."
-                                        : $"{seqPrefix}{factNote}{ctxNote} Viste toda la jugada reciente aunque no te hayan hablado. Tirate 1 consejo predictivo (8 a 13 palabras) para los próximos 2s SOLO sobre lo visible.";
+                                        ? $"{seqPrefix}{factNote}{ctxNote}{motionNote} Continuous OBS observation active even while player is silent. Give 1 crisp predictive callout (8-13 words) for the next 1-3s based ONLY on clearly visible gameplay."
+                                        : $"{seqPrefix}{factNote}{ctxNote}{motionNote} Observación continua tipo OBS activa aunque no te hayan hablado. Tirate 1 consejo predictivo concreto (8 a 13 palabras) para los próximos 1-3s SOLO sobre lo que se distingue en pantalla.";
 
                                     Interlocked.Increment(ref _framesSent);
                                     if (_backend.SupportsMultiFrameTurn && clip.Frames.Count > 1)
                                         await _backend.SendFrameSequenceAndPromptTurnAsync(clip.Frames, prompt, ct);
                                     else
-                                        await _backend.SendImageAndPromptTurnAsync(clip.FallbackSingleJpeg ?? jpeg, prompt, ct);
+                                        await _backend.SendImageAndPromptTurnAsync(clip.FallbackSingleJpeg ?? turnJpeg, prompt, ct);
                                 }
                                 finally
                                 {
@@ -1152,20 +1211,21 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         double fps = _session.ActiveProfile?.Manifest.CaptureFps ?? 1.5;
                         int wsPeriodMs = Math.Clamp((int)Math.Round(1000.0 / Math.Clamp(fps, 0.5, 3.0)), 330, 1500);
                         long prevWsTick = Interlocked.Read(ref _lastWebSocketFrameTick);
-                        bool wsDue = prevWsTick == 0 || Stopwatch.GetElapsedTime(prevWsTick).TotalMilliseconds >= wsPeriodMs;
+                        double sinceWsMs = prevWsTick == 0 ? double.MaxValue : Stopwatch.GetElapsedTime(prevWsTick).TotalMilliseconds;
+                        bool wsDue = prevWsTick == 0 || sinceWsMs >= (captured is not null ? wsPeriodMs : Math.Max(wsPeriodMs, 2500));
                         if (!sentAsTurn && !_modelSpeaking && wsDue)
                         {
                             Interlocked.Exchange(ref _lastWebSocketFrameTick, Stopwatch.GetTimestamp());
                             Interlocked.Increment(ref _framesSent);
-                            await _backend.SendVideoFrameAsync(jpeg, ct);
+                            await _backend.SendVideoFrameAsync(captured?.JpegBytes ?? evalJpeg, ct);
                         }
 
                         EmitStats();
                     }
                 }
 
-                // 135ms local ring-buffer cadence (~7.4 FPS in RAM) keeps fluid clip memory ready for voice, F10 & chat
-                try { await _wakeSignal.WaitAsync(TimeSpan.FromMilliseconds(135), ct); }
+                // 100ms local OBS ring-buffer cadence (~10 FPS in RAM) keeps fluid clip memory ready for voice, F10 & chat
+                try { await _wakeSignal.WaitAsync(TimeSpan.FromMilliseconds(100), ct); }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

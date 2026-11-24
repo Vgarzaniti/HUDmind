@@ -9,17 +9,18 @@ namespace HUDMind.Windows;
 
 /// <summary>
 /// Zero-NuGet Win32 `winmm.dll` streaming 24kHz 16-bit mono PCM player for Live Native Audio &amp; WinRT Voice.
-/// Uses adaptive startup jitter pre-buffering (160ms prime -> 80ms steady chunks), 4-5ms anti-click edge fades,
-/// 48ms trailing silence padding, odd-byte PCM alignment, and lock-free monotonic timing for Acoustic Echo Suppression.
+/// Uses adaptive jitter pre-buffering (300ms prime -> 200ms mid-turn gap recovery -> 120ms steady chunks), 40ms DAC lead-in,
+/// 4-5ms anti-click edge fades, 48ms trailing silence padding, odd-byte PCM alignment, and hardware pre-open support.
 /// </summary>
 public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
 {
     private const int BytesPerSecond24k16 = 48000;
-    private const int StartupPrebufferBytes = 11520;  // 240ms initial jitter pre-buffer when starting from silence
-    private const int SteadyCoalesceBytes = 3840;    // 80ms smooth streaming granularity once DMA queue is primed
-    private const int MaxWaveHeaderBytes = 19200;    // 400ms max DMA buffer per WAVEHDR to avoid driver glitches on long speech
-    private const int LeadInSilenceBytes = 960;      // 20ms silent DAC/Bluetooth wake-up before syllable 1
-    private const int TailSilencePaddingBytes = 2304; // 48ms zero-tail padding so DAC drivers do not clip final syllables
+    private const int StartupPrebufferBytes = 14400;   // 300ms solid initial jitter pre-buffer from silence
+    private const int RecoveryPrebufferBytes = 9600;   // 200ms mid-turn gap cushion to stop repeated chopping
+    private const int SteadyCoalesceBytes = 5760;      // 120ms steady DMA chunks
+    private const int MaxWaveHeaderBytes = 19200;      // 400ms max DMA buffer per WAVEHDR to avoid driver glitches
+    private const int LeadInSilenceBytes = 1920;       // 40ms silent DAC/USB/Bluetooth wake-up before syllable 1
+    private const int TailSilencePaddingBytes = 2304;  // 48ms zero-tail padding so DAC drivers do not clip final syllables
 
     [DllImport("winmm.dll")]
     private static extern int waveOutOpen(out IntPtr phwo, int uDeviceID, ref WAVEFORMATEX pwfx, IntPtr dwCallback, IntPtr dwInstance, uint fdwOpen);
@@ -88,6 +89,12 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
     public void SetVolume(double volume) =>
         Volatile.Write(ref _volume, Math.Clamp(volume, 0.0, 1.0));
 
+    public void PreOpenDevice()
+    {
+        lock (_sync)
+            _ = EnsureOpenLocked();
+    }
+
     private bool EnsureOpenLocked()
     {
         if (_disposed) return false;
@@ -133,7 +140,11 @@ public sealed class Win32StreamingPcmPlayer : IStreamingPcmPlayer
             bool recoveredFromMidTurnGap = !_needsStreamPrime && _streamEmittedAudio && _inFlight.Count == 0;
             _coalesce.Write(pcmBytes, 0, pcmBytes.Length);
 
-            int threshold = _needsStreamPrime ? StartupPrebufferBytes : SteadyCoalesceBytes;
+            int threshold = _needsStreamPrime
+                ? StartupPrebufferBytes
+                : recoveredFromMidTurnGap
+                    ? RecoveryPrebufferBytes
+                    : SteadyCoalesceBytes;
             if (_coalesce.Length >= threshold)
             {
                 bool priming = _needsStreamPrime;

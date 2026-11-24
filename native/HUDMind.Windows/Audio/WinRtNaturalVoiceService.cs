@@ -150,6 +150,7 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
                 }
 
                 _synth = synth;
+                _player.PreOpenDevice();
                 _disposeCts = new CancellationTokenSource();
                 _available = true;
                 var ct = _disposeCts.Token;
