@@ -22,7 +22,7 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
     private Thread? _staThread;
     private object? _activeVoiceToken;
 
-    private string? _pendingText;
+    private readonly List<(string Text, bool Purge, long EstTicks)> _pendingQueue = new(4);
     private bool _pendingStop;
     private bool _pendingConfigUpdate;
     private bool _pendingVoiceReselect;
@@ -35,10 +35,11 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
     private string _gender = "male";
     private double _volume = 0.75;
     private int _sapiRate;
-    private string _selectedVoiceName = "OneCore";
+    private volatile string _selectedVoiceName = "OneCore";
     private long _speakingUntilTick;
 
     public string EngineName => _ready ? $"onecore-instant({_selectedVoiceName})" : "onecore-inactive";
+    public bool SupportsContinuationQueue => true;
 
     public bool IsSpeaking
     {
@@ -49,6 +50,8 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         }
     }
 
+    public bool IsActivelySpeaking => IsSpeaking;
+
     public void SetSpeechRate(string? rate)
     {
         int nextRate = WinRtNaturalVoiceService.ParseSapiRateOffset(rate);
@@ -56,7 +59,7 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         {
             if (_disposed || _sapiRate == nextRate)
                 return;
-            _sapiRate = nextRate;
+            Volatile.Write(ref _sapiRate, nextRate);
             if (_staThread is { IsAlive: true })
             {
                 _pendingConfigUpdate = true;
@@ -65,7 +68,13 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         }
     }
 
-    public void WarmUp(string language, double volume, string gender = "male", string style = "instant")
+    public void WarmUp(string language, double volume, string gender = "male", string style = "instant") =>
+        WarmUpCore(useStoredSettings: false, language, volume, gender);
+
+    internal void EnsureInitializedFromStoredSettings() =>
+        WarmUpCore(useStoredSettings: true, string.Empty, 0, string.Empty);
+
+    private void WarmUpCore(bool useStoredSettings, string language, double volume, string gender)
     {
         if (_disposed || _initFailed)
             return;
@@ -74,34 +83,43 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         lock (_sync)
         {
             if (_disposed || _initFailed) return;
-            var newLang = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
-            var newGender = NormalizeGender(gender);
-            bool voiceChanged = !string.Equals(_language, newLang, StringComparison.OrdinalIgnoreCase) ||
-                                !string.Equals(_gender, newGender, StringComparison.OrdinalIgnoreCase);
+            bool voiceChanged = false;
+            if (!useStoredSettings)
+            {
+                var newLang = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
+                var newGender = NormalizeGender(gender);
+                voiceChanged = !string.Equals(_language, newLang, StringComparison.OrdinalIgnoreCase) ||
+                               !string.Equals(_gender, newGender, StringComparison.OrdinalIgnoreCase);
 
-            _language = newLang;
-            _gender = newGender;
-            _volume = Math.Clamp(volume, 0.0, 1.0);
+                _language = newLang;
+                _gender = newGender;
+                _volume = Math.Clamp(volume, 0.0, 1.0);
+            }
 
             if (_staThread is { IsAlive: true })
             {
                 _pendingConfigUpdate = true;
                 if (voiceChanged) _pendingVoiceReselect = true;
                 _signal.Set();
-                return;
+                var inProgressReady = _readyTcs?.Task;
+                if (_ready || inProgressReady is null)
+                    return;
+                readyTask = inProgressReady;
             }
-
-            _readyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            readyTask = _readyTcs.Task;
-            _shutdownRequested = false;
-
-            _staThread = new Thread(StaWorkerLoop)
+            else
             {
-                IsBackground = true,
-                Name = "HUDMind-OneCore-SAPI5-STA"
-            };
-            _staThread.SetApartmentState(ApartmentState.STA);
-            _staThread.Start();
+                _readyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                readyTask = _readyTcs.Task;
+                _shutdownRequested = false;
+
+                _staThread = new Thread(StaWorkerLoop)
+                {
+                    IsBackground = true,
+                    Name = "HUDMind-OneCore-SAPI5-STA"
+                };
+                _staThread.SetApartmentState(ApartmentState.STA);
+                _staThread.Start();
+            }
         }
 
         if (!readyTask.Wait(TimeSpan.FromSeconds(3)) || !readyTask.Result)
@@ -132,7 +150,10 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
         }
     }
 
-    public double SpeakInstant(string text)
+    public double SpeakInstant(string text) =>
+        SpeakOrQueue(text, chainIfSpeaking: false, interruptCurrent: true);
+
+    public double SpeakOrQueue(string text, bool chainIfSpeaking, bool interruptCurrent)
     {
         if (_disposed || string.IsNullOrWhiteSpace(text))
             return 0;
@@ -142,18 +163,47 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
             return 0;
 
         if (!_ready && !_initFailed)
-            WarmUp(_language, _volume, _gender);
+            WarmUpCore(useStoredSettings: true, string.Empty, 0, string.Empty);
         if (!_ready || _disposed)
             return 0;
 
         long t0 = Stopwatch.GetTimestamp();
-        double rateFactor = Math.Clamp(1.0 + _sapiRate * 0.12, 0.6, 1.8);
+        int curRate = Volatile.Read(ref _sapiRate);
+        double rateFactor = Math.Clamp(1.0 + curRate * 0.12, 0.6, 1.8);
         double estSeconds = Math.Clamp((cleanSpeech.Length / 13.5) / rateFactor + 0.35, 0.6, 18.0);
-        Volatile.Write(ref _speakingUntilTick, t0 + (long)(estSeconds * Stopwatch.Frequency));
+        long durTicks = (long)(estSeconds * Stopwatch.Frequency);
         lock (_sync)
         {
             if (_disposed) return 0;
-            _pendingText = cleanSpeech;
+            bool hadPendingStop = _pendingStop;
+            bool shouldPurge = interruptCurrent || !chainIfSpeaking || hadPendingStop;
+            if (shouldPurge)
+            {
+                _pendingQueue.Clear();
+                Volatile.Write(ref _speakingUntilTick, t0 + durTicks);
+                _pendingQueue.Add((cleanSpeech, shouldPurge, durTicks));
+            }
+            else
+            {
+                long droppedTicks = 0;
+                bool evictedPurge = false;
+                while (_pendingQueue.Count >= 3)
+                {
+                    var dropped = _pendingQueue[0];
+                    _pendingQueue.RemoveAt(0);
+                    droppedTicks += dropped.EstTicks;
+                    evictedPurge |= dropped.Purge;
+                }
+                long prevUntil = Volatile.Read(ref _speakingUntilTick) - droppedTicks;
+                long baseTick = prevUntil > t0 ? prevUntil : t0;
+                Volatile.Write(ref _speakingUntilTick, baseTick + durTicks);
+                _pendingQueue.Add((cleanSpeech, shouldPurge, durTicks));
+                if (evictedPurge && _pendingQueue.Count > 0)
+                {
+                    var head = _pendingQueue[0];
+                    _pendingQueue[0] = (head.Text, true, head.EstTicks);
+                }
+            }
             _pendingStop = false;
             _signal.Set();
         }
@@ -162,12 +212,11 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
 
     public void StopSpeaking()
     {
-        Volatile.Write(ref _speakingUntilTick, 0);
-        if (_disposed || !_ready) return;
         lock (_sync)
         {
-            if (_disposed) return;
-            _pendingText = null;
+            Volatile.Write(ref _speakingUntilTick, 0);
+            _pendingQueue.Clear();
+            if (_disposed || !_ready) return;
             _pendingStop = true;
             _signal.Set();
         }
@@ -215,7 +264,7 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
             {
                 _signal.WaitOne();
 
-                string? textToSpeak;
+                List<(string Text, bool Purge)>? batch = null;
                 bool doStop;
                 bool doConfig;
                 bool doReselect;
@@ -227,8 +276,13 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
                 {
                     if (_shutdownRequested)
                         break;
-                    textToSpeak = _pendingText;
-                    _pendingText = null;
+                    if (_pendingQueue.Count > 0)
+                    {
+                        batch = new List<(string Text, bool Purge)>(_pendingQueue.Count);
+                        foreach (var item in _pendingQueue)
+                            batch.Add((item.Text, item.Purge));
+                        _pendingQueue.Clear();
+                    }
                     doStop = _pendingStop;
                     _pendingStop = false;
                     doConfig = _pendingConfigUpdate;
@@ -238,7 +292,7 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
                     lang = _language;
                     gender = _gender;
                     vol = _volume;
-                    rate = _sapiRate;
+                    rate = Volatile.Read(ref _sapiRate);
                 }
 
                 try
@@ -248,8 +302,15 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
 
                     if (doStop)
                         spVoice.Speak(string.Empty, SvsFlagsAsync | SvsfPurgeBeforeSpeak);
-                    else if (!string.IsNullOrEmpty(textToSpeak))
-                        spVoice.Speak(textToSpeak, SvsFlagsAsync | SvsfPurgeBeforeSpeak);
+
+                    if (batch is not null)
+                    {
+                        foreach (var (textToSpeak, doPurge) in batch)
+                        {
+                            if (!string.IsNullOrEmpty(textToSpeak))
+                                spVoice.Speak(textToSpeak, doPurge ? (SvsFlagsAsync | SvsfPurgeBeforeSpeak) : SvsFlagsAsync);
+                        }
+                    }
                 }
                 catch
                 {
@@ -477,12 +538,14 @@ public sealed class InstantSapiVoiceService : IVoiceOutputService
             if (_disposed) return;
             _disposed = true;
             _shutdownRequested = true;
-            _pendingText = null;
+            _pendingQueue.Clear();
+            Volatile.Write(ref _speakingUntilTick, 0);
             _signal.Set();
             threadToJoin = _staThread;
         }
 
-        threadToJoin?.Join(TimeSpan.FromSeconds(1.5));
-        _signal.Dispose();
+        bool joined = threadToJoin?.Join(TimeSpan.FromSeconds(1.5)) ?? true;
+        if (joined)
+            _signal.Dispose();
     }
 }

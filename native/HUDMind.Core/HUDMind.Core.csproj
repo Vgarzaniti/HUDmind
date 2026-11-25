@@ -6,10 +6,12 @@
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../HUDMind.Packer/HUDMind.Packer.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="../HUDMind.Packer/HUDMind.Packer.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" GlobalPropertiesToRemove="RuntimeIdentifier;SelfContained;PublishSingleFile;PublishReadyToRun;IncludeNativeLibrariesForSelfExtract" />
     <VaultSourceFile Include="../../profiles/**/*.json" />
     <VaultSourceFile Include="../../profiles/**/*.md" Exclude="../../profiles/**/custom_rules.md" />
     <VaultSourceFile Include="ProtectedAssets/vault_strings.json" />
+    <VaultSourceFile Include="../HUDMind.Packer/Program.cs" />
+    <VaultSourceFile Include="Security/ProfileVaultCodec.cs" />
     <EmbeddedResource Include="$(IntermediateOutputPath)HUDMind.Vault.bin" LogicalName="HUDMind.Vault.bin" />
   </ItemGroup>
   <Target Name="BuildAssetVault" BeforeTargets="AssignTargetPaths;PrepareResources;CoreResGen"
@@ -20,8 +22,9 @@
       <_VaultOutBin>$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)HUDMind.Vault.bin'))</_VaultOutBin>
     </PropertyGroup>
     <MSBuild Projects="../HUDMind.Packer/HUDMind.Packer.csproj"
-             Properties="Configuration=$(Configuration);RuntimeIdentifier="
-             Targets="Build">
+             Properties="Configuration=$(Configuration)"
+             RemoveProperties="RuntimeIdentifier;SelfContained;PublishSingleFile;PublishReadyToRun;IncludeNativeLibrariesForSelfExtract"
+             Targets="GetTargetPath">
       <Output TaskParameter="TargetOutputs" PropertyName="_PackerAssemblyPath" />
     </MSBuild>
     <Exec Command="dotnet &quot;$([MSBuild]::NormalizePath('$(_PackerAssemblyPath)'))&quot; &quot;$(_VaultProfilesDir)&quot; &quot;$(_VaultStringsJson)&quot; &quot;$(_VaultOutBin)&quot;" />

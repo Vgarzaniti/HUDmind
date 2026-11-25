@@ -40,6 +40,7 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
     [DllImport("kernel32.dll")]
     private static extern uint GetCurrentThreadId();
 
+    private readonly object _sync = new();
     private Thread? _thread;
     private volatile uint _threadId;
     private Action? _onPause;
@@ -55,11 +56,6 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
         Action? onToggleMic = null,
         Action<string>? onWarning = null)
     {
-        Stop();
-        _onPause = onPause;
-        _onAnalyze = onAnalyze;
-        _onToggleMic = onToggleMic;
-
         uint pMod = 0, pVk = 0x78;
         if (!HotkeyParser.TryParse(pauseHotkey, out pMod, out pVk, out _))
         {
@@ -76,7 +72,7 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
             aVk = 0x79;
         }
 
-        bool hasMic = !string.IsNullOrWhiteSpace(micHotkey) && _onToggleMic is not null;
+        bool hasMic = !string.IsNullOrWhiteSpace(micHotkey) && onToggleMic is not null;
         uint mMod = 0, mVk = 0x77;
         if (hasMic && !HotkeyParser.TryParse(micHotkey, out mMod, out mVk, out _))
         {
@@ -88,70 +84,90 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
         bool pauseOk = false;
         bool analyzeOk = false;
         bool micOk = false;
-        using var readyEv = new ManualResetEventSlim(false);
 
-        _thread = new Thread(() =>
+        lock (_sync)
         {
-            _ = PeekMessage(out _, IntPtr.Zero, 0, 0, PmNoRemove);
-            _threadId = GetCurrentThreadId();
+            StopLocked();
+            _onPause = onPause;
+            _onAnalyze = onAnalyze;
+            _onToggleMic = onToggleMic;
 
-            pauseOk = RegisterHotKey(IntPtr.Zero, 1, pMod | ModNoRepeat, pVk);
-            if (!pauseOk)
-                onWarning?.Invoke($"No se pudo registrar tecla Pausar '{pauseHotkey}' (Win32 err={Marshal.GetLastWin32Error()} — otro programa la usa).");
+            var readyEv = new ManualResetEventSlim(false);
+            int evOwners = 2;
 
-            analyzeOk = RegisterHotKey(IntPtr.Zero, 2, aMod | ModNoRepeat, aVk);
-            if (!analyzeOk)
-                onWarning?.Invoke($"No se pudo registrar tecla Analizar '{analyzeHotkey}' (Win32 err={Marshal.GetLastWin32Error()} — otro programa la usa).");
-
-            if (hasMic)
+            _thread = new Thread(() =>
             {
-                micOk = RegisterHotKey(IntPtr.Zero, 3, mMod | ModNoRepeat, mVk);
-                if (!micOk)
-                    onWarning?.Invoke($"No se pudo registrar tecla Mic '{micHotkey}' (Win32 err={Marshal.GetLastWin32Error()}).");
-            }
+                _ = PeekMessage(out _, IntPtr.Zero, 0, 0, PmNoRemove);
+                _threadId = GetCurrentThreadId();
 
-            readyEv.Set();
-            try
-            {
-                while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
+                pauseOk = RegisterHotKey(IntPtr.Zero, 1, pMod | ModNoRepeat, pVk);
+                if (!pauseOk)
+                    onWarning?.Invoke($"No se pudo registrar tecla Pausar '{pauseHotkey}' (Win32 err={Marshal.GetLastWin32Error()} — otro programa la usa).");
+
+                analyzeOk = RegisterHotKey(IntPtr.Zero, 2, aMod | ModNoRepeat, aVk);
+                if (!analyzeOk)
+                    onWarning?.Invoke($"No se pudo registrar tecla Analizar '{analyzeHotkey}' (Win32 err={Marshal.GetLastWin32Error()} — otro programa la usa).");
+
+                if (hasMic)
                 {
-                    if (msg.message != WmHotkey) continue;
-                    int id = (int)msg.wParam;
-                    Action? target = id switch
-                    {
-                        1 => _onPause,
-                        2 => _onAnalyze,
-                        3 => _onToggleMic,
-                        _ => null
-                    };
-                    if (target is null) continue;
-
-                    // Dispatch asynchronously so GetMessage pump & Stop() never block on callbacks!
-                    ThreadPool.UnsafeQueueUserWorkItem(static state =>
-                    {
-                        var (fn, warn) = ((Action, Action<string>?))state!;
-                        try { fn(); }
-                        catch (Exception ex) { warn?.Invoke($"Error en callback de hotkey: {ex.Message}"); }
-                    }, (target, onWarning));
+                    micOk = RegisterHotKey(IntPtr.Zero, 3, mMod | ModNoRepeat, mVk);
+                    if (!micOk)
+                        onWarning?.Invoke($"No se pudo registrar tecla Mic '{micHotkey}' (Win32 err={Marshal.GetLastWin32Error()}).");
                 }
-            }
-            finally
+
+                readyEv.Set();
+                if (Interlocked.Decrement(ref evOwners) == 0)
+                    readyEv.Dispose();
+                try
+                {
+                    while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
+                    {
+                        if (msg.message != WmHotkey) continue;
+                        int id = (int)msg.wParam;
+                        Action? target = id switch
+                        {
+                            1 => _onPause,
+                            2 => _onAnalyze,
+                            3 => _onToggleMic,
+                            _ => null
+                        };
+                        if (target is null) continue;
+
+                        // Dispatch asynchronously so GetMessage pump & Stop() never block on callbacks!
+                        ThreadPool.UnsafeQueueUserWorkItem(static state =>
+                        {
+                            var (fn, warn) = ((Action, Action<string>?))state!;
+                            try { fn(); }
+                            catch (Exception ex) { warn?.Invoke($"Error en callback de hotkey: {ex.Message}"); }
+                        }, (target, onWarning));
+                    }
+                }
+                finally
+                {
+                    if (pauseOk) UnregisterHotKey(IntPtr.Zero, 1);
+                    if (analyzeOk) UnregisterHotKey(IntPtr.Zero, 2);
+                    if (micOk) UnregisterHotKey(IntPtr.Zero, 3);
+                }
+            })
             {
-                if (pauseOk) UnregisterHotKey(IntPtr.Zero, 1);
-                if (analyzeOk) UnregisterHotKey(IntPtr.Zero, 2);
-                if (micOk) UnregisterHotKey(IntPtr.Zero, 3);
-            }
-        })
-        {
-            IsBackground = true,
-            Name = "HUDMind-Win32-Hotkeys"
-        };
-        _thread.Start();
-        readyEv.Wait(TimeSpan.FromSeconds(2));
-        return (pauseOk, analyzeOk, micOk);
+                IsBackground = true,
+                Name = "HUDMind-Win32-Hotkeys"
+            };
+            _thread.Start();
+            readyEv.Wait(TimeSpan.FromSeconds(2));
+            if (Interlocked.Decrement(ref evOwners) == 0)
+                readyEv.Dispose();
+            return (pauseOk, analyzeOk, micOk);
+        }
     }
 
     public void Stop()
+    {
+        lock (_sync)
+            StopLocked();
+    }
+
+    private void StopLocked()
     {
         uint tid = _threadId;
         if (_thread is { IsAlive: true } && tid != 0)

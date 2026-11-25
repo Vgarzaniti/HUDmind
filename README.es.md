@@ -14,7 +14,7 @@
 
 - **Doble Motor Conversacional e Instantáneo:**
   - **Live Conversacional (WebSocket bidireccional):** audio 16 kHz ↔ voz nativa 24 kHz + video en vivo con supresión de eco y *barge-in* inteligente, compatible con **Gemini Live**, **OpenAI Realtime** y **xAI Grok Voice**.
-  - **Turnos Multi-IA (HTTP/2 Keep-Alive + Hedged Vision Racing):** failover automático entre **Gemini**, **Groq (LPU gratis)**, **OpenAI**, **Claude**, **xAI**, **Mistral**, **OpenRouter**, **Pollinations** y **Airforce** + modelos de solo texto alimentados con **Windows WinRT OCR + Logs/APIs oficiales** (`Rocket League`, `VALORANT`, `League of Legends` API `127.0.0.1:2999`, `CS2` y `Dota 2` Valve GSI `127.0.0.1:47315`).
+  - **Turnos Multi-IA (HTTP/2 Keep-Alive + Hedged Vision Racing):** failover automático entre **Gemini**, **Groq (LPU gratis)**, **OpenAI**, **Claude**, **xAI**, **Mistral**, **OpenRouter**, **Pollinations**, **Airforce** y **Ollama** local + modelos de solo texto alimentados con **Windows WinRT OCR + Logs/APIs oficiales** (`Rocket League`, `VALORANT`, `League of Legends` API `127.0.0.1:2999`, `CS2` y `Dota 2` Valve GSI `127.0.0.1:47315`).
 - **3 Modos de Comunicación Separados + Chat Escrito:**
   - `🎙 Charla`: micrófono en vivo (**Mic Abierto con supresión de eco** o **Push-to-Talk** por tecla) + voz del coach.
   - `🔊 Solo voz del coach`: micrófono apagado, el coach te habla y podés escribir por chat.
@@ -37,7 +37,7 @@
 | `aoe2_de` | **Age of Empires II: DE** | `AoE2DE_s.exe`, `AoE2DE.exe` | WinRT OCR |
 | `rob_run` | **ROB RUN** | `ROB RUN.exe` | WinRT OCR |
 
-*(Para CS2 / Dota 2 GSI, podés instalar `gamestate_integration_hudmind.cfg` en 1 clic desde **⚙ Coach, Rango y Voz → 🎮 Instalar GSI Oficial**).*
+*(Para CS2 / Dota 2 GSI, podés instalar `gamestate_integration_hudmind.cfg` en 1 clic desde **🎙 Voz y Ajustes → 🎮 Activar conexión CS2 / Dota 2**).*
 
 - **Gestión completa sin tocar JSON:** agregá o **editá** cuentas IA (con `BaseUrl` HTTPS custom y selector de modo `Visión` vs `Solo Texto`), creá o editá **perfiles de juegos** (`EXEs`, `Cooldown`, `pHash` y reglas personales), activá tonos sutiles Win32, abrí tus resúmenes Markdown (`logs/reviews/`) en **`📂 Resúmenes`** y aprovechá diagnóstico automático ante pantallas negras de Fullscreen Exclusivo.
 - **100% Portable, Sellado y Auto-Actualizable:** los 7 perfiles incluidos y las reglas base vienen cifrados dentro del vault autenticado AES-256-GCM (`HUDMind.Vault.bin`) en el binario `ReadyToRun` single-file y se auto-crean en `%LocalAppData%\HUDMind\profiles`. Al abrir el `.exe` (y cada 60 min en reposo), HUDMind consulta **GitHub Releases** en segundo plano y muestra un cartel dentro de la ventana cuando hay una versión nueva disponible, con botón **`⬇ Descargar actualización`** y verificación **SHA-256**.
@@ -47,7 +47,7 @@
 ## Descarga Rápida (Releases)
 
 1. Descargá **`HUDMind.Native-Standalone-win-x64.exe`** desde **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** (no requiere instalar .NET 9 aparte), o **`HUDMind.Native-win-x64.exe`** (~26 MB) si ya tenés .NET 9 Desktop Runtime.
-2. Ejecutá el `.exe` y pegá una API Key gratuita de **Groq** o **Gemini** en **🔑 Cuentas IA**.
+2. Ejecutá el `.exe` y pegá una API Key gratuita de **Groq** o **Gemini** en **🤖 Proveedores IA**.
 
 ---
 
@@ -57,7 +57,7 @@
 # 1. Compilar solución completa (0 warnings / 0 errors)
 dotnet build native\HUDMind.sln -c Release
 
-# 2. Suite Core multiplataforma (49 pruebas) + suite nativa Windows (14 pruebas) + smoke WPF
+# 2. Suite Core multiplataforma (50 pruebas) + suite nativa Windows (15 pruebas) + smoke WPF
 dotnet run --project native\HUDMind.Tests\HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native\HUDMind.Windows.Tests\HUDMind.Windows.Tests.csproj -c Release --no-build
 .\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe --smoke-startup
@@ -110,8 +110,9 @@ También podés iniciar directamente con [HUDMind.bat](HUDMind.bat).
 │   ├── HUDMind.Core/               # Modelos, Config/SSRF/Redaction, Embedded Profiles, Updates, Wire Protocol, Motores
 │   ├── HUDMind.Windows/            # GDI Capture, WinMM Audio/Devices, WinRT Natural TTS + OneCore, GSI, OCR, KnownFolders
 │   ├── HUDMind.App/                # UI WPF (0% GPU), PerMonitorV2 Overlay, Tray Icon Win32 y Banner de Updates
-│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (49 casos)
-│   └── HUDMind.Windows.Tests/      # Suite de pruebas Win32, GSI, TLS, Logs, Audio y KnownFolders (14 casos)
+│   ├── HUDMind.Packer/             # Compilador build-time del vault AES-256-GCM (Perfiles + ProtectedAssets -> Vault.bin)
+│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (50 casos)
+│   └── HUDMind.Windows.Tests/      # Suite de pruebas Win32, WASAPI, GSI, TLS, Logs, Audio y KnownFolders (15 casos)
 ├── profiles/                       # Perfiles de juegos y prompts tácticos
 ├── docs/                           # Documentación técnica bilingüe (*.es.md y *.en.md)
 └── archive/legacy_python/          # Código Python legado archivado tras la migración a .NET 9

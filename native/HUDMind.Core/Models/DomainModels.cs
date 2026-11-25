@@ -455,7 +455,9 @@ public sealed record CapturedFrameData(
     double EncodeMs,
     DateTimeOffset CapturedAtUtc,
     bool IsForced = false,
-    string SpatialTelemetry = ""
+    string SpatialTelemetry = "",
+    double? TargetCooldownSeconds = null,
+    long SessionEpoch = 0
 );
 
 public sealed record HudSensorSnapshot(

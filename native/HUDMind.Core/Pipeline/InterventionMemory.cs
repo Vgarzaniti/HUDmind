@@ -410,6 +410,15 @@ public sealed class InterventionStateMachine
         }
     }
 
+    public void ResetCooldownsKeepBusy()
+    {
+        lock (_sync)
+        {
+            _lastInferenceUtc = DateTimeOffset.MinValue;
+            _lastDeliveryUtc = DateTimeOffset.MinValue;
+        }
+    }
+
     public bool CanAnalyze(double cooldownSeconds, double minIntervalSeconds, DateTimeOffset? nowUtc = null)
     {
         return GetWaitUntilReady(cooldownSeconds, minIntervalSeconds, nowUtc) <= TimeSpan.Zero;

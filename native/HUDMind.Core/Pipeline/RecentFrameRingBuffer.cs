@@ -67,31 +67,36 @@ public sealed class RecentFrameRingBuffer
     }
 
     /// <summary>
-    /// Normalized recent visual motion intensity (0.0 = completely static screen, 1.0 = rapid action/camera swing)
-    /// computed strictly from in-RAM 64-bit dHash deltas across the last ~1.5s (&lt; 0.1ms CPU, 0% GPU).
+    /// Normalized recent visual motion intensity (0.0 = static/stalled/single-jump screen, 1.0 = rapid action/camera swing)
+    /// computed strictly from in-RAM 64-bit dHash deltas across the last ~2.1s (&lt; 0.1ms CPU, 0% GPU).
+    /// Requires &gt;= 2 real transitions and decays cleanly to 0 when capture has stalled.
     /// </summary>
-    public double ComputeRecentMotionEnergy(double windowSeconds = 1.5)
+    public double ComputeRecentMotionEnergy(double windowSeconds = 2.1, DateTimeOffset? utcNow = null)
     {
         lock (_sync)
         {
-            if (_frames.Count < 2)
+            if (_frames.Count < 3)
                 return 0.0;
 
+            var now = utcNow ?? DateTimeOffset.UtcNow;
             var newest = _frames[^1].CapturedAtUtc;
-            var cutoff = newest.AddSeconds(-Math.Max(0.3, windowSeconds));
+            if ((now - newest).TotalSeconds > Math.Max(2.5, windowSeconds * 1.5))
+                return 0.0;
+
+            var cutoff = newest.AddSeconds(-Math.Max(0.4, windowSeconds) - 0.05);
             double sumNormalized = 0.0;
             int pairs = 0;
 
             for (int i = _frames.Count - 1; i >= 1; i--)
             {
-                if (_frames[i].CapturedAtUtc < cutoff)
+                if (_frames[i - 1].CapturedAtUtc < cutoff)
                     break;
                 int dist = PerceptualHasher.HammingDistance(_frames[i].PerceptualHash, _frames[i - 1].PerceptualHash);
                 sumNormalized += Math.Clamp(dist / 20.0, 0.0, 1.0);
                 pairs++;
             }
 
-            return pairs == 0 ? 0.0 : sumNormalized / pairs;
+            return pairs < 2 ? 0.0 : sumNormalized / pairs;
         }
     }
 
@@ -116,6 +121,8 @@ public sealed class RecentFrameRingBuffer
             {
                 var last = _frames[^1];
                 double elapsedMs = (frame.CapturedAtUtc - last.CapturedAtUtc).TotalMilliseconds;
+                if (elapsedMs < 0)
+                    return; // Ignore older frame arriving out of timestamp order
                 if (elapsedMs < _minSpacingMs)
                 {
                     if (forceReplaceTailIfTooClose)
@@ -273,6 +280,8 @@ public sealed class RecentFrameRingBuffer
     {
         if (source.Count <= targetCount)
             return source;
+        if (targetCount <= 1)
+            return [source[^1]];
 
         var picked = new List<TemporalFrameSample>(targetCount);
         double step = (source.Count - 1) / (double)(targetCount - 1);

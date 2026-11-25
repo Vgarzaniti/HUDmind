@@ -27,7 +27,7 @@ profiles/
     └── custom_rules.md       # (Opcional, gestionado en GUI) Reglas personales hasta 600 chars
 ```
 
-> **Tip Rápido desde la GUI:** En la pestaña **`🎮 Reglas por Juego`** completá **`+ Nuevo Perfil`** (`ID`, `Nombre` y `EXE(s)` separados por coma) y hacé clic en **`➕ Crear Perfil`**. El sistema valida el ID (sin rutas `..` ni `universal`), normaliza automáticamente `.exe`, escribe `manifest.json` + `system_prompt.md` y lo deja listo para editar sus reglas personales (`custom_rules.md`).
+> **Tip Rápido desde la GUI:** En la pestaña **`Juegos y Memoria`** completá **`+ Nuevo Juego`** (`Nombre` y `Archivo (.exe)` — el ID se deriva de forma segura) y hacé clic en **`➕ Agregar`**. El sistema valida el ID (sin rutas `..` ni `universal`), normaliza automáticamente `.exe`, escribe `manifest.json` + `system_prompt.md` y lo deja listo para editar sus reglas personales (`custom_rules.md`).
 
 ---
 
@@ -58,8 +58,8 @@ Ejemplo real basado en [`profiles/cs2/manifest.json`](../profiles/cs2/manifest.j
 | `process_names` | `string[]` | Lista de ejecutables `.exe` (insensible a mayúsculas) que activan este perfil al tomar foco. |
 | `capture_fps` | `double` | Frecuencia objetivo de captura en Hz (`1.0` a `2.0` típico). |
 | `phash_threshold` | `int` | Distancia de Hamming perceptual (`0`–`64`) para omitir frames estáticos. |
-| `cooldown_seconds` | `double` | Enfriamiento base entre consejos (en modo `training` se reduce automáticamente a 70%, mínimo `3.5s`). |
-| `max_resolution` | `[int, int]` | Techo de resolución del perfil; el modo `eco` escala hasta `800×450`, `balanced` a `960×540` y `high` a `1280×720`. |
+| `cooldown_seconds` | `double` | Enfriamiento base entre consejos (en modo `training` se reduce automáticamente a 65%, mínimo `2.8s`). |
+| `max_resolution` | `[int, int]` | Metadato reservado del perfil; el escalado real en runtime sigue a `TokenEfficiencyMode` (`eco`: `960×540`, `balanced`: `1280×720`, `high`: `1440×810`). |
 | `language` | `string` | Idioma base del perfil (`"es"` o `"en"`). |
 | `notes` | `string` | Resumen táctico corto usado como fallback compacto si `system_prompt.md` está vacío. |
 

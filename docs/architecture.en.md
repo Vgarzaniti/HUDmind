@@ -9,8 +9,8 @@ This document describes the modular architecture of **HUDMind Native** on **.NET
 ## 1. Design Principles
 
 1. **Separation of Concerns & Portability (`Core` vs `Windows` vs `App`):**
-   - `HUDMind.Core` (`net9.0`, 100% cross-platform): domain models, atomic configuration, SSRF/CWE-22/secret-redaction security, compact wire protocol, anti-repetition memory, extensible provider registry, failover router, GitHub Releases update service (`GitHubReleaseUpdateService`), and both orchestrators (`CoachOrchestrator` and `RealtimeLiveCoachOrchestrator`).
-   - `HUDMind.Windows` (`net9.0-windows10.0.19041.0`): GDI `StretchBlt` screen capture, foreground process/client-rect detection, WinRT OCR, Valve GSI TCP listener, Riot TLS client, log tailers, Win32 global hotkeys/PTT, WinMM streaming audio, `PlaySoundW` audio cues, and shell known-folder resolution (`KnownFolders`).
+   - `HUDMind.Core` (`net9.0`, 100% cross-platform): domain models, atomic configuration, SSRF/CWE-22/secret-redaction security, AES-256-GCM vault (`HUDMind.Vault.bin`), compact wire protocol, anti-repetition & rolling `N`-match `.md` memory, extensible provider registry, failover router, OBS-style dual-tier frame buffer (`RecentFrameRingBuffer`), non-overlapping `ConversationalSpeechCoordinator` + `NaturalConnectorResolver`, GitHub Releases update service (`GitHubReleaseUpdateService`), and both orchestrators (`CoachOrchestrator` and `RealtimeLiveCoachOrchestrator`).
+   - `HUDMind.Windows` (`net9.0-windows10.0.19041.0`): GDI `StretchBlt` screen capture, foreground process/client-rect detection, WinRT OCR, Valve GSI TCP listener, Riot TLS client, log tailers, Win32 global hotkeys/PTT, WinMM streaming audio, passive WASAPI Core Audio mixer monitor (`WasapiAudioSceneMonitor`), `PlaySoundW` audio cues, `RuntimeHardeningGuard`, and shell known-folder resolution (`KnownFolders`).
    - `HUDMind.App` (`net9.0-windows10.0.19041.0` WPF): `MainWindow` (with built-in update notification banner), `OverlayWindow`, `Win32TrayIcon`, and `CoachEngineCoordinator`.
 2. **0% GPU & Anti-Cheat Safe by Construction:**
    - WPF rendering forced onto CPU (`RenderMode.SoftwareOnly`).
@@ -41,14 +41,15 @@ This document describes the modular architecture of **HUDMind Native** on **.NET
 | RealtimeLiveCoachOrchestrator (Core)  |   | CoachOrchestrator (Core)              |
 | - GeminiLiveBackend / OpenAIRealtime  |   | - Capture Channel (Bounded DropOldest)|
 | - Mic PCM 16kHz + VAD + PTT + BargeIn |   | - ProviderFailoverRouter + Hedged     |
-| - Periodic video frames + F10 / Chat  |   | - HybridVoiceService (Neural/OneCore) |
+| - 25s/~10 FPS OBS Ring + Follow-Ups   |   | - ConversationalSpeechCoordinator     |
 +-------------------+-------------------+   +-------------------+-------------------+
                     |                                           |
                     +---------------------+---------------------+
                                           v
 +-----------------------------------------------------------------------------------+
-|                         HUDMind.Windows (Sensors & Capture)                       |
+|                    HUDMind.Windows (Sensors, Audio & Capture)                     |
 |  FastScreenCapture (StretchBlt+dHash) | Win32WindowDetector | TextOnlySensorService|
+|  Win32StreamingPcmPlayer | WinRt/Sapi | WasapiAudioSceneMonitor (Read-Only COM)    |
 |  ValveGsiTelemetrySensor | LeagueLiveClientSensor | RocketLeague/ValorantLogSensor |
 +-----------------------------------------------------------------------------------+
 ```
@@ -76,8 +77,9 @@ This document describes the modular architecture of **HUDMind Native** on **.NET
 | Subsystem | Primitive / Thread | Primary Guarantee |
 | :--- | :--- | :--- |
 | Main UI & WPF Overlay | UI Thread (`Dispatcher`) | Non-blocking updates via `Dispatcher.BeginInvoke`; click-through overlay never steals game focus. |
-| Capture & HTTP Pipeline | `Channel<CapturedFrameData>` + async `Task` | `BoundedChannelFullMode.DropOldest` capacity `1`; `F10` wakes immediately. |
-| Live Audio (Mic + Speaker) | WinMM Threads / PCM Queue (`Win32StreamingMicCapture` & `Win32StreamingPcmPlayer`) | In-memory 16kHz mic capture and 24kHz playback; acoustic echo suppression and instant barge-in. |
+| Capture & HTTP Pipeline | `Channel<CapturedFrameData>` + async `Task` | `BoundedChannelFullMode.DropOldest` capacity `1` with epoch tag; `F10` wakes immediately. |
+| Speech Queue & Audio Gap | `ConversationalSpeechCoordinator` + `WasapiAudioSceneMonitor` | Priority capacity-2 FIFO queue chains rapid tips with natural connectors, never chops active speech, and yields briefly to external audio bursts. |
+| Live Audio (Mic + Speaker) | WinMM Threads / PCM Queue (`Win32StreamingMicCapture` & `Win32StreamingPcmPlayer`) | In-memory 16kHz mic capture (760ms digital silence tail) and 24kHz playback (`PreOpenDevice`, 300ms prime, 4ms tail fade, leak-safe reclaim, AEC barge-in). |
 | Global Hotkeys | Dedicated Win32 Thread (`GetMessage`) | `RegisterHotKey` + `PostThreadMessage(WM_QUIT)` on clean shutdown; `0%` idle CPU. |
 | CS2/Dota2 GSI Listener | Loopback `TcpListener` + `SemaphoreSlim(4)` | Max 4 concurrent sockets with bounded `CancellationTokenSource` and clean teardown on `Stop()`. |
 | Update Checker | Async `Task` + `DispatcherTimer` (60 min when idle) | Runs only at startup and while idle (`!IsRunning`); validates HTTPS GitHub redirects and streaming SHA-256. |

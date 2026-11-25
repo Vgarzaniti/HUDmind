@@ -56,6 +56,9 @@ public sealed class Win32StreamingMicCapture : IStreamingMicCapture
     public void SetDevice(string? deviceName)
     {
         var next = (deviceName ?? string.Empty).Trim();
+        Action<string>? errCb = null;
+        string? errMsg = null;
+
         lock (_opLock)
         {
             if (_disposed) return;
@@ -80,84 +83,98 @@ public sealed class Win32StreamingMicCapture : IStreamingMicCapture
             if (wasRunning && restartCb is not null)
             {
                 Stop();
-                if (!_disposed)
-                    TryStart(restartCb, restartErr);
+                if (!_disposed && !TryStartLocked(restartCb, restartErr, out errMsg))
+                    errCb = restartErr;
             }
         }
+
+        if (errMsg is not null)
+            errCb?.Invoke(errMsg);
     }
 
     public bool TryStart(Action<byte[]> onPcm16kChunk, Action<string>? onError = null)
     {
+        string? errorMessage;
+        bool ok;
         lock (_opLock)
         {
-            int myGen;
-            lock (_sync)
+            ok = TryStartLocked(onPcm16kChunk, onError, out errorMessage);
+        }
+        if (errorMessage is not null)
+            onError?.Invoke(errorMessage);
+        return ok;
+    }
+
+    private bool TryStartLocked(Action<byte[]> onPcm16kChunk, Action<string>? onError, out string? errorMessage)
+    {
+        errorMessage = null;
+        int myGen;
+        lock (_sync)
+        {
+            if (_disposed) return false;
+            if (_running) return true;
+
+            CleanupLocked();
+
+            _lastOnChunk = onPcm16kChunk;
+            _onError = onError;
+            _headIdx = 0;
+
+            var fmt = new WAVEFORMATEX
             {
-                if (_disposed) return false;
-                if (_running) return true;
+                wFormatTag = 1,
+                nChannels = 1,
+                nSamplesPerSec = 16000,
+                wBitsPerSample = 16,
+                nBlockAlign = 2,
+                nAvgBytesPerSec = 32000,
+                cbSize = 0
+            };
 
-                CleanupLocked();
+            int devId = Win32AudioDevices.ResolveInputDeviceId(_targetDeviceName);
+            int openRes = waveInOpen(out _hWaveIn, devId, ref fmt, IntPtr.Zero, IntPtr.Zero, 0);
+            if ((openRes != 0 || _hWaveIn == IntPtr.Zero) && devId != Win32AudioDevices.WaveMapper)
+                openRes = waveInOpen(out _hWaveIn, Win32AudioDevices.WaveMapper, ref fmt, IntPtr.Zero, IntPtr.Zero, 0);
 
-                _lastOnChunk = onPcm16kChunk;
-                _onError = onError;
-                _headIdx = 0;
+            if (openRes != 0 || _hWaveIn == IntPtr.Zero)
+            {
+                _hWaveIn = IntPtr.Zero;
+                errorMessage = "No se detectó micrófono disponible (continuando solo con visión + voz del coach).";
+                return false;
+            }
 
-                var fmt = new WAVEFORMATEX
-                {
-                    wFormatTag = 1,
-                    nChannels = 1,
-                    nSamplesPerSec = 16000,
-                    wBitsPerSample = 16,
-                    nBlockAlign = 2,
-                    nAvgBytesPerSec = 32000,
-                    cbSize = 0
-                };
-
-                int devId = Win32AudioDevices.ResolveInputDeviceId(_targetDeviceName);
-                int openRes = waveInOpen(out _hWaveIn, devId, ref fmt, IntPtr.Zero, IntPtr.Zero, 0);
-                if ((openRes != 0 || _hWaveIn == IntPtr.Zero) && devId != Win32AudioDevices.WaveMapper)
-                    openRes = waveInOpen(out _hWaveIn, Win32AudioDevices.WaveMapper, ref fmt, IntPtr.Zero, IntPtr.Zero, 0);
-
-                if (openRes != 0 || _hWaveIn == IntPtr.Zero)
-                {
-                    _hWaveIn = IntPtr.Zero;
-                    onError?.Invoke("No se detectó micrófono disponible (continuando solo con visión + voz del coach).");
-                    return false;
-                }
-
-                uint hdrSize = (uint)Marshal.SizeOf<WAVEHDR>();
-                for (int i = 0; i < NumBuffers; i++)
-                {
-                    _dataPtrs[i] = Marshal.AllocHGlobal(ChunkBytes);
-                    var hdr = new WAVEHDR { lpData = _dataPtrs[i], dwBufferLength = ChunkBytes };
-                    _hdrPtrs[i] = Marshal.AllocHGlobal((int)hdrSize);
-                    Marshal.StructureToPtr(hdr, _hdrPtrs[i], false);
-                    if (waveInPrepareHeader(_hWaveIn, _hdrPtrs[i], hdrSize) != 0 ||
-                        waveInAddBuffer(_hWaveIn, _hdrPtrs[i], hdrSize) != 0)
-                    {
-                        CleanupLocked();
-                        onError?.Invoke("No se pudo preparar buffer de captura de micrófono.");
-                        return false;
-                    }
-                }
-
-                if (waveInStart(_hWaveIn) != 0)
+            uint hdrSize = (uint)Marshal.SizeOf<WAVEHDR>();
+            for (int i = 0; i < NumBuffers; i++)
+            {
+                _dataPtrs[i] = Marshal.AllocHGlobal(ChunkBytes);
+                var hdr = new WAVEHDR { lpData = _dataPtrs[i], dwBufferLength = ChunkBytes };
+                _hdrPtrs[i] = Marshal.AllocHGlobal((int)hdrSize);
+                Marshal.StructureToPtr(hdr, _hdrPtrs[i], false);
+                if (waveInPrepareHeader(_hWaveIn, _hdrPtrs[i], hdrSize) != 0 ||
+                    waveInAddBuffer(_hWaveIn, _hdrPtrs[i], hdrSize) != 0)
                 {
                     CleanupLocked();
-                    onError?.Invoke("No se pudo iniciar captura de micrófono.");
+                    errorMessage = "No se pudo preparar buffer de captura de micrófono.";
                     return false;
                 }
-
-                myGen = Interlocked.Increment(ref _captureGen);
-                _running = true;
-                _pumpThread = new Thread(() => PumpLoop(onPcm16kChunk, myGen))
-                {
-                    IsBackground = true,
-                    Name = "HUDMind-Mic-16k"
-                };
-                _pumpThread.Start();
-                return true;
             }
+
+            if (waveInStart(_hWaveIn) != 0)
+            {
+                CleanupLocked();
+                errorMessage = "No se pudo iniciar captura de micrófono.";
+                return false;
+            }
+
+            myGen = Interlocked.Increment(ref _captureGen);
+            _running = true;
+            _pumpThread = new Thread(() => PumpLoop(onPcm16kChunk, myGen))
+            {
+                IsBackground = true,
+                Name = "HUDMind-Mic-16k"
+            };
+            _pumpThread.Start();
+            return true;
         }
     }
 
@@ -177,6 +194,7 @@ public sealed class Win32StreamingMicCapture : IStreamingMicCapture
                 {
                     byte[]? copy = null;
                     string? errMsg = null;
+                    Action<string>? errCb = null;
 
                     lock (_sync)
                     {
@@ -206,6 +224,7 @@ public sealed class Win32StreamingMicCapture : IStreamingMicCapture
                         {
                             _running = false;
                             errMsg = $"Micrófono desconectado o interrumpido (WinMM {mm}).";
+                            errCb = _onError;
                         }
                         else
                         {
@@ -215,7 +234,7 @@ public sealed class Win32StreamingMicCapture : IStreamingMicCapture
 
                     if (errMsg is not null)
                     {
-                        try { _onError?.Invoke(errMsg); } catch { }
+                        try { errCb?.Invoke(errMsg); } catch { }
                         break;
                     }
 

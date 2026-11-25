@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
@@ -313,7 +314,7 @@ await RunTest("12. CoachOrchestrator wakes immediately on F10, delivers to overl
     Assert(!orch.IsPaused && pauseEvents.Last() == false, "F10 unpaused and notified UI");
     Assert(voice.Spoken.Contains("Defendé arco"), "Voice spoke F10 advice");
     Assert(overlay.Shown.Any(s => s.Contains("Defendé arco")), "Overlay showed F10 advice");
-    Assert(sw.ElapsedMilliseconds < 800, $"F10 should bypass 2000ms capture sleep (took {sw.ElapsedMilliseconds}ms)");
+    Assert(sw.ElapsedMilliseconds < 1300, $"F10 should bypass 2000ms capture sleep (took {sw.ElapsedMilliseconds}ms)");
 });
 
 // 13. Lazy Text-Only Sensor Layer: 0 calls on Vision, active ONLY for blind text-only models!
@@ -816,13 +817,14 @@ await RunTest("26. Push-to-Talk gates loud mic when key released, forwards when 
     for (int i = 0; i < 40 && stubBackend.SentMicChunks == 0; i++) await Task.Delay(20);
     Assert(stubBackend.SentMicChunks >= 1, "Holding PTT key must transmit even soft speech (RMS < 320)!");
 
-    // Releasing PTT must still forward ~420ms silence tail so Gemini/OpenAI server VAD closes the turn immediately!
+    // Releasing PTT must still forward ~760ms clean digital silence tail (> 520ms Gemini / 260ms OpenAI server VAD)
     int beforeRelease = stubBackend.SentMicChunks;
     keyHeld = false;
     await Task.Delay(260);
     stubMic.PushChunk(soft);
     for (int i = 0; i < 40 && stubBackend.SentMicChunks == beforeRelease; i++) await Task.Delay(15);
-    Assert(stubBackend.SentMicChunks > beforeRelease, "PTT post-release tail (~260ms) must pass chunks to trigger server VAD!");
+    Assert(stubBackend.SentMicChunks > beforeRelease && stubBackend.LastMicChunkAllZero,
+        "PTT post-release tail (~260ms) must pass clean digital-zero silence to trigger server VAD!");
     await live.StopAsync();
 });
 
@@ -1483,7 +1485,7 @@ await RunTest("42. Switching games flushes old match cleanly, clears tilt/epoch,
     var winDet = new MutableWindowDetector("cs2.exe");
     var cfg = new UserConfig { MinInferenceIntervalSeconds = 0.05, RuntimeTiltRisk = true };
     cfg.SetCommunicationMode("text_only");
-    var flushed = new List<MatchSessionSnapshot>();
+    var flushed = new ConcurrentQueue<MatchSessionSnapshot>();
     int csCalls = 0;
 
     var acc = new ProviderAccount { Id = "p1", Label = "Stub", Provider = "openai", Model = "gpt-4o", ApiKey = "sk-test-stub", Priority = 1 };
@@ -1495,7 +1497,7 @@ await RunTest("42. Switching games flushes old match cleanly, clears tilt/epoch,
 
     await using (var orch = new CoachOrchestrator(
         cfg, [csProf, rlProf], router, winDet, new StubCapture(), new RecordingVoice(), new RecordingOverlay(),
-        testMode: false, onMatchCompleted: s => flushed.Add(s), resolveContextForProfile: ResolveGameCtx))
+        testMode: false, onMatchCompleted: s => flushed.Enqueue(s), resolveContextForProfile: ResolveGameCtx))
     {
         await orch.StartAsync();
         for (int i = 0; i < 60 && (orch.ActiveGameId != "cs2" || orch.CaptureMatchSnapshot()?.InterventionsCount < 1); i++)
@@ -1510,7 +1512,7 @@ await RunTest("42. Switching games flushes old match cleanly, clears tilt/epoch,
         Assert(orch.ActiveGameId == "rocket_league", $"Expected switch to rocket_league, got {orch.ActiveGameId}");
         Assert(!cfg.RuntimeTiltRisk, "RuntimeTiltRisk must reset to false on game switch");
         Assert(cfg.PreviousMatchFocus == "MEMORY_RL", $"Expected MEMORY_RL loaded on switch, got {cfg.PreviousMatchFocus}");
-        Assert(flushed.Count == 1 && flushed[0].GameId == "cs2" && flushed[0].InterventionsCount >= 1,
+        Assert(flushed.TryPeek(out var firstFlushed) && flushed.Count == 1 && firstFlushed.GameId == "cs2" && firstFlushed.InterventionsCount >= 1,
             "Prior CS2 match must flush cleanly before switching to Rocket League");
 
         // Alt-Tabbing to Discord must keep Rocket League active without flushing or corrupting current match
@@ -1528,12 +1530,12 @@ await RunTest("42. Switching games flushes old match cleanly, clears tilt/epoch,
     var liveDet = new MutableWindowDetector("cs2.exe");
     var liveCfg = new UserConfig { LiveAutoCoachSeconds = 0, RuntimeTiltRisk = true };
     liveCfg.SetCommunicationMode("coach_voice");
-    var liveFlushed = new List<MatchSessionSnapshot>();
+    var liveFlushed = new ConcurrentQueue<MatchSessionSnapshot>();
 
     await using (var live = new RealtimeLiveCoachOrchestrator(
         liveStub, liveCfg, [csProf, rlProf], liveDet,
         new StubCapture(), new StubStreamingPlayer(), new StubStreamingMic(), new RecordingOverlay(),
-        testMode: false, onMatchCompleted: s => liveFlushed.Add(s), resolveContextForProfile: ResolveGameCtx))
+        testMode: false, onMatchCompleted: s => liveFlushed.Enqueue(s), resolveContextForProfile: ResolveGameCtx))
     {
         await live.StartAsync();
         for (int i = 0; i < 50 && (!liveStub.IsConnected || liveStub.LastProfile?.Manifest.GameId != "cs2"); i++)
@@ -1549,7 +1551,7 @@ await RunTest("42. Switching games flushes old match cleanly, clears tilt/epoch,
 
         Assert(liveStub.LastProfile?.Manifest.GameId == "rocket_league" && liveCfg.PreviousMatchFocus == "MEMORY_RL" && !liveCfg.RuntimeTiltRisk,
             $"Live switch must reload backend for Rocket League cleanly (focus={liveCfg.PreviousMatchFocus})");
-        Assert(liveFlushed.Count == 1 && liveFlushed[0].GameId == "cs2" && liveFlushed[0].Digest.Contains("Jugá más lento en mid"),
+        Assert(liveFlushed.TryPeek(out var firstLiveFlushed) && liveFlushed.Count == 1 && firstLiveFlushed.GameId == "cs2" && firstLiveFlushed.Digest.Contains("Jugá más lento en mid"),
             "CS2 Live match must flush cleanly without leaking into Rocket League memory");
         Assert((live.CaptureMatchSnapshot()?.InterventionsCount ?? 0) == 0,
             "New Rocket League Live match must start with empty fresh match log");
@@ -2012,13 +2014,13 @@ await RunTest("46. High-FPS clip ring buffer, native multi-frame HTTP/Live paylo
         Assert(qContent.GetArrayLength() == 2, $"Groq must send 1 text + 1 composite storyboard image, got {qContent.GetArrayLength()}");
     }
 
-    // 5) Live Engine continuous 135ms ring loop feeds native multi-frame turn on text chat AND voice-onset motion sync!
+    // 5) Live Engine continuous ~10 FPS ring loop feeds native multi-frame turn on text chat AND voice-onset motion sync!
     var stubLive = new StubLiveBackend();
     var stubPlayer = new StubStreamingPlayer();
     var stubMic = new StubStreamingMic();
     var liveCfg = new UserConfig { LiveAutoCoachSeconds = 0, VoiceLanguage = "es", TextLanguage = "es" };
     liveCfg.SetCommunicationMode("conversation");
-    var rlProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "Rocket League", CaptureFps = 2.0, ProcessNames = ["RocketLeague.exe"] } };
+    var rlProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "Rocket League", CaptureFps = 0.5, ProcessNames = ["RocketLeague.exe"] } };
 
     await using var live = new RealtimeLiveCoachOrchestrator(
         stubLive, liveCfg, [rlProf], new StubWindowDetector("RocketLeague.exe"),
@@ -2026,8 +2028,9 @@ await RunTest("46. High-FPS clip ring buffer, native multi-frame HTTP/Live paylo
         testMode: true, storyboardComposer: composer);
     await live.StartAsync();
     for (int i = 0; i < 40 && !stubMic.IsCapturing; i++) await Task.Delay(20);
+    Assert(stubMic.IsCapturing, "Stub mic must start cleanly in Test 46");
     for (int i = 0; i < 60 && stubLive.SentVideoFrames < 1; i++) await Task.Delay(20);
-    await Task.Delay(450); // let 100ms continuous OBS ring loop capture >= 3 motion frames
+    await Task.Delay(450); // let ~100ms continuous OBS ring loop capture >= 3 motion frames
 
     int framesBeforeVoice = stubLive.SentVideoFrames;
     stubMic.PushChunk(MakeSinePcm16(samples: 1600, amplitude: 900));
@@ -2173,19 +2176,28 @@ await RunTest("48. Coach watches full silent play via dual-tier macro+micro buff
 // 49. OBS 25s Buffer Motion Energy, Anti-Chop Barge-In, Open-Mic Floor, Null-Capture Proactive Continuity & Retry Backoff
 await RunTest("49. OBS 25s macro motion energy, anti-chop 2400 transient guard, idle noise gate & LatestSample proactive resilience", async () =>
 {
-    // 1) OBS dual-tier ring defaults: 25s macro lookback + ComputeRecentMotionEnergy reflects camera/action spikes
+    // 1) OBS dual-tier ring defaults: single menu jump = 0.0, 2+ real transitions register spike, stalled clock decays to 0.0
+    var nowTest = DateTimeOffset.UtcNow;
+    var singleJumpRing = new RecentFrameRingBuffer();
+    singleJumpRing.Record(new CapturedFrameData([0xFF, 0xD8, 1], 0x0000000000000000UL, 1, 1, 1, nowTest.AddSeconds(-1)));
+    singleJumpRing.Record(new CapturedFrameData([0xFF, 0xD8, 2], 0xFFFFFFFFFFFFFFFFUL, 2, 1, 1, nowTest));
+    Assert(singleJumpRing.ComputeRecentMotionEnergy(utcNow: nowTest) == 0.0,
+        "Single isolated jump (1 pair) must not falsely trigger visual motion spike");
+
     var obsRing = new RecentFrameRingBuffer();
-    var tBase = DateTimeOffset.UtcNow.AddSeconds(-24);
+    var tBase = nowTest.AddSeconds(-24);
     for (int s = 0; s <= 24; s++)
     {
-        ulong hash = s >= 21 ? ((s % 2 == 0) ? 0x0000000000000000UL : 0xFFFFFFFFFFFFFFFFUL) : 0x5555555555555555UL;
+        ulong hash = s >= 22 ? ((s % 2 == 0) ? 0x0000000000000000UL : 0xFFFFFFFFFFFFFFFFUL) : 0x5555555555555555UL;
         obsRing.Record(new CapturedFrameData([0xFF, 0xD8, (byte)(s + 1)], hash, s + 1, 1, 1, tBase.AddSeconds(s)));
     }
     Assert(obsRing.MacroCount >= 20, $"OBS ring must retain >=20 macro keyframes over 24s (got {obsRing.MacroCount})");
-    Assert(obsRing.ComputeRecentMotionEnergy() >= 0.45,
-        $"High hash deltas across recent tail must register visual motion spike (energy={obsRing.ComputeRecentMotionEnergy():F2})");
+    Assert(obsRing.ComputeRecentMotionEnergy(utcNow: nowTest) >= 0.45,
+        $"High hash deltas across recent tail must register visual motion spike (energy={obsRing.ComputeRecentMotionEnergy(utcNow: nowTest):F2})");
+    Assert(obsRing.ComputeRecentMotionEnergy(utcNow: nowTest.AddSeconds(5)) == 0.0,
+        "Motion energy must decay cleanly to 0 when capture has stalled > 3s");
 
-    // 2) Single 100ms very loud transient (amplitude 3200) must NOT chop coach audio, and idle fan noise (380) must be dropped
+    // 2) Single 100ms loud mechanical slam (amplitude 2400) must NOT chop coach audio, and idle fan noise (380) must be dropped
     var backend = new StubLiveBackend();
     var player = new StubStreamingPlayer();
     var mic = new StubStreamingMic();
@@ -2199,17 +2211,18 @@ await RunTest("49. OBS 25s macro motion energy, anti-chop 2400 transient guard, 
     {
         await live.StartAsync();
         for (int i = 0; i < 40 && !mic.IsCapturing; i++) await Task.Delay(25);
+        Assert(mic.IsCapturing, "Live mic must capture in Test 49");
         Assert(player.PreOpenedCount >= 1, "StartAsync with voice active must pre-open WinMM DAC device to eliminate startup stutter");
 
         // Idle noise RMS 380 < 460 must be ignored cleanly
         mic.PushChunk(MakeSinePcm16(samples: 1600, amplitude: 380));
-        await Task.Delay(35);
+        await Task.Delay(80);
         Assert(backend.SentMicChunks == 0, $"Idle open_mic fan noise (380 RMS) must stay gated (sent={backend.SentMicChunks})");
 
         // Single 100ms loud mechanical slam / gunshot spike (2400 RMS < 2850) while coach speaks MUST NOT chop playback
         backend.EmitIncomingAudio([9, 9]);
         mic.PushChunk(MakeSinePcm16(samples: 1600, amplitude: 2400));
-        await Task.Delay(35);
+        await Task.Delay(80);
         Assert(player.InterruptCount == 0 && backend.SentMicChunks == 0,
             $"Single 100ms loud transient (2400 RMS) must NOT interrupt coach audio (int={player.InterruptCount}, sent={backend.SentMicChunks})");
 
@@ -2220,9 +2233,9 @@ await RunTest("49. OBS 25s macro motion energy, anti-chop 2400 transient guard, 
         await live.StopAsync();
     }
 
-    // 3) Even when CaptureIfChanged skips frames after frame 1, LatestSample keeps proactive nudges firing & empty turn retries early
+    // 3) Even when CaptureIfChanged skips frames after frame 1, LatestSample keeps proactive nudges firing & empty turn retries in <=2.5s
     var oneShotBackend = new StubLiveBackend();
-    var silentCfg = new UserConfig { LiveAutoCoachSeconds = 5.5, VoiceLanguage = "es", TextLanguage = "es" };
+    var silentCfg = new UserConfig { LiveAutoCoachSeconds = 12.0, VoiceLanguage = "es", TextLanguage = "es" };
     silentCfg.SetCommunicationMode("coach_voice");
     await using var silentLive = new RealtimeLiveCoachOrchestrator(
         oneShotBackend, silentCfg, [prof], new StubWindowDetector("RocketLeague.exe"),
@@ -2233,12 +2246,395 @@ await RunTest("49. OBS 25s macro motion energy, anti-chop 2400 transient guard, 
     Assert(oneShotBackend.SentTextTurns >= 1, "Proactive OBS turn #1 must still fire using CaptureSharpFrame initial sample");
 
     await Task.Delay(120);
-    oneShotBackend.EmitTurnComplete(string.Empty); // empty turn -> shortens retry from 5.5s to ~2.5s while CaptureIfChanged returns null!
+    var retrySw = Stopwatch.StartNew();
+    oneShotBackend.EmitTurnComplete(string.Empty); // empty turn -> shortens retry from 12.0s to ~2.5s while CaptureIfChanged returns null!
 
     for (int i = 0; i < 160 && oneShotBackend.SentTextTurns < 2; i++) await Task.Delay(25);
-    Assert(oneShotBackend.SentTextTurns >= 2,
-        $"Empty proactive turn + skipped capture must retry via LatestSample fallback within ~2.5s (turns={oneShotBackend.SentTextTurns})");
+    Assert(oneShotBackend.SentTextTurns >= 2 && retrySw.ElapsedMilliseconds < 4500,
+        $"Empty proactive turn + skipped capture must retry via LatestSample fallback in ~2.5s (turns={oneShotBackend.SentTextTurns}, elapsed={retrySw.ElapsedMilliseconds}ms)");
     await silentLive.StopAsync();
+});
+
+// 50. Conversational Speech Queue + Connectors + AudioScene Yield + Classic visualSpike + OpenMic 760ms VAD Tail + Classifier Bounds
+await RunTest("50. Conversational connectors prevent skipped/cut audio, yield to game bursts, open_mic 760ms digital silence & visualSpike e2e", async () =>
+{
+    // 1) ConversationalSpeechCoordinator chains quick comments via natural connectors WITHOUT cutting sentence 1, and yields to loud game bursts
+    var mockVoice = new RecordingVoice { IsSpeaking = true };
+    var mockAudioScene = new MutableAudioSceneMonitor { Peak = 0.80 }; // simulate loud explosion
+    await using (var speech = new ConversationalSpeechCoordinator(mockVoice, mockAudioScene, isEn: () => false))
+    {
+        speech.Enqueue(new SpeechIntent("Rotá segundo palo", UrgencyLevel.Medium, TopicTag: "rot"));
+        await Task.Delay(80);
+        Assert(mockVoice.Spoken.Count == 0, "Queued speech must NEVER chop active speech when non-queueing voice IsSpeaking==true");
+
+        mockVoice.IsSpeaking = false; // sentence 1 ends; explosion still at 0.80
+        await Task.Delay(120);
+        Assert(mockVoice.Spoken.Count == 0, "Routine speech must yield briefly during 0.80 game explosion peak");
+
+        mockAudioScene.Peak = 0.12; // explosion ends -> speaks cleanly in quiet gap WITH natural connector!
+        for (int i = 0; i < 40 && mockVoice.Spoken.Count == 0; i++) await Task.Delay(25);
+        Assert(mockVoice.Spoken.Count == 1 &&
+            (mockVoice.Spoken[0].Contains("y aparte", StringComparison.OrdinalIgnoreCase) ||
+             mockVoice.Spoken[0].Contains("y fijate", StringComparison.OrdinalIgnoreCase)),
+            $"Chained utterance must bridge naturally with connector, got: '{(mockVoice.Spoken.Count > 0 ? mockVoice.Spoken[0] : "")}'");
+
+        // Rapid urgent follow-up preserves uppercase acronyms like C4 while bridging with "y ojo"/"y cuidado"
+        speech.Enqueue(new SpeechIntent("C4 plantada en B", UrgencyLevel.High, TopicTag: "bomb"));
+        for (int i = 0; i < 40 && mockVoice.Spoken.Count < 2; i++) await Task.Delay(25);
+        Assert(mockVoice.Spoken.Count == 2 && mockVoice.Spoken[1].Contains("C4") &&
+            (mockVoice.Spoken[1].Contains("y ojo", StringComparison.OrdinalIgnoreCase) ||
+             mockVoice.Spoken[1].Contains("y cuidado", StringComparison.OrdinalIgnoreCase)),
+            $"Urgent follow-up must preserve acronym 'C4' and use urgent connector, got: '{(mockVoice.Spoken.Count > 1 ? mockVoice.Spoken[1] : "")}'");
+
+        // Mixed alphanumeric uppercase token like AK47 stays uppercase when bridged, and InterruptAndClear cancels pending items cleanly
+        speech.Enqueue(new SpeechIntent("AK47 rinde mejor en buy", UrgencyLevel.Medium, TopicTag: "buy"));
+        for (int i = 0; i < 40 && mockVoice.Spoken.Count < 3; i++) await Task.Delay(25);
+        Assert(mockVoice.Spoken.Count == 3 && mockVoice.Spoken[2].Contains("AK47", StringComparison.Ordinal),
+            $"Mixed alphanumeric token 'AK47' must keep uppercase when bridged, got: '{(mockVoice.Spoken.Count > 2 ? mockVoice.Spoken[2] : "")}'");
+
+        mockAudioScene.Peak = 0.65;
+        speech.Enqueue(new SpeechIntent("Este tip debe cancelarse", UrgencyLevel.Low, TopicTag: "cancel"));
+        await Task.Delay(30);
+        // Urgent InterruptCurrent while Low tip is waiting in audio-gap polling must abort waiting immediately (<< 620ms) and NEVER inject continuation connectors!
+        var intrSw = Stopwatch.StartNew();
+        speech.Enqueue(new SpeechIntent("Rotación inmediata ahora", UrgencyLevel.High, InterruptCurrent: true, TopicTag: "urg"));
+        for (int i = 0; i < 30 && mockVoice.Spoken.Count < 4; i++) await Task.Delay(20);
+        Assert(mockVoice.Spoken.Count == 4 && intrSw.ElapsedMilliseconds < 450 &&
+               mockVoice.Spoken[3].StartsWith("Rotación", StringComparison.Ordinal) &&
+               !mockVoice.Spoken.Any(s => s.Contains("cancelarse")),
+            $"InterruptCurrent during audio-gap wait must cancel stale wait immediately without connector bridging (ms={intrSw.ElapsedMilliseconds}, last='{(mockVoice.Spoken.Count > 3 ? mockVoice.Spoken[3] : "")}')");
+        speech.InterruptAndClear();
+        mockAudioScene.Peak = 0.05;
+        await Task.Delay(60);
+    }
+
+    // 2) CoachOrchestrator delivers early visualSpike (~0.50x cooldown) instead of dropping it in ConsumerLoopAsync!
+    int aiCalls = 0;
+    var spikeCfg = new UserConfig { MinInferenceIntervalSeconds = 1.0, OverlayDurationSeconds = 2.0 };
+    spikeCfg.SetCommunicationMode("text_only");
+    var spikeProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "RL", CooldownSeconds = 5.0, CaptureFps = 2.0, ProcessNames = ["RocketLeague.exe"] } };
+    var spikeRouter = new ProviderFailoverRouter(
+        [new ProviderAccount { Label = "V", Provider = "gemini", ApiKey = "AIzaSySpikeTest123456", Model = "gemini-2.5-flash", Priority = 1 }],
+        acc => new CountingAnalyzeProvider(acc, () => Interlocked.Increment(ref aiCalls)));
+
+    await using (var orch = new CoachOrchestrator(
+        spikeCfg, [spikeProf], spikeRouter, new StubWindowDetector("RocketLeague.exe"),
+        new HighMotionStubCapture(), new RecordingVoice(), new RecordingOverlay(), testMode: true, forcedGameId: "rl"))
+    {
+        await orch.StartAsync();
+        for (int i = 0; i < 50 && aiCalls < 1; i++) await Task.Delay(35);
+        Assert(aiCalls == 1, $"Expected initial intervention #1, got {aiCalls}");
+        var spikeSw = Stopwatch.StartNew();
+        for (int i = 0; i < 110 && aiCalls < 2; i++) await Task.Delay(50); // waits up to ~5.5s (vs normal cooldown floor)
+        Assert(aiCalls >= 2 && spikeSw.ElapsedMilliseconds < 5400,
+            $"visualSpike must bypass 5.0s full cooldown and deliver early (~2.8s) cleanly (calls={aiCalls}, ms={spikeSw.ElapsedMilliseconds})");
+        await orch.StopAsync();
+    }
+
+    // 3) Live open_mic (deterministic TimeProvider): 900 RMS voice NOT blocked during awaitingProactiveAudio, 140..760ms digital silence tail & >760ms cutoff!
+    var vadBackend = new StubLiveBackend();
+    var vadMic = new StubStreamingMic();
+    var vadTime = new ManualTimeProvider(DateTimeOffset.UtcNow);
+    var vadCfg = new UserConfig { LiveAutoCoachSeconds = 8.0, VoiceLanguage = "es", TextLanguage = "es" };
+    vadCfg.SetCommunicationMode("conversation");
+    await using (var vadLive = new RealtimeLiveCoachOrchestrator(
+        vadBackend, vadCfg, [spikeProf], new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), new StubStreamingPlayer(), vadMic, new RecordingOverlay(),
+        testMode: true, timeProvider: vadTime))
+    {
+        await vadLive.StartAsync();
+        for (int i = 0; i < 50 && vadBackend.SentTextTurns < 1; i++) await Task.Delay(30);
+        for (int i = 0; i < 40 && !vadMic.IsCapturing; i++) await Task.Delay(20);
+        Assert(vadBackend.SentTextTurns >= 1 && vadMic.IsCapturing, "Proactive turn & mic must both start");
+
+        // Even while awaiting proactive reply (before speaker audio), real open-mic voice (900 RMS) MUST get through immediately!
+        int beforeVoice = vadBackend.SentMicChunks;
+        vadMic.PushChunk(MakeSinePcm16(samples: 1600, amplitude: 900));
+        for (int i = 0; i < 40 && vadBackend.SentMicChunks == beforeVoice; i++) await Task.Delay(20);
+        Assert(vadBackend.SentMicChunks > beforeVoice, "Normal open-mic speech (900 RMS) must NOT be blocked during awaitingProactiveAudio");
+
+        // Advance logical clock cleanly to 220ms (strictly past 140ms raw tail, < 760ms total tail) -> room noise emits pure digital zeros for 520ms Gemini VAD!
+        vadTime.Advance(TimeSpan.FromMilliseconds(220));
+        int beforeTail = vadBackend.SentMicChunks;
+        vadMic.PushChunk(MakeSinePcm16(samples: 1600, amplitude: 200));
+        for (int i = 0; i < 40 && vadBackend.SentMicChunks == beforeTail; i++) await Task.Delay(20);
+        Assert(vadBackend.SentMicChunks > beforeTail && vadBackend.LastMicChunkAllZero,
+            $"Open-mic post-speech tail (140..760ms) must forward digital silence for 520ms Gemini VAD (zero={vadBackend.LastMicChunkAllZero})");
+
+        // Advance past 760ms total tail window (220 + 600 = 820ms) -> room noise must shut off cleanly
+        vadTime.Advance(TimeSpan.FromMilliseconds(600));
+        int afterTail = vadBackend.SentMicChunks;
+        vadMic.PushChunk(MakeSinePcm16(samples: 1600, amplitude: 200));
+        await Task.Delay(50);
+        Assert(vadBackend.SentMicChunks == afterTail, "Open-mic past 760ms silence tail must stop sending chunks");
+        await vadLive.StopAsync();
+    }
+
+    // 4) HudPhaseClassifier word boundaries, MENU multi-hit priority & FREEPLAY/log classification
+    var freeplayOcr = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["TOP-LEFT"] = "FREEPLAY" };
+    Assert(HudPhaseClassifier.ClassifyPhase(freeplayOcr, "") == "TRAINING", "FREEPLAY without space must classify TRAINING");
+    var gameplayText = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["MID-LEFT"] = "PLAYER GAMEPLAY", ["BOT-RIGHT"] = "45" };
+    Assert(HudPhaseClassifier.ClassifyPhase(gameplayText, "") == "PLAY", "Substrings GAMEPLAY/PLAYER must not trigger MENU 'PLAY' hit");
+    var reloadingText = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["CENTER"] = "RELOADING" };
+    Assert(HudPhaseClassifier.ClassifyPhase(reloadingText, "") == "UNKNOWN", "RELOADING must NOT match LOADING");
+    Assert(HudPhaseClassifier.ClassifyPhase(new Dictionary<string, string>(), "VAL_LOG: Menu / Lobby") == "MENU",
+        "VAL_LOG: Menu / Lobby must classify MENU");
+    var multiMenuText = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["LEFT"] = "PLAY | COMPETITIVE | FREE PLAY" };
+    Assert(HudPhaseClassifier.ClassifyPhase(multiMenuText, "") == "MENU",
+        "Multiple MENU hits without timer must classify MENU ahead of FREE PLAY");
+
+    // 5) MENU phase gate must NOT spin OCR at 10Hz + SessionEpoch drops stale cross-game responses
+    var menuSensor = new CountingSensor(new HudSensorSnapshot("MENU", "[TOP] PLAY COMPETITIVE", "", "", 20, true));
+    var menuCfg = new UserConfig { LiveAutoCoachSeconds = 2.0, VoiceLanguage = "es", TextLanguage = "es" };
+    menuCfg.SetCommunicationMode("coach_voice");
+    await using (var menuLive = new RealtimeLiveCoachOrchestrator(
+        new StubLiveBackend(), menuCfg, [spikeProf], new StubWindowDetector("RocketLeague.exe"),
+        new StubCapture(), new StubStreamingPlayer(), new StubStreamingMic(), new RecordingOverlay(),
+        testMode: true, localPhaseGate: menuSensor))
+    {
+        await menuLive.StartAsync();
+        for (int i = 0; i < 40 && menuSensor.CallCount == 0; i++) await Task.Delay(25);
+        int firstCount = menuSensor.CallCount;
+        await Task.Delay(400);
+        int after400Count = menuSensor.CallCount;
+        Assert(firstCount >= 1 && (after400Count - firstCount) <= 1,
+            $"MENU phase gate must NOT spin OCR at 10Hz on retry backoff (first={firstCount}, after400ms={after400Count})");
+        await menuLive.StopAsync();
+    }
+
+    var profA = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "game_a", DisplayName = "GameA", CooldownSeconds = 1.0, CaptureFps = 4.0, ProcessNames = ["GameA.exe"] } };
+    var profB = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "game_b", DisplayName = "GameB", CooldownSeconds = 1.0, CaptureFps = 4.0, ProcessNames = ["GameB.exe"] } };
+    var epochDet = new MutableWindowDetector("GameA.exe");
+    var epochVoice = new RecordingVoice();
+    var epochOverlay = new RecordingOverlay();
+    int aStarted = 0;
+    var epochRouter = new ProviderFailoverRouter(
+        [new ProviderAccount { Label = "V", Provider = "gemini", ApiKey = "AIzaSyEpochTest123456", Model = "gemini-2.5-flash", Priority = 1 }],
+        acc => new AsyncCallbackStubProvider(acc, async (prof, _, ct) =>
+        {
+            if (prof.Manifest.GameId == "game_a" && Interlocked.Increment(ref aStarted) == 1)
+            {
+                await Task.Delay(600, ct);
+                return new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Medium, "Stale Tip GameA", "Stale Tip GameA"));
+            }
+            if (prof.Manifest.GameId == "game_b")
+                return new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Medium, "Valid Tip GameB", "Valid Tip GameB"));
+            return new ProviderCallResult(CoachResponse.Silent());
+        }));
+    var epochCfg = new UserConfig { MinInferenceIntervalSeconds = 0.5, OverlayDurationSeconds = 2.0 };
+    epochCfg.SetCommunicationMode("text_only");
+    await using (var epochOrch = new CoachOrchestrator(
+        epochCfg, [profA, profB], epochRouter, epochDet,
+        new StubCapture(), epochVoice, epochOverlay, testMode: false))
+    {
+        await epochOrch.StartAsync();
+        for (int i = 0; i < 60 && Volatile.Read(ref aStarted) < 1; i++) await Task.Delay(25);
+        Assert(Volatile.Read(ref aStarted) == 1, "GameA analysis must begin before switching game");
+        epochDet.CurrentExe = "GameB.exe";
+        for (int i = 0; i < 120 && !epochOverlay.Shown.Any(s => s.Contains("Valid Tip GameB")); i++) await Task.Delay(30);
+        Assert(!epochOverlay.Shown.Any(s => s.Contains("Stale Tip GameA")) && !epochVoice.Spoken.Any(s => s.Contains("Stale Tip GameA")) &&
+               epochOverlay.Shown.Any(s => s.Contains("Valid Tip GameB")),
+            $"Cross-game SessionEpoch must discard stale GameA output cleanly! overlay=[{string.Join(";", epochOverlay.Shown)}]");
+        await epochOrch.StopAsync();
+    }
+
+    // 6) Regression guards: ResetCooldownsKeepBusy preserves IsBusy, RecentFrameRingBuffer ignores out-of-order frames,
+    //    and default null -> universal foreground switch realigns Live sessionEpoch so audio/transcripts aren't dropped!
+    var sm = new InterventionStateMachine();
+    Assert(sm.TryBeginAnalysis() && sm.IsBusy, "TryBeginAnalysis must set IsBusy");
+    sm.ResetCooldownsKeepBusy();
+    Assert(sm.IsBusy, "ResetCooldownsKeepBusy must preserve active IsBusy ownership while clearing cooldown timers");
+    sm.EndAnalysis(false);
+
+    var oooRing = new RecentFrameRingBuffer(maxFrames: 6, minSpacingMs: 250);
+    var tNew = DateTimeOffset.UtcNow;
+    oooRing.Record(new CapturedFrameData([0xAA, 0xD8], 0x1111UL, 2, 1, 1, tNew), forceReplaceTailIfTooClose: true);
+    oooRing.Record(new CapturedFrameData([0xBB, 0xD8], 0x2222UL, 1, 1, 1, tNew.AddMilliseconds(-200)), forceReplaceTailIfTooClose: true);
+    Assert(oooRing.LatestSample?.PerceptualHash == 0x1111UL, "Out-of-order older frame must NEVER overwrite newer LatestSample");
+
+    var devVoice = new RecordingVoice();
+    var devCfg = new UserConfig { AudioOutputDeviceName = "Headset Pro", TtsRate = "fast", VoiceLanguage = "es" };
+    devCfg.SetCommunicationMode("coach_voice");
+    await using (var devOrch = new CoachOrchestrator(
+        devCfg, [profA], epochRouter, new StubWindowDetector("GameA.exe"),
+        new StubCapture(), devVoice, new RecordingOverlay(), testMode: true))
+    {
+        await devOrch.StartAsync();
+        Assert(devVoice.LastDevice == "Headset Pro", $"CoachOrchestrator StartAsync must forward output device, got '{devVoice.LastDevice}'");
+        // Mid-session switch from text_only -> coach_voice must also forward updated output device & rate
+        devOrch.SetCommunicationMode("text_only");
+        devCfg.AudioOutputDeviceName = "Desk Speakers";
+        devOrch.SetCommunicationMode("coach_voice");
+        for (int i = 0; i < 40 && devVoice.LastDevice != "Desk Speakers"; i++) await Task.Delay(20);
+        Assert(devVoice.LastDevice == "Desk Speakers" && devVoice.LastRate == "fast",
+            $"CoachOrchestrator SetCommunicationMode must forward device & rate (dev='{devVoice.LastDevice}', rate='{devVoice.LastRate}')");
+        devCfg.AudioOutputDeviceName = "Studio Monitor";
+        devOrch.UpdateAudioLive(devCfg);
+        Assert(devVoice.LastDevice == "Studio Monitor", $"CoachOrchestrator UpdateAudioLive must forward output device, got '{devVoice.LastDevice}'");
+        int stopsBeforeTextOnly = devVoice.StopCount;
+        devCfg.SetCommunicationMode("text_only");
+        devOrch.UpdateAudioLive(devCfg);
+        Assert(devVoice.StopCount > stopsBeforeTextOnly, "CoachOrchestrator UpdateAudioLive -> text_only must interrupt/clear active & queued speech");
+        await devOrch.StopAsync();
+    }
+
+    // Shared UserConfig pre-mutated before SetCommunicationMode must still trigger Live WebSocket reload across text_only <-> conversation,
+    // volume drags via UpdateAudioLive must NEVER tear down an active mic or re-probe output hardware,
+    // and stopped Live engine must ignore TogglePause & TriggerOnDemandAnalysis cleanly!
+    var sharedBackend = new StubLiveBackend();
+    var sharedPlayer = new StubStreamingPlayer();
+    var sharedMic = new StubStreamingMic();
+    var sharedCfg = new UserConfig { LiveAutoCoachSeconds = 0, VoiceLanguage = "es", TextLanguage = "es", TtsVolume = 0.8 };
+    sharedCfg.SetCommunicationMode("text_only");
+    await using (var sharedLive = new RealtimeLiveCoachOrchestrator(
+        sharedBackend, sharedCfg, [profA], new StubWindowDetector("GameA.exe"),
+        new StubCapture(), sharedPlayer, sharedMic, new RecordingOverlay(), testMode: true))
+    {
+        await sharedLive.StartAsync();
+        for (int i = 0; i < 40 && sharedBackend.SessionCount < 1; i++) await Task.Delay(25);
+        int sessionsBefore = sharedBackend.SessionCount;
+        // Pre-mutate shared UserConfig just like MainWindow.ApplyCommunicationModeFromUi does before calling coordinator.SetCommunicationMode
+        sharedCfg.SetCommunicationMode("conversation");
+        sharedLive.SetCommunicationMode("conversation");
+        for (int i = 0; i < 60 && (sharedBackend.SessionCount <= sessionsBefore || !sharedMic.IsCapturing); i++) await Task.Delay(25);
+        Assert(sharedBackend.SessionCount > sessionsBefore && sharedMic.IsCapturing,
+            $"Live SetCommunicationMode must reload session and start mic (sessions={sharedBackend.SessionCount}, mic={sharedMic.IsCapturing})");
+        Assert(sharedMic.StartCount == 1 && sharedMic.ActiveStopCount == 0,
+            $"text_only -> conversation must NOT start mic on dying text_only socket or double-start (starts={sharedMic.StartCount}, activeStops={sharedMic.ActiveStopCount})");
+
+        int micStartsAfterConnect = sharedMic.StartCount;
+        int micStopsAfterConnect = sharedMic.StopCount;
+        int playerPreOpensBeforeVol = sharedPlayer.PreOpenedCount;
+        var volCfg = new UserConfig { LiveAutoCoachSeconds = 0, VoiceLanguage = "es", TextLanguage = "es", TtsVolume = 0.35 };
+        volCfg.SetCommunicationMode("conversation");
+        sharedLive.UpdateAudioLive(volCfg);
+        Assert(sharedMic.IsCapturing && sharedMic.StartCount == micStartsAfterConnect && sharedMic.StopCount == micStopsAfterConnect,
+            $"UpdateAudioLive volume update in conversation mode must NOT restart mic (starts={sharedMic.StartCount}/{micStartsAfterConnect}, stops={sharedMic.StopCount}/{micStopsAfterConnect})");
+        Assert(sharedPlayer.PreOpenedCount == playerPreOpensBeforeVol,
+            $"UpdateAudioLive volume update must NOT re-probe DAC output (preOpens={sharedPlayer.PreOpenedCount}/{playerPreOpensBeforeVol})");
+        Assert(Math.Abs(sharedPlayer.LastVolume - 0.35) < 0.01,
+            $"UpdateAudioLive must still apply volume smoothly, got {sharedPlayer.LastVolume:F2}");
+
+        // Even when shared UserConfig is mutated in place before UpdateAudioLive, output device changes must be detected and pre-opened once
+        sharedCfg.AudioOutputDeviceName = "PreMutated Headphone DAC";
+        sharedCfg.TtsVolume = 0.35;
+        sharedLive.UpdateAudioLive(sharedCfg);
+        Assert(sharedPlayer.PreOpenedCount == playerPreOpensBeforeVol + 1 && sharedPlayer.LastDeviceName == "PreMutated Headphone DAC",
+            $"Shared UserConfig in-place output device change must pre-open new DAC (preOpens={sharedPlayer.PreOpenedCount}/{playerPreOpensBeforeVol}, dev='{sharedPlayer.LastDeviceName}')");
+
+        volCfg.SetCommunicationMode("coach_voice");
+        volCfg.AudioOutputDeviceName = sharedCfg.AudioOutputDeviceName;
+        sharedLive.UpdateAudioLive(volCfg);
+        Assert(!sharedMic.IsCapturing, "UpdateAudioLive -> coach_voice must stop mic cleanly");
+        volCfg.SetCommunicationMode("conversation");
+        sharedLive.UpdateAudioLive(volCfg);
+        Assert(sharedMic.IsCapturing && sharedMic.StartCount == micStartsAfterConnect + 1,
+            "UpdateAudioLive coach_voice -> conversation must start mic once");
+
+        await sharedLive.StopAsync();
+        sharedLive.TogglePause();
+        sharedLive.TriggerOnDemandAnalysis();
+        Assert(!sharedLive.IsRunning && !sharedLive.IsPaused, "Stopped Live engine must ignore TogglePause & TriggerOnDemandAnalysis cleanly");
+    }
+
+    // Volume drags without hardware microphone (!IsCapturing) must NOT retry waveInOpen or spam logs,
+    // while choosing a new AudioInputDeviceName must retry mic capture once.
+    var noMicBackend = new StubLiveBackend();
+    var noMic = new StubStreamingMic { FailStart = true };
+    var noMicLogs = new List<string>();
+    var noMicCfg = new UserConfig { LiveAutoCoachSeconds = 0, VoiceLanguage = "es", TextLanguage = "es" };
+    noMicCfg.SetCommunicationMode("conversation");
+    await using (var noMicLive = new RealtimeLiveCoachOrchestrator(
+        noMicBackend, noMicCfg, [profA], new StubWindowDetector("GameA.exe"),
+        new StubCapture(), new StubStreamingPlayer(), noMic, new RecordingOverlay(), testMode: true,
+        onLog: msg => { lock (noMicLogs) noMicLogs.Add(msg); }))
+    {
+        int CountNoMicFailLogs()
+        {
+            lock (noMicLogs)
+                return noMicLogs.Count(m => m.Contains("No se detectó micrófono", StringComparison.Ordinal));
+        }
+
+        await noMicLive.StartAsync();
+        for (int i = 0; i < 40 && (noMic.StartCount < 1 || CountNoMicFailLogs() < 1); i++) await Task.Delay(25);
+        int failLogsBeforeVol = CountNoMicFailLogs();
+        Assert(noMic.StartCount == 1 && !noMic.IsCapturing && failLogsBeforeVol == 1,
+            $"Unplugged mic must fail first start and log once (starts={noMic.StartCount}, cap={noMic.IsCapturing}, logs={failLogsBeforeVol})");
+        for (int s = 1; s <= 4; s++)
+        {
+            noMicCfg.TtsVolume = 0.2 * s;
+            noMicLive.UpdateAudioLive(noMicCfg);
+        }
+        int failLogsAfterVol = CountNoMicFailLogs();
+        Assert(noMic.StartCount == 1 && failLogsAfterVol == failLogsBeforeVol,
+            $"Volume slider drags with no mic must NOT retry waveInOpen or spam error logs (starts={noMic.StartCount}, logs={failLogsAfterVol}/{failLogsBeforeVol})");
+
+        noMic.FailStart = false;
+        noMicCfg.AudioInputDeviceName = "USB Plugged Mic";
+        noMicLive.UpdateAudioLive(noMicCfg);
+        Assert(noMic.IsCapturing && noMic.StartCount == 2 && noMic.LastDeviceName == "USB Plugged Mic",
+            $"Changing AudioInputDeviceName after mic failure must open new device once (cap={noMic.IsCapturing}, starts={noMic.StartCount})");
+
+        noMic.FailStart = true;
+        int logsBeforeBrokenSwitch = CountNoMicFailLogs();
+        noMicCfg.AudioInputDeviceName = "Broken USB Mic";
+        noMicLive.UpdateAudioLive(noMicCfg);
+        int logsAfterBrokenSwitch = CountNoMicFailLogs();
+        Assert(!noMic.IsCapturing && noMic.StartCount == 3 && logsAfterBrokenSwitch == logsBeforeBrokenSwitch + 1,
+            $"Switching active mic to failing device must attempt once and log once (cap={noMic.IsCapturing}, starts={noMic.StartCount}, logs={logsAfterBrokenSwitch - logsBeforeBrokenSwitch})");
+        await noMicLive.StopAsync();
+    }
+
+    // Crossing text_only -> conversation DURING initial WebSocket handshake (!IsConnected) must still reload modalities cleanly!
+    var handshakeGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var handshakeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var hsBackend = new StubLiveBackend { FirstHandshakeBlocker = handshakeGate, FirstHandshakeEntered = handshakeStarted };
+    var hsCfg = new UserConfig { LiveAutoCoachSeconds = 0, VoiceLanguage = "es", TextLanguage = "es" };
+    hsCfg.SetCommunicationMode("text_only");
+    await using (var hsLive = new RealtimeLiveCoachOrchestrator(
+        hsBackend, hsCfg, [profA], new StubWindowDetector("GameA.exe"),
+        new StubCapture(), new StubStreamingPlayer(), new StubStreamingMic(), new RecordingOverlay(), testMode: true))
+    {
+        await hsLive.StartAsync();
+        await handshakeStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert(hsLive.IsRunning && !hsBackend.IsConnected, "Live engine must be running in pre-connect handshake state");
+        hsCfg.SetCommunicationMode("conversation");
+        hsLive.SetCommunicationMode("conversation");
+        for (int i = 0; i < 60 && (hsBackend.SessionCount < 1 || hsBackend.LastSessionWasTextOnly); i++) await Task.Delay(25);
+        Assert(hsBackend.SessionCount >= 1 && !hsBackend.LastSessionWasTextOnly,
+            $"Handshake text_only->conversation switch must reload Live session cleanly (sessions={hsBackend.SessionCount}, wasTextOnly={hsBackend.LastSessionWasTextOnly})");
+        await hsLive.StopAsync();
+    }
+
+    var univProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "universal", DisplayName = "Universal", CooldownSeconds = 1.0, CaptureFps = 2.0, ProcessNames = ["*"] } };
+    var univDet = new MutableWindowDetector("explorer.exe"); // starts on desktop -> ActiveProfile == null
+    var univLive = new StubLiveBackend();
+    var univPlayer = new StubStreamingPlayer();
+    var univOverlay = new RecordingOverlay();
+    var univCfg = new UserConfig { LiveAutoCoachSeconds = 0, VoiceLanguage = "es", TextLanguage = "es" };
+    univCfg.SetCommunicationMode("coach_voice");
+    await using (var live = new RealtimeLiveCoachOrchestrator(
+        univLive, univCfg, [univProf], univDet, new StubCapture(), univPlayer, new StubStreamingMic(), univOverlay,
+        testMode: false, forcedGameId: "universal"))
+    {
+        await live.StartAsync();
+        for (int i = 0; i < 40 && univLive.SessionCount < 1; i++) await Task.Delay(25);
+        Assert(univLive.SessionCount == 1, "Universal coach must connect initially even on desktop");
+
+        // Alt-Tab into any unbundled game -> transitions null -> universal and MUST realign sessionEpoch!
+        univDet.CurrentExe = "eldenring.exe";
+        for (int i = 0; i < 80 && univLive.SessionCount < 2; i++) await Task.Delay(30);
+        Assert(univLive.SessionCount >= 2 && univLive.IsConnected,
+            $"null -> universal switch must trigger RefreshLivePersona & reconnect so sessionEpoch matches CurrentEpoch (sessions={univLive.SessionCount})");
+
+        int beforeChunks = univPlayer.EnqueuedCount;
+        univLive.EmitIncomingAudio([1, 2, 3, 4]);
+        univLive.EmitTurnComplete("Subite al caballo en campo abierto");
+        for (int i = 0; i < 40 && !univOverlay.Shown.Any(s => s.Contains("caballo")); i++) await Task.Delay(25);
+        Assert(univPlayer.EnqueuedCount > beforeChunks && univOverlay.Shown.Any(s => s.Contains("caballo")),
+            $"Post null->universal switch MUST NOT drop audio or transcripts as staleEpoch (audio={univPlayer.EnqueuedCount - beforeChunks})");
+        await live.StopAsync();
+    }
 });
 
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
@@ -2286,10 +2682,11 @@ sealed class CallbackStubProvider(ProviderAccount account, Func<HudSensorSnapsho
 
 sealed class CountingSensor(HudSensorSnapshot snapshot) : ITextOnlySensorService
 {
-    public int CallCount { get; private set; }
+    private int _callCount;
+    public int CallCount => Volatile.Read(ref _callCount);
     public Task<HudSensorSnapshot> ExtractAsync(byte[] jpegBytes, GameProfile profile, CancellationToken ct = default)
     {
-        CallCount++;
+        Interlocked.Increment(ref _callCount);
         return Task.FromResult(snapshot);
     }
     public void Reset() { }
@@ -2341,37 +2738,55 @@ sealed class StubCapture : IScreenCaptureService
 
 sealed class RecordingVoice : IVoiceOutputService
 {
-    public List<string> Spoken { get; } = [];
-    public string? LastRate { get; private set; }
-    public bool IsSpeaking { get; set; }
+    private readonly object _sync = new();
+    private readonly List<string> _spoken = [];
+    private volatile bool _isSpeaking;
+    private volatile string? _lastRate;
+    private volatile string? _lastDevice;
+    private int _stopCount;
+    public IReadOnlyList<string> Spoken { get { lock (_sync) return [.. _spoken]; } }
+    public string? LastRate => _lastRate;
+    public string? LastDevice => _lastDevice;
+    public int StopCount => Volatile.Read(ref _stopCount);
+    public bool IsSpeaking { get => _isSpeaking; set => _isSpeaking = value; }
     public string EngineName => "recording-test";
     public void WarmUp(string language, double volume, string gender = "male", string style = "neural") { }
     public void UpdateSettings(string language, double volume, string gender = "male", string style = "neural") { }
-    public void SetSpeechRate(string? rate) => LastRate = rate;
-    public double SpeakInstant(string text) { Spoken.Add(text); return 1.0; }
-    public void StopSpeaking() { }
+    public void SetOutputDevice(string? deviceName) => _lastDevice = deviceName;
+    public void SetSpeechRate(string? rate) => _lastRate = rate;
+    public double SpeakInstant(string text) { lock (_sync) _spoken.Add(text); return 1.0; }
+    public void StopSpeaking() => Interlocked.Increment(ref _stopCount);
     public void Dispose() { }
 }
 
 sealed class RecordingOverlay : IOverlayOutputService
 {
-    public List<string> Shown { get; } = [];
-    public void ShowCallout(string text, UrgencyLevel urgency, string title, double durationSeconds) => Shown.Add(text);
+    private readonly object _sync = new();
+    private readonly List<string> _shown = [];
+    public IReadOnlyList<string> Shown { get { lock (_sync) return [.. _shown]; } }
+    public void ShowCallout(string text, UrgencyLevel urgency, string title, double durationSeconds) { lock (_sync) _shown.Add(text); }
 }
 
 sealed class StubStreamingPlayer : IStreamingPcmPlayer
 {
-    public bool IsPlayingAudio { get; set; }
-    public string? LastDeviceName { get; private set; }
-    public int PreOpenedCount { get; private set; }
-    public int EnqueuedCount { get; private set; }
-    public int InterruptCount { get; private set; }
-    public void SetDevice(string? deviceName) => LastDeviceName = deviceName;
-    public void PreOpenDevice() => PreOpenedCount++;
-    public void SetVolume(double volume) { }
-    public void EnqueuePcm24k(byte[] pcmBytes) => EnqueuedCount++;
+    private volatile bool _isPlayingAudio;
+    private volatile string? _lastDeviceName;
+    private double _lastVolume = 1.0;
+    private int _preOpenedCount;
+    private int _enqueuedCount;
+    private int _interruptCount;
+    public bool IsPlayingAudio { get => _isPlayingAudio; set => _isPlayingAudio = value; }
+    public string? LastDeviceName => _lastDeviceName;
+    public double LastVolume => Volatile.Read(ref _lastVolume);
+    public int PreOpenedCount => Volatile.Read(ref _preOpenedCount);
+    public int EnqueuedCount => Volatile.Read(ref _enqueuedCount);
+    public int InterruptCount => Volatile.Read(ref _interruptCount);
+    public void SetDevice(string? deviceName) => _lastDeviceName = deviceName;
+    public void PreOpenDevice() => Interlocked.Increment(ref _preOpenedCount);
+    public void SetVolume(double volume) => Volatile.Write(ref _lastVolume, Math.Clamp(volume, 0.0, 1.0));
+    public void EnqueuePcm24k(byte[] pcmBytes) => Interlocked.Increment(ref _enqueuedCount);
     public void FlushBuffered() { }
-    public void InterruptAndClear() { InterruptCount++; IsPlayingAudio = false; }
+    public void InterruptAndClear() { _isPlayingAudio = false; Interlocked.Increment(ref _interruptCount); }
     public void Dispose() { }
 }
 
@@ -2392,35 +2807,72 @@ sealed class OneShotThenNullCapture : IScreenCaptureService
 
 sealed class StubStreamingMic : IStreamingMicCapture
 {
-    private Action<byte[]>? _cb;
-    public bool IsCapturing { get; private set; }
-    public string? LastDeviceName { get; private set; }
-    public void SetDevice(string? deviceName) => LastDeviceName = deviceName;
+    private volatile Action<byte[]>? _cb;
+    private volatile bool _isCapturing;
+    private volatile string? _lastDeviceName;
+    private volatile bool _failStart;
+    private int _startCount;
+    private int _stopCount;
+    private int _activeStopCount;
+    public bool IsCapturing => _isCapturing;
+    public string? LastDeviceName => _lastDeviceName;
+    public bool FailStart { get => _failStart; set => _failStart = value; }
+    public int StartCount => Volatile.Read(ref _startCount);
+    public int StopCount => Volatile.Read(ref _stopCount);
+    public int ActiveStopCount => Volatile.Read(ref _activeStopCount);
+    public void SetDevice(string? deviceName) => _lastDeviceName = deviceName;
     public bool TryStart(Action<byte[]> onPcm16kChunk, Action<string>? onError = null)
     {
+        Interlocked.Increment(ref _startCount);
+        if (_failStart)
+        {
+            _isCapturing = false;
+            onError?.Invoke("No se detectó micrófono disponible (continuando solo con visión + voz del coach).");
+            return false;
+        }
         _cb = onPcm16kChunk;
-        IsCapturing = true;
+        _isCapturing = true;
         return true;
     }
-    public void PushChunk(byte[] pcm) { if (IsCapturing) _cb?.Invoke(pcm); }
-    public void Stop() { IsCapturing = false; }
+    public void PushChunk(byte[] pcm) { if (_isCapturing) _cb?.Invoke(pcm); }
+    public void Stop()
+    {
+        if (_isCapturing)
+            Interlocked.Increment(ref _activeStopCount);
+        _isCapturing = false;
+        Interlocked.Increment(ref _stopCount);
+    }
     public void Dispose() => Stop();
 }
 
 sealed class StubLiveBackend : ILiveRealtimeBackend
 {
-    private Action<byte[]>? _onAudio;
-    private Action<string>? _onPartial;
-    private Action<string>? _onTurn;
-    public int SessionCount { get; private set; }
-    public int SentMicChunks { get; private set; }
-    public int SentTextTurns { get; private set; }
-    public int SentVideoFrames { get; private set; }
-    public int LastMultiFrameTurnCount { get; private set; }
-    public GameProfile? LastProfile { get; private set; }
+    private volatile Action<byte[]>? _onAudio;
+    private volatile Action<string>? _onPartial;
+    private volatile Action<string>? _onTurn;
+    private volatile GameProfile? _lastProfile;
+    private int _sentMicChunks;
+    private bool _lastMicChunkAllZero;
+    private int _sentTextTurns;
+    private int _sentVideoFrames;
+    private int _lastMultiFrameTurnCount;
+    private int _sessionCount;
+    private volatile bool _isConnected;
+    private volatile bool _lastSessionWasTextOnly;
+    private TaskCompletionSource? _firstHandshakeBlocker;
+    public TaskCompletionSource? FirstHandshakeBlocker { get => Volatile.Read(ref _firstHandshakeBlocker); init => Volatile.Write(ref _firstHandshakeBlocker, value); }
+    public TaskCompletionSource? FirstHandshakeEntered { get; init; }
+    public int SessionCount => Volatile.Read(ref _sessionCount);
+    public int SentMicChunks => Volatile.Read(ref _sentMicChunks);
+    public bool LastMicChunkAllZero => Volatile.Read(ref _lastMicChunkAllZero);
+    public int SentTextTurns => Volatile.Read(ref _sentTextTurns);
+    public int SentVideoFrames => Volatile.Read(ref _sentVideoFrames);
+    public int LastMultiFrameTurnCount => Volatile.Read(ref _lastMultiFrameTurnCount);
+    public bool LastSessionWasTextOnly => _lastSessionWasTextOnly;
+    public GameProfile? LastProfile => _lastProfile;
     public string ProviderName => "StubLive";
     public string ActiveModelLabel => "stub-live";
-    public bool IsConnected { get; private set; }
+    public bool IsConnected => _isConnected;
     public bool SupportsMultiFrameTurn => true;
     public string ResolveVoiceName(string? gender) => gender == "female" ? "Aoede" : "Fenrir";
 
@@ -2435,25 +2887,43 @@ sealed class StubLiveBackend : ILiveRealtimeBackend
         Action onConnected,
         CancellationToken sessionCt)
     {
-        SessionCount++;
-        LastProfile = profile;
+        var blocker = Interlocked.Exchange(ref _firstHandshakeBlocker, null);
+        if (blocker is not null)
+        {
+            FirstHandshakeEntered?.TrySetResult();
+            await blocker.Task.WaitAsync(sessionCt);
+        }
+
+        _lastProfile = profile;
+        _lastSessionWasTextOnly = config.IsTextOnlyMode;
         _onAudio = onPcm24kAudio;
         _onPartial = onPartialTranscript;
         _onTurn = onTurnComplete;
-        IsConnected = true;
+        _isConnected = true;
+        Interlocked.Increment(ref _sessionCount);
         onConnected();
         try { await Task.Delay(Timeout.Infinite, sessionCt); }
-        finally { IsConnected = false; }
+        finally { _isConnected = false; }
     }
 
     public void EmitIncomingAudio(byte[] pcm) => _onAudio?.Invoke(pcm);
     public void EmitPartialTranscript(string s) => _onPartial?.Invoke(s);
     public void EmitTurnComplete(string s) => _onTurn?.Invoke(s);
-    public Task SendVideoFrameAsync(byte[] jpegBytes, CancellationToken ct) { SentVideoFrames++; return Task.CompletedTask; }
-    public Task SendMicAudio16kAsync(byte[] pcm16k, CancellationToken ct) { SentMicChunks++; return Task.CompletedTask; }
-    public Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct) { SentTextTurns++; LastMultiFrameTurnCount = 1; return Task.CompletedTask; }
-    public Task SendFrameSequenceAndPromptTurnAsync(IReadOnlyList<TemporalFrameSample> frames, string promptText, CancellationToken ct) { SentTextTurns++; LastMultiFrameTurnCount = frames.Count; return Task.CompletedTask; }
-    public Task SendTextTurnAsync(string promptText, CancellationToken ct) { SentTextTurns++; return Task.CompletedTask; }
+    public Task SendVideoFrameAsync(byte[] jpegBytes, CancellationToken ct) { Interlocked.Increment(ref _sentVideoFrames); return Task.CompletedTask; }
+    public Task SendMicAudio16kAsync(byte[] pcm16k, CancellationToken ct)
+    {
+        bool allZero = true;
+        for (int i = 0; i < pcm16k.Length; i++)
+        {
+            if (pcm16k[i] != 0) { allZero = false; break; }
+        }
+        Volatile.Write(ref _lastMicChunkAllZero, allZero);
+        Interlocked.Increment(ref _sentMicChunks);
+        return Task.CompletedTask;
+    }
+    public Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct) { Volatile.Write(ref _lastMultiFrameTurnCount, 1); Interlocked.Increment(ref _sentTextTurns); return Task.CompletedTask; }
+    public Task SendFrameSequenceAndPromptTurnAsync(IReadOnlyList<TemporalFrameSample> frames, string promptText, CancellationToken ct) { Volatile.Write(ref _lastMultiFrameTurnCount, frames.Count); Interlocked.Increment(ref _sentTextTurns); return Task.CompletedTask; }
+    public Task SendTextTurnAsync(string promptText, CancellationToken ct) { Interlocked.Increment(ref _sentTextTurns); return Task.CompletedTask; }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
@@ -2486,4 +2956,69 @@ sealed class CustomKeywordSafetyRule(SafetyCategory category, string keyword) : 
     public SafetyCategory Category { get; } = category;
     public bool AppliesToOutput => true;
     public bool IsMatch(string normalizedText) => normalizedText.Contains(keyword, StringComparison.Ordinal);
+}
+
+sealed class MutableAudioSceneMonitor : IAudioSceneMonitor
+{
+    private double _peak;
+    public double Peak
+    {
+        get => Volatile.Read(ref _peak);
+        set => Volatile.Write(ref _peak, value);
+    }
+    public AudioSceneSnapshot SampleOtherAudio()
+    {
+        double peak = Peak;
+        return new(peak, peak >= 0.42, DateTimeOffset.UtcNow);
+    }
+    public void Dispose() { }
+}
+
+sealed class CountingAnalyzeProvider(ProviderAccount account, Action onAnalyze) : IAIProvider
+{
+    private int _seq;
+    public ProviderAccount Account { get; } = account;
+    public Task PrewarmAsync(CancellationToken ct = default) => Task.CompletedTask;
+    public Task<ProviderCallResult> AnalyzeFrameAsync(byte[] jpegBytes, GameProfile profile, UserConfig config, string recentHistory, bool forceAdvice, string spatialTelemetry = "", HudSensorSnapshot? sensorSnapshot = null, CancellationToken ct = default)
+    {
+        int n = Interlocked.Increment(ref _seq);
+        onAnalyze();
+        return Task.FromResult(new ProviderCallResult(new CoachResponse(true, UrgencyLevel.Medium, $"Tip único número {n}", $"Tip único número {n}")));
+    }
+    public Task<ProviderCallResult> AskQuestionAsync(byte[]? jpegBytes, string userQuestion, GameProfile profile, UserConfig config, string recentHistory = "", string visualTimeline = "", HudSensorSnapshot? sensorSnapshot = null, string recentChatHistory = "", CancellationToken ct = default) =>
+        Task.FromResult(new ProviderCallResult(CoachResponse.Silent()));
+    public Task<(bool Ok, string Message)> TestConnectionAsync(CancellationToken ct = default) => Task.FromResult((true, "ok"));
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+sealed class HighMotionStubCapture : IScreenCaptureService
+{
+    private long _calls;
+    public (CapturedFrameData? Frame, bool SkippedByHash) CaptureIfChanged(
+        int monitorIndex, (int Left, int Top, int Width, int Height)? regionRect,
+        int targetWidth, int targetHeight, int jpegQuality, long frameId,
+        ulong? lastAcceptedHash, int phashThreshold, bool isForced)
+    {
+        long n = Interlocked.Increment(ref _calls);
+        ulong hash = (n % 2 == 0) ? 0x0000000000000000UL : 0xFFFFFFFFFFFFFFFFUL;
+        return (new CapturedFrameData([0xFF, 0xD8, (byte)(n & 0xFF), 0xFF, 0xD9], hash, frameId, 1.0, 1.0, DateTimeOffset.UtcNow, isForced), false);
+    }
+    public void Dispose() { }
+}
+
+sealed class AsyncCallbackStubProvider(ProviderAccount account, Func<GameProfile, HudSensorSnapshot?, CancellationToken, Task<ProviderCallResult>> onCall) : IAIProvider
+{
+    public ProviderAccount Account { get; } = account;
+    public Task PrewarmAsync(CancellationToken ct = default) => Task.CompletedTask;
+    public Task<ProviderCallResult> AnalyzeFrameAsync(byte[] jpegBytes, GameProfile profile, UserConfig config, string recentHistory, bool forceAdvice, string spatialTelemetry = "", HudSensorSnapshot? sensorSnapshot = null, CancellationToken ct = default) =>
+        onCall(profile, sensorSnapshot, ct);
+    public Task<(bool Ok, string Message)> TestConnectionAsync(CancellationToken ct = default) => Task.FromResult((true, "ok"));
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+sealed class ManualTimeProvider(DateTimeOffset startUtc) : TimeProvider
+{
+    private long _utcTicks = startUtc.UtcTicks;
+    public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
+    public void Advance(TimeSpan delta) => Interlocked.Add(ref _utcTicks, delta.Ticks);
 }

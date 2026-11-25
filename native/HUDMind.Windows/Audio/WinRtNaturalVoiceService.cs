@@ -20,23 +20,25 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
 {
     private readonly Win32StreamingPcmPlayer _player = new();
     private readonly object _sync = new();
-    private readonly SemaphoreSlim _signal = new(0, 1);
+    private readonly SemaphoreSlim _signal = new(0);
+    private readonly List<(string Text, bool Interrupt)> _pendingQueue = new(4);
 
     private SpeechSynthesizer? _synth;
     private Task? _workerTask;
     private CancellationTokenSource? _disposeCts;
     private CancellationTokenSource? _utteranceCts;
+    private long _utteranceGen;
 
-    private string? _pendingText;
     private string _language = "es";
     private string _gender = "male";
     private double _rateFactor = 1.05;
-    private string _selectedVoiceName = "WinRT";
+    private volatile string _selectedVoiceName = "WinRT";
+    private readonly object _voiceConfigLock = new();
     private bool _dirtyVoiceConfig;
     private int _isSynthesizing;
     private bool _initAttempted;
-    private bool _available;
-    private bool _disposed;
+    private volatile bool _available;
+    private volatile bool _disposed;
 
     public bool IsAvailable
     {
@@ -47,7 +49,18 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
         }
     }
 
+    internal bool IsInitializedAndAvailable => _available;
+
     public bool IsSpeaking => Volatile.Read(ref _isSynthesizing) != 0 || _player.IsPlayingAudio;
+    public bool IsActivelySpeaking
+    {
+        get
+        {
+            lock (_sync)
+                return Volatile.Read(ref _isSynthesizing) != 0 || _player.IsActivelyPlaying || _pendingQueue.Count > 0;
+        }
+    }
+    public bool SupportsContinuationQueue => true;
 
     public string EngineName => _available ? $"winrt-natural({_selectedVoiceName})" : "winrt-unavailable";
 
@@ -57,6 +70,8 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
         UpdateSettings(language, volume, gender, style);
         EnsureInitialized();
     }
+
+    internal void EnsureInitializedInternal() => EnsureInitialized();
 
     public void UpdateSettings(string language, double volume, string gender = "male", string style = "neural")
     {
@@ -92,7 +107,10 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
         }
     }
 
-    public double SpeakInstant(string text)
+    public double SpeakInstant(string text) =>
+        SpeakOrQueue(text, chainIfSpeaking: false, interruptCurrent: true);
+
+    public double SpeakOrQueue(string text, bool chainIfSpeaking, bool interruptCurrent)
     {
         if (_disposed || string.IsNullOrWhiteSpace(text))
             return 0;
@@ -109,12 +127,34 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
         lock (_sync)
         {
             if (_disposed || !_available) return 0;
-            _pendingText = cleanSpeech;
-            // Cancel only pending text synthesis; wait until the new PCM is ready before swapping playback
-            // so the current sentence is never chopped into dead silence prematurely.
-            try { _utteranceCts?.Cancel(); } catch { }
+
+            bool carryInterrupt = interruptCurrent;
+            if (interruptCurrent)
+            {
+                Interlocked.Increment(ref _utteranceGen);
+                _pendingQueue.Clear();
+                try { _utteranceCts?.Cancel(); } catch { }
+            }
+            else if (chainIfSpeaking)
+            {
+                while (_pendingQueue.Count >= 2)
+                {
+                    carryInterrupt |= _pendingQueue[0].Interrupt;
+                    _pendingQueue.RemoveAt(0);
+                }
+            }
+            else
+            {
+                foreach (var queued in _pendingQueue)
+                    carryInterrupt |= queued.Interrupt;
+                _pendingQueue.Clear();
+            }
+
+            _pendingQueue.Add((cleanSpeech, interruptCurrent));
+            if (carryInterrupt && _pendingQueue.Count > 0)
+                _pendingQueue[0] = (_pendingQueue[0].Text, true);
         }
-        try { _signal.Release(); } catch (SemaphoreFullException) { }
+        try { _signal.Release(); } catch (ObjectDisposedException) { }
         return Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
     }
 
@@ -122,7 +162,8 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
     {
         lock (_sync)
         {
-            _pendingText = null;
+            Interlocked.Increment(ref _utteranceGen);
+            _pendingQueue.Clear();
             try { _utteranceCts?.Cancel(); } catch { }
         }
         _player.InterruptAndClear();
@@ -233,8 +274,14 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
             {
                 break;
             }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
 
-            string? text;
+            string? text = null;
+            bool interruptCurrent = true;
+            long genAtStart;
             SpeechSynthesizer? synth;
             CancellationTokenSource uttCts;
             bool applyVoiceCfg;
@@ -242,9 +289,13 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
             double desiredRate;
             lock (_sync)
             {
-                text = _pendingText;
-                _pendingText = null;
+                if (_disposed) break;
                 synth = _synth;
+                if (_pendingQueue.Count == 0 || synth is null)
+                    continue;
+                (text, interruptCurrent) = _pendingQueue[0];
+                _pendingQueue.RemoveAt(0);
+                genAtStart = Interlocked.Read(ref _utteranceGen);
                 applyVoiceCfg = _dirtyVoiceConfig;
                 _dirtyVoiceConfig = false;
                 desiredLang = _language;
@@ -253,22 +304,26 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
                 _utteranceCts?.Dispose();
                 _utteranceCts = CancellationTokenSource.CreateLinkedTokenSource(disposeCt);
                 uttCts = _utteranceCts;
+                if (!string.IsNullOrWhiteSpace(text))
+                    Interlocked.Exchange(ref _isSynthesizing, 1);
             }
 
-            if (string.IsNullOrWhiteSpace(text) || synth is null)
+            if (string.IsNullOrWhiteSpace(text))
                 continue;
 
-            Interlocked.Exchange(ref _isSynthesizing, 1);
             try
             {
                 if (applyVoiceCfg)
                 {
-                    try { synth.Options.SpeakingRate = desiredRate; } catch { }
-                    ApplyVoiceSelectionLocked(synth, desiredLang, desiredGender);
+                    lock (_voiceConfigLock)
+                    {
+                        try { synth.Options.SpeakingRate = desiredRate; } catch { }
+                        ApplyVoiceSelectionLocked(synth, desiredLang, desiredGender);
+                    }
                 }
 
                 using var stream = await synth.SynthesizeTextToStreamAsync(text).AsTask(uttCts.Token).ConfigureAwait(false);
-                if (uttCts.IsCancellationRequested)
+                if (uttCts.IsCancellationRequested || Interlocked.Read(ref _utteranceGen) != genAtStart)
                     continue;
 
                 using var netStream = stream.AsStreamForRead();
@@ -276,10 +331,24 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
                 await netStream.CopyToAsync(ms, uttCts.Token).ConfigureAwait(false);
 
                 var pcm24k = ConvertWavToPcm24kMono(ms.GetBuffer(), (int)ms.Length);
-                if (!uttCts.IsCancellationRequested && pcm24k.Length > 0)
+                if (pcm24k.Length == 0)
+                    continue;
+
+                AudioPcmUtilities.ApplyFadeOut16(pcm24k, fadeSamples: 96);
+                lock (_sync)
                 {
-                    AudioPcmUtilities.ApplyFadeOut16(pcm24k, fadeSamples: 96);
-                    _player.InterruptAndClear();
+                    if (_disposed || uttCts.IsCancellationRequested || Interlocked.Read(ref _utteranceGen) != genAtStart)
+                        continue;
+
+                    if (interruptCurrent)
+                    {
+                        _player.InterruptAndClear();
+                    }
+                    else if (_player.IsActivelyPlaying)
+                    {
+                        // Natural ~110ms breath pause between seamlessly chained sentences without cutting current audio
+                        _player.EnqueuePcm24k(new byte[5280]);
+                    }
                     _player.EnqueuePcm24k(pcm24k);
                     _player.FlushBuffered();
                 }
@@ -320,7 +389,7 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
         {
             var chunkId = Encoding.ASCII.GetString(wavBytes, pos, 4);
             int chunkSize = BinaryPrimitives.ReadInt32LittleEndian(wavBytes.AsSpan(pos + 4, 4));
-            if (chunkSize < 0 || pos + 8 + chunkSize > length)
+            if (chunkSize < 0 || chunkSize > length - pos - 8)
                 break;
 
             if (chunkId == "fmt " && chunkSize >= 16)
@@ -380,26 +449,33 @@ public sealed class WinRtNaturalVoiceService : IVoiceOutputService
     public void Dispose()
     {
         CancellationTokenSource? dCts;
+        CancellationTokenSource? uCts;
         SpeechSynthesizer? synth;
         lock (_sync)
         {
             if (_disposed) return;
             _disposed = true;
-            _pendingText = null;
+            Interlocked.Increment(ref _utteranceGen);
+            _pendingQueue.Clear();
             dCts = _disposeCts;
             _disposeCts = null;
+            uCts = _utteranceCts;
+            _utteranceCts = null;
             synth = _synth;
             _synth = null;
-            try { _utteranceCts?.Cancel(); } catch { }
-            _utteranceCts?.Dispose();
-            _utteranceCts = null;
         }
 
+        try { uCts?.Cancel(); } catch { }
         try { dCts?.Cancel(); } catch { }
-        try { _workerTask?.Wait(TimeSpan.FromMilliseconds(400)); } catch { }
-        dCts?.Dispose();
-        synth?.Dispose();
+        bool workerExited = false;
+        try { workerExited = _workerTask?.Wait(TimeSpan.FromMilliseconds(1500)) ?? true; } catch { }
+        if (workerExited)
+        {
+            uCts?.Dispose();
+            dCts?.Dispose();
+            _signal.Dispose();
+            try { synth?.Dispose(); } catch { }
+        }
         _player.Dispose();
-        _signal.Dispose();
     }
 }

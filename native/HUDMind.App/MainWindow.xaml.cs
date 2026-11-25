@@ -42,6 +42,8 @@ public partial class MainWindow : Window
     private readonly ConfigRepository _repo = new();
     private readonly CoachEngineCoordinator _coordinator = new();
     private readonly object _memoryIoLock = new();
+    private readonly object _profilesLock = new();
+    private readonly object _accountsLock = new();
     private UserConfig _config;
     private List<ProviderAccount> _accounts;
     private List<GameProfile> _profiles;
@@ -61,8 +63,8 @@ public partial class MainWindow : Window
     private bool _checkingUpdates;
     private bool _downloadingUpdate;
 
-    private bool _shutdownComplete;
-    private bool _closingInProgress;
+    private volatile bool _shutdownComplete;
+    private volatile bool _closingInProgress;
     private bool _syncingUi;
     private bool _chatSending;
     private bool _rulesDirty;
@@ -164,7 +166,7 @@ public partial class MainWindow : Window
 
     private void RefreshProfilePickers(string? selectMainId = null, string? selectRulesId = null)
     {
-        var mainOptions = _profiles
+        var mainOptions = GetProfilesSnapshot()
             .Select(p => new GameProfileOption(
                 p.Manifest.GameId,
                 p.Manifest.GameId == "universal"
@@ -298,11 +300,40 @@ public partial class MainWindow : Window
             _config.OverlayCompact);
     }
 
+    private List<GameProfile> GetProfilesSnapshot()
+    {
+        lock (_profilesLock)
+            return [.. _profiles];
+    }
+
+    private GameProfile? FindProfileByIdLocked(string? gameId)
+    {
+        if (string.IsNullOrWhiteSpace(gameId)) return null;
+        lock (_profilesLock)
+            return _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, gameId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private List<ProviderAccount> GetAccountsSnapshot()
+    {
+        lock (_accountsLock)
+            return [.. _accounts];
+    }
+
+    private string[] GetAccountApiKeysSnapshot()
+    {
+        lock (_accountsLock)
+            return [.. _accounts.Select(a => a.ApiKey)];
+    }
+
     private void RefreshOnboardingBanner()
     {
         if (OnboardingBanner is null) return;
-        bool hasUserApiKeyAccount = _accounts.Any(a =>
-            a.Enabled && !a.IsKeylessAllowed && !string.IsNullOrWhiteSpace(a.ApiKey));
+        bool hasUserApiKeyAccount;
+        lock (_accountsLock)
+        {
+            hasUserApiKeyAccount = _accounts.Any(a =>
+                a.Enabled && !a.IsKeylessAllowed && !string.IsNullOrWhiteSpace(a.ApiKey));
+        }
         OnboardingBanner.Visibility = (!hasUserApiKeyAccount && !_onboardingDismissed) ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -310,7 +341,10 @@ public partial class MainWindow : Window
     {
         if (BtnMatchReview is null) return;
         bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
-        BtnMatchReview.IsEnabled = _coordinator.HasMatchHistory(isEn) && _accounts.Any(a => a.IsReady());
+        bool hasReady;
+        lock (_accountsLock)
+            hasReady = _accounts.Any(a => a.IsReady());
+        BtnMatchReview.IsEnabled = _coordinator.HasMatchHistory(isEn) && hasReady;
     }
 
     private void RefreshHotkeyButtonLabels()
@@ -382,9 +416,14 @@ public partial class MainWindow : Window
 
     private void RefreshAccountsList()
     {
-        for (int i = 0; i < _accounts.Count; i++)
-            _accounts[i].Priority = i + 1;
-        LstAccounts.ItemsSource = _accounts.Select(a => new AccountRowView { Source = a }).ToList();
+        List<AccountRowView> rows;
+        lock (_accountsLock)
+        {
+            for (int i = 0; i < _accounts.Count; i++)
+                _accounts[i].Priority = i + 1;
+            rows = _accounts.Select(a => new AccountRowView { Source = a }).ToList();
+        }
+        LstAccounts.ItemsSource = rows;
         RefreshOnboardingBanner();
         RefreshMatchReviewButtonState();
     }
@@ -392,7 +431,7 @@ public partial class MainWindow : Window
     private void AppendLog(string message)
     {
         if (_shutdownComplete) return;
-        var safeMsg = SecretRedactor.Redact(message, _accounts.Select(a => a.ApiKey));
+        var safeMsg = SecretRedactor.Redact(message, GetAccountApiKeysSnapshot());
         var now = DateTime.Now;
         var line = $"[{now:HH:mm:ss}] {safeMsg}";
         var feedItem = CoachFeedFormatter.TryFormatFeedItem(safeMsg, now.ToString("HH:mm"));
@@ -497,12 +536,16 @@ public partial class MainWindow : Window
 
     private async void BtnStartStop_Click(object sender, RoutedEventArgs e)
     {
+        if (_closingInProgress || _shutdownComplete)
+            return;
         BtnStartStop.IsEnabled = false;
         try
         {
             if (_coordinator.IsRunning)
             {
                 await _coordinator.StopAsync();
+                if (_closingInProgress || _shutdownComplete)
+                    return;
                 ApplyStoppedUiState();
                 return;
             }
@@ -514,8 +557,10 @@ public partial class MainWindow : Window
             bool testMode = GetSelectedTag(CmbRunMode) == "test";
             string? forcedId = CmbGameProfile.SelectedValue?.ToString();
             bool wantLive = GetSelectedTag(CmbEngineType) == "live";
+            var profilesSnapshot = GetProfilesSnapshot();
+            var accountsSnapshot = GetAccountsSnapshot();
             var hintProf = forcedId is not null
-                ? _profiles.FirstOrDefault(p => p.Manifest.GameId == forcedId)
+                ? profilesSnapshot.FirstOrDefault(p => p.Manifest.GameId == forcedId)
                 : null;
             SyncAssembledContext(forcedId ?? "universal", hintProf, CoachContextDepth.RealtimePlay);
             if (!string.IsNullOrWhiteSpace(_config.PreviousMatchFocus))
@@ -525,8 +570,8 @@ public partial class MainWindow : Window
             {
                 var result = await _coordinator.StartAsync(
                     _config,
-                    _accounts,
-                    _profiles,
+                    accountsSnapshot,
+                    profilesSnapshot,
                     _sharedVoice,
                     _overlay,
                     testMode,
@@ -539,7 +584,7 @@ public partial class MainWindow : Window
                     HandleMatchCompleted,
                     ResolveContextForProfileSafe);
 
-                if (!result.Started)
+                if (_closingInProgress || _shutdownComplete || !result.Started)
                     return;
 
                 if (result.FallbackToClassic)
@@ -562,14 +607,19 @@ public partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                AppendLog($"Error iniciando motor: {SecretRedactor.Redact(ex.Message, _accounts.Select(a => a.ApiKey))}");
+                if (_closingInProgress || _shutdownComplete)
+                    return;
+                AppendLog($"Error iniciando motor: {SecretRedactor.Redact(ex.Message, GetAccountApiKeysSnapshot())}");
                 await _coordinator.StopAsync();
+                if (_closingInProgress || _shutdownComplete)
+                    return;
                 ApplyStoppedUiState();
             }
         }
         finally
         {
-            BtnStartStop.IsEnabled = true;
+            if (!_closingInProgress && !_shutdownComplete)
+                BtnStartStop.IsEnabled = true;
         }
     }
 
@@ -600,7 +650,9 @@ public partial class MainWindow : Window
             var runningGameId = _coordinator.ActiveEngine?.ActiveGameId ?? string.Empty;
             if (string.IsNullOrEmpty(runningGameId) || string.Equals(runningGameId, gameId, StringComparison.OrdinalIgnoreCase))
             {
-                var prof = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, gameId, StringComparison.OrdinalIgnoreCase));
+                GameProfile? prof;
+                lock (_profilesLock)
+                    prof = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, gameId, StringComparison.OrdinalIgnoreCase));
                 SyncAssembledContext(gameId, prof, CoachContextDepth.RealtimePlay);
             }
 
@@ -732,7 +784,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AppendLog($"Error enviando chat: {SecretRedactor.Redact(ex.Message, _accounts.Select(a => a.ApiKey))}");
+            AppendLog($"Error enviando chat: {SecretRedactor.Redact(ex.Message, GetAccountApiKeysSnapshot())}");
         }
         finally
         {
@@ -863,27 +915,50 @@ public partial class MainWindow : Window
 
         if (!string.IsNullOrEmpty(_editingAccountId))
         {
-            var existing = _accounts.FirstOrDefault(a => a.Id == _editingAccountId);
-            if (existing is not null)
+            string targetLabel = string.IsNullOrWhiteSpace(TxtNewLabel.Text) ? prov : TxtNewLabel.Text.Trim();
+            bool missingRequiredKey = false;
+            int updatedPriority = 0;
+            bool updatedSupportsVision = false;
+            List<ProviderAccount>? accountsToSave = null;
+            lock (_accountsLock)
             {
-                existing.Provider = prov;
-                existing.Label = string.IsNullOrWhiteSpace(TxtNewLabel.Text) ? prov : TxtNewLabel.Text.Trim();
-                existing.Model = model;
-                existing.BaseUrl = customBaseUrl;
-                existing.SupportsVisionOverride = visionOverride;
-                if (!string.IsNullOrEmpty(apiKey))
-                    existing.ApiKey = apiKey;
-
-                if (!existing.IsKeylessAllowed && string.IsNullOrWhiteSpace(existing.ApiKey))
+                var existing = _accounts.FirstOrDefault(a => a.Id == _editingAccountId);
+                if (existing is not null)
                 {
-                    System.Windows.MessageBox.Show("Este proveedor requiere una API Key.", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
+                    if (!ProviderRegistry.IsKeylessAllowed(prov) &&
+                        string.IsNullOrWhiteSpace(apiKey) &&
+                        string.IsNullOrWhiteSpace(existing.ApiKey))
+                    {
+                        missingRequiredKey = true;
+                    }
+                    else
+                    {
+                        existing.Provider = prov;
+                        existing.Label = targetLabel;
+                        existing.Model = model;
+                        existing.BaseUrl = customBaseUrl;
+                        existing.SupportsVisionOverride = visionOverride;
+                        if (!string.IsNullOrEmpty(apiKey))
+                            existing.ApiKey = apiKey;
+                        updatedPriority = existing.Priority;
+                        updatedSupportsVision = existing.SupportsVision;
+                        accountsToSave = [.. _accounts];
+                    }
                 }
+            }
 
+            if (missingRequiredKey)
+            {
+                System.Windows.MessageBox.Show("Este proveedor requiere una API Key.", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (accountsToSave is not null)
+            {
                 CancelAccountEdit();
                 RefreshAccountsList();
-                _repo.SaveAccounts(_accounts);
-                AppendLog($"Cuenta #{existing.Priority} actualizada: {existing.Label} [{existing.Provider}:{existing.Model} · {(existing.SupportsVision ? "Visión" : "OCR/Logs")}]");
+                _repo.SaveAccounts(accountsToSave);
+                AppendLog($"Cuenta #{updatedPriority} actualizada: {targetLabel} [{prov}:{model} · {(updatedSupportsVision ? "Visión" : "OCR/Logs")}]");
                 return;
             }
             CancelAccountEdit();
@@ -905,13 +980,18 @@ public partial class MainWindow : Window
             System.Windows.MessageBox.Show("Pegá tu API Key para este proveedor.", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        _accounts.Insert(0, acc);
+        List<ProviderAccount> addedSnapshot;
+        lock (_accountsLock)
+        {
+            _accounts.Insert(0, acc);
+            addedSnapshot = [.. _accounts];
+        }
         PwdNewApiKey.Clear();
         TxtNewBaseUrl.Clear();
         CmbNewVisionOverride.SelectedIndex = 0;
         ExpAccountAdvanced.IsExpanded = false;
         RefreshAccountsList();
-        _repo.SaveAccounts(_accounts);
+        _repo.SaveAccounts(addedSnapshot);
         AppendLog($"Cuenta agregada en prioridad #1: {acc.Label} [{acc.Provider}:{acc.Model} · {(acc.SupportsVision ? "Visión" : "OCR/Logs")}]");
     }
 
@@ -922,31 +1002,48 @@ public partial class MainWindow : Window
     {
         int idx = LstAccounts.SelectedIndex;
         int target = idx + delta;
-        if (idx < 0 || target < 0 || target >= _accounts.Count) return;
-        (_accounts[idx], _accounts[target]) = (_accounts[target], _accounts[idx]);
+        List<ProviderAccount> movedSnapshot;
+        lock (_accountsLock)
+        {
+            if (idx < 0 || target < 0 || target >= _accounts.Count) return;
+            (_accounts[idx], _accounts[target]) = (_accounts[target], _accounts[idx]);
+            movedSnapshot = [.. _accounts];
+        }
         RefreshAccountsList();
         LstAccounts.SelectedIndex = target;
-        _repo.SaveAccounts(_accounts);
+        _repo.SaveAccounts(movedSnapshot);
     }
 
     private void BtnToggleAccount_Click(object sender, RoutedEventArgs e)
     {
         if (LstAccounts.SelectedItem is not AccountRowView row) return;
-        row.Source.Enabled = !row.Source.Enabled;
+        List<ProviderAccount> toggledSnapshot;
+        lock (_accountsLock)
+        {
+            row.Source.Enabled = !row.Source.Enabled;
+            toggledSnapshot = [.. _accounts];
+        }
         RefreshAccountsList();
-        _repo.SaveAccounts(_accounts);
+        _repo.SaveAccounts(toggledSnapshot);
     }
 
     private void BtnDeleteAccount_Click(object sender, RoutedEventArgs e)
     {
         int idx = LstAccounts.SelectedIndex;
         if (idx < 0) return;
-        bool deletingEdited = _editingAccountId == _accounts[idx].Id;
-        _accounts.RemoveAt(idx);
+        bool deletingEdited;
+        List<ProviderAccount> remainingSnapshot;
+        lock (_accountsLock)
+        {
+            if (idx >= _accounts.Count) return;
+            deletingEdited = _editingAccountId == _accounts[idx].Id;
+            _accounts.RemoveAt(idx);
+            remainingSnapshot = [.. _accounts];
+        }
         if (deletingEdited)
             CancelAccountEdit();
         RefreshAccountsList();
-        _repo.SaveAccounts(_accounts);
+        _repo.SaveAccounts(remainingSnapshot);
     }
 
     private async void BtnTestAccount_Click(object sender, RoutedEventArgs e)
@@ -1012,7 +1109,7 @@ public partial class MainWindow : Window
         }
 
         _lastRulesGameId = nextId;
-        var prof = _profiles.FirstOrDefault(p => p.Manifest.GameId == nextId);
+        var prof = FindProfileByIdLocked(nextId);
         _syncingUi = true;
         try { TxtCustomRules.Text = prof?.CustomRules ?? string.Empty; }
         finally { _syncingUi = false; }
@@ -1067,7 +1164,7 @@ public partial class MainWindow : Window
     private void BtnResetGameMemory_Click(object sender, RoutedEventArgs e)
     {
         var id = CmbRulesGame.SelectedValue?.ToString() ?? "universal";
-        var prof = _profiles.FirstOrDefault(p => p.Manifest.GameId == id);
+        var prof = FindProfileByIdLocked(id);
         var displayName = prof?.Manifest.DisplayName ?? id;
         var ans = System.Windows.MessageBox.Show(
             $"¿Limpiar el historial de patrones aprendidos en las últimas partidas de '{displayName}'?",
@@ -1112,7 +1209,7 @@ public partial class MainWindow : Window
     private void BtnSaveRules_Click(object sender, RoutedEventArgs e)
     {
         var id = CmbRulesGame.SelectedValue?.ToString();
-        var prof = _profiles.FirstOrDefault(p => p.Manifest.GameId == id);
+        var prof = FindProfileByIdLocked(id);
         if (prof is null) return;
         try
         {
@@ -1149,7 +1246,7 @@ public partial class MainWindow : Window
     private void BtnDeleteProfile_Click(object sender, RoutedEventArgs e)
     {
         var id = CmbRulesGame.SelectedValue?.ToString();
-        var prof = _profiles.FirstOrDefault(p => p.Manifest.GameId == id);
+        var prof = FindProfileByIdLocked(id);
         if (prof is null || string.Equals(prof.Manifest.GameId, "universal", StringComparison.OrdinalIgnoreCase))
             return;
 
@@ -1164,10 +1261,14 @@ public partial class MainWindow : Window
         try
         {
             _repo.DeleteGameProfile(prof);
-            _profiles.Remove(prof);
+            GameProfile? nextProf;
+            lock (_profilesLock)
+            {
+                _profiles.Remove(prof);
+                nextProf = _profiles.FirstOrDefault();
+            }
 
             var prevMain = CmbGameProfile.SelectedValue?.ToString();
-            var nextProf = _profiles.FirstOrDefault();
             _rulesDirty = false;
             RefreshProfilePickers(prevMain, nextProf?.Manifest.GameId);
 
@@ -1272,17 +1373,22 @@ public partial class MainWindow : Window
                 return;
         }
 
-        var rawId = CoachFeedFormatter.BuildSafeGameId(rawName, _profiles.Select(p => p.Manifest.GameId));
+        var rawId = CoachFeedFormatter.BuildSafeGameId(rawName, GetProfilesSnapshot().Select(p => p.Manifest.GameId));
         try
         {
             var created = _repo.CreateNewGameProfile(rawId, rawName, exeList);
-            if (_profiles.Any(p => string.Equals(p.Manifest.GameId, created.Manifest.GameId, StringComparison.OrdinalIgnoreCase)))
+            bool duplicate;
+            lock (_profilesLock)
+            {
+                duplicate = _profiles.Any(p => string.Equals(p.Manifest.GameId, created.Manifest.GameId, StringComparison.OrdinalIgnoreCase));
+                if (!duplicate)
+                    _profiles.Add(created);
+            }
+            if (duplicate)
             {
                 System.Windows.MessageBox.Show($"Ya existe un juego similar ('{created.Manifest.GameId}').", "HUDMind", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-
-            _profiles.Add(created);
             var prevActiveGame = CmbGameProfile.SelectedValue?.ToString();
             _rulesDirty = false;
             RefreshProfilePickers(prevActiveGame, created.Manifest.GameId);
@@ -1329,7 +1435,7 @@ public partial class MainWindow : Window
         _config.TtsRate = rate;
         _repo.SaveUserConfig(_config);
         _sharedVoice.SetSpeechRate(rate);
-        _coordinator.ApplyLiveSettings(_config);
+        _coordinator.ActiveEngine?.UpdateAudioLive(_config);
         AppendLog($"Velocidad de voz ajustada: {rate}.");
     }
 
@@ -1421,7 +1527,8 @@ public partial class MainWindow : Window
             AppendLog("ℹ️ Todavía no hay consejos registrados en esta sesión para resumir.");
             return;
         }
-        if (!_accounts.Any(a => a.IsReady()))
+        var accountsSnapshot = GetAccountsSnapshot();
+        if (!accountsSnapshot.Any(a => a.IsReady()))
         {
             AppendLog("⚠ Agregá una cuenta IA habilitada para generar el resumen post-partida.");
             return;
@@ -1434,11 +1541,11 @@ public partial class MainWindow : Window
             var targetId = string.IsNullOrWhiteSpace(metaGameId)
                 ? (CmbGameProfile.SelectedValue?.ToString() ?? "universal")
                 : metaGameId;
-            var targetProfile = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, targetId, StringComparison.OrdinalIgnoreCase));
+            var targetProfile = FindProfileByIdLocked(targetId);
             SyncAssembledContext(targetId, targetProfile, CoachContextDepth.AnalyticalReflection);
 
             AppendLog($"📊 Analizando partida reciente ({gameName})...");
-            var (review, ms, model) = await _coordinator.GeneratePostMatchReviewAsync(_accounts, _config, AppendLog, profile: targetProfile);
+            var (review, ms, model) = await _coordinator.GeneratePostMatchReviewAsync(accountsSnapshot, _config, AppendLog, profile: targetProfile);
             if (string.IsNullOrWhiteSpace(review))
             {
                 AppendLog($"No se pudo generar el resumen post-partida [{model}].");
@@ -1476,6 +1583,9 @@ public partial class MainWindow : Window
                 AppendLog($"⚠ No se pudo guardar resumen en disco: {SecretRedactor.Redact(saveEx.Message)}");
             }
 
+            if (_closingInProgress || _shutdownComplete)
+                return;
+
             if (_config.IsCoachVoiceActive)
             {
                 string spoken = review.Replace("*", "").Replace("#", "").Trim();
@@ -1485,11 +1595,12 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AppendLog($"Error generando resumen post-partida: {SecretRedactor.Redact(ex.Message, _accounts.Select(a => a.ApiKey))}");
+            AppendLog($"Error generando resumen post-partida: {SecretRedactor.Redact(ex.Message, GetAccountApiKeysSnapshot())}");
         }
         finally
         {
-            RefreshMatchReviewButtonState();
+            if (!_closingInProgress && !_shutdownComplete)
+                RefreshMatchReviewButtonState();
         }
     }
 
@@ -1611,12 +1722,27 @@ public partial class MainWindow : Window
         _config.PlayerSkillTier = GetSelectedTag(CmbSkillTier);
         _config.PlayerRankLabel = (TxtRankLabel.Text ?? string.Empty).Trim();
         _config.CoachStyle = GetSelectedTag(CmbCoachStyle);
-        _config.LiveAutoCoachSeconds = double.TryParse(GetSelectedTag(CmbLiveAutoRate), out double autoSec) ? autoSec : 6.0;
+        _config.LiveAutoCoachSeconds = double.TryParse(
+            GetSelectedTag(CmbLiveAutoRate),
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out double autoSec)
+            ? autoSec
+            : 6.0;
         _config.VoiceGender = GetSelectedTag(CmbVoiceGender);
         _config.VoiceStyle = GetSelectedTag(CmbVoiceStyle);
         _config.TtsRate = GetSelectedTag(CmbVoiceRate, "+5%");
         _config.UseLiveConversational = GetSelectedTag(CmbEngineType) == "live";
         _config.SetCommunicationMode(GetSelectedTag(CmbCommMode));
+        _syncingUi = true;
+        try
+        {
+            SelectByTag(CmbLiveAutoRate, NormalizeLiveAutoRateBucket(_config.LiveAutoCoachSeconds));
+        }
+        finally
+        {
+            _syncingUi = false;
+        }
         _config.MicInputMode = GetSelectedTag(CmbMicInputMode, "open_mic");
         if (HotkeyParser.TryParsePushToTalkKey(TxtPttKey.Text, out _, out var pttSafe)) _config.PushToTalkKey = pttSafe;
         _config.AudioInputDeviceName = GetSelectedTag(CmbMicDevice, string.Empty);
@@ -1654,7 +1780,7 @@ public partial class MainWindow : Window
         _repo.SaveCoachSoulMarkdown(TxtCoachSoul.Text);
         _repo.SavePlayerProfileMarkdown(TxtPlayerProfile.Text);
         var activeGameId = CmbGameProfile.SelectedValue?.ToString() ?? "universal";
-        var activeProf = _profiles.FirstOrDefault(p => string.Equals(p.Manifest.GameId, activeGameId, StringComparison.OrdinalIgnoreCase));
+        var activeProf = FindProfileByIdLocked(activeGameId);
         SyncAssembledContext(activeGameId, activeProf, CoachContextDepth.RealtimePlay);
         ConfigureOverlayFromCurrentConfig();
         if (!_config.EnableOverlay)
@@ -1689,9 +1815,16 @@ public partial class MainWindow : Window
 
     private void SpeakWithSharedVoiceAsync(string text, Action<double>? onDispatched = null)
     {
-        if (string.IsNullOrWhiteSpace(text))
+        if (_closingInProgress || _shutdownComplete || string.IsNullOrWhiteSpace(text))
             return;
 
+        if (_coordinator.IsRunning)
+        {
+            AppendLog("ℹ️ Hay una sesión de coach activa: detenela antes de reproducir vista previa o resumen hablado.");
+            return;
+        }
+
+        string outputDevice = _config.AudioOutputDeviceName;
         string lang = _config.VoiceLanguage;
         string gender = _config.VoiceGender;
         string style = _config.VoiceStyle;
@@ -1699,11 +1832,20 @@ public partial class MainWindow : Window
         double vol = _config.TtsVolume;
         _ = Task.Run(() =>
         {
-            _sharedVoice.SetSpeechRate(rate);
-            _sharedVoice.WarmUp(lang, vol, gender, style);
-            _sharedVoice.UpdateSettings(lang, vol, gender, style);
-            double ms = _sharedVoice.SpeakInstant(text);
-            onDispatched?.Invoke(ms);
+            try
+            {
+                if (_closingInProgress || _shutdownComplete) return;
+                _sharedVoice.SetOutputDevice(outputDevice);
+                _sharedVoice.SetSpeechRate(rate);
+                _sharedVoice.WarmUp(lang, vol, gender, style);
+                if (_closingInProgress || _shutdownComplete) return;
+                _sharedVoice.UpdateSettings(lang, vol, gender, style);
+                double ms = _sharedVoice.SpeakInstant(text);
+                if (!_closingInProgress && !_shutdownComplete)
+                    onDispatched?.Invoke(ms);
+            }
+            catch (ObjectDisposedException) { }
+            catch (Exception) { }
         });
     }
 
@@ -1989,14 +2131,19 @@ public partial class MainWindow : Window
 
     private async void BtnLaunchUpdate_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(_downloadedUpdatePath) || !File.Exists(_downloadedUpdatePath))
+        if (_closingInProgress || _shutdownComplete || string.IsNullOrWhiteSpace(_downloadedUpdatePath) || !File.Exists(_downloadedUpdatePath))
             return;
 
         BtnLaunchUpdate.IsEnabled = false;
         try
         {
-            if (_coordinator.IsRunning)
+            bool wasRunning = _coordinator.IsRunning;
+            if (wasRunning)
                 await _coordinator.StopAsync();
+            if (_closingInProgress || _shutdownComplete)
+                return;
+            if (wasRunning)
+                ApplyStoppedUiState();
             (System.Windows.Application.Current as App)?.ReleaseSingleInstanceMutex();
             Process.Start(new ProcessStartInfo(_downloadedUpdatePath) { UseShellExecute = true });
             Close();
