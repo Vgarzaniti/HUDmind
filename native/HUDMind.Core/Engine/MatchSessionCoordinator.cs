@@ -105,7 +105,10 @@ public sealed class MatchSessionCoordinator
             return new ProfileSwitchOutcome(true, false, prev, prev, fg);
 
         if (prev is not null)
+        {
             FlushMatchSnapshot(resetMatchLog: true, config);
+            _overlay.ClearHistory();
+        }
 
         Interlocked.Increment(ref _profileEpoch);
         config.RuntimeTiltRisk = false;
@@ -120,7 +123,7 @@ public sealed class MatchSessionCoordinator
         _activeProfile = matched;
         _onLog?.Invoke($"Juego detectado automáticamente: {matched.Manifest.DisplayName} ({fg})");
         if (config.EnableOverlay)
-            _overlay.ShowCallout(overlayBannerText, UrgencyLevel.Low, matched.Manifest.DisplayName, 3.0);
+            _overlay.ShowMessage(new OverlayCalloutMessage(overlayBannerText, UrgencyLevel.Low, matched.Manifest.DisplayName, 3.0, OverlayEntryKind.Status, "HUD"));
 
         return new ProfileSwitchOutcome(true, true, prev, matched, fg);
     }
@@ -161,5 +164,6 @@ public sealed class MatchSessionCoordinator
     {
         if (clearRingBuffer)
             FrameRingBuffer.Clear();
+        _overlay.ClearHistory();
     }
 }

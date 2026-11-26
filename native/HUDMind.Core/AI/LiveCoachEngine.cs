@@ -516,11 +516,13 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _onLog?.Invoke($"🛡️ Coach [safety-guard]: \"{inputGuard.SafeRedirectReply}\"");
             if (_config.EnableOverlay && !_userPaused)
             {
-                _overlay.ShowCallout(
+                _overlay.ShowMessage(new OverlayCalloutMessage(
                     inputGuard.SafeRedirectReply,
                     UrgencyLevel.Low,
                     _session.ActiveProfile?.Manifest.DisplayName ?? "HUDMind Live",
-                    Math.Min(_config.OverlayDurationSeconds, 3.5));
+                    Math.Min(_config.OverlayDurationSeconds, 3.5),
+                    OverlayEntryKind.Status,
+                    "HUD"));
             }
             return true;
         }
@@ -552,6 +554,16 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 try
                 {
                     _onLog?.Invoke($"💬 Vos: \"{msg}\"");
+                    if (_config.EnableOverlay && !_userPaused)
+                    {
+                        _overlay.ShowMessage(new OverlayCalloutMessage(
+                            msg,
+                            UrgencyLevel.Low,
+                            _session.ActiveProfile?.Manifest.DisplayName ?? "HUDMind Live",
+                            _config.OverlayDurationSeconds,
+                            OverlayEntryKind.UserMessage,
+                            "Vos"));
+                    }
                     var freshFrame = attachCurrentScreen
                         ? CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _captureSeq))
                         : null;
@@ -679,7 +691,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         {
             _onLog?.Invoke($"Coach Live PAUSADO ({_config.HotkeyTogglePause} para reanudar).");
             if (_config.EnableOverlay)
-                _overlay.ShowCallout($"Coach Live PAUSADO — {_config.HotkeyTogglePause}", UrgencyLevel.Low, title, 2.5);
+                _overlay.ShowMessage(new OverlayCalloutMessage($"Coach Live PAUSADO — {_config.HotkeyTogglePause}", UrgencyLevel.Low, title, 2.5, OverlayEntryKind.Status, "HUD"));
         }
         else
         {
@@ -687,9 +699,9 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _onLog?.Invoke("Coach Live REANUDADO.");
             if (_config.EnableOverlay)
             {
-                _overlay.ShowCallout(
+                _overlay.ShowMessage(new OverlayCalloutMessage(
                     textOnlyNow ? "Coach Live ACTIVO — solo texto" : micNow ? "Coach Live ACTIVO — charla en vivo" : "Coach Live ACTIVO — solo voz del coach",
-                    UrgencyLevel.Low, title, 2.5);
+                    UrgencyLevel.Low, title, 2.5, OverlayEntryKind.Status, "HUD"));
             }
         }
         EmitStats();
@@ -840,7 +852,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         _onLog?.Invoke($"LIVE LISTO [{_backend.ProviderName} · {_backend.ActiveModelLabel}] · {modeDesc}");
                         if (_config.EnableOverlay && !_userPaused)
                         {
-                            _overlay.ShowCallout(
+                            _overlay.ShowMessage(new OverlayCalloutMessage(
                                 _config.IsTextOnlyMode
                                     ? "Coach Live en modo SOLO TEXTO (silencioso)"
                                     : _micEnabled
@@ -848,7 +860,9 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                         : $"Coach Live ({voiceName}) — solo voz del coach",
                                 UrgencyLevel.Low,
                                 _session.ActiveProfile?.Manifest.DisplayName ?? "HUDMind Live",
-                                3.0);
+                                3.0,
+                                OverlayEntryKind.Status,
+                                "HUD"));
                         }
                         string? pendingMicLog = null;
                         lock (_modeLock)
@@ -957,7 +971,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             if (_config.EnableOverlay && !_userPaused)
             {
                 var title = (sessionProfile ?? _session.ActiveProfile)?.Manifest.DisplayName ?? "HUDMind Live";
-                _overlay.ShowCallout(outGuard.FallbackReplacement, UrgencyLevel.Low, title, 3.0);
+                _overlay.ShowMessage(new OverlayCalloutMessage(outGuard.FallbackReplacement, UrgencyLevel.Low, title, 3.0, OverlayEntryKind.Status, "HUD"));
             }
             return;
         }
@@ -978,11 +992,13 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             {
                 Interlocked.Exchange(ref _lastOverlayPartialTick, Stopwatch.GetTimestamp());
                 var title = (sessionProfile ?? _session.ActiveProfile)?.Manifest.DisplayName ?? "HUDMind Live";
-                _overlay.ShowCallout(
+                _overlay.ShowMessage(new OverlayCalloutMessage(
                     currentLine,
                     UrgencyLevel.Medium,
                     title,
-                    _config.OverlayDurationSeconds);
+                    _config.OverlayDurationSeconds,
+                    OverlayEntryKind.CoachLive,
+                    "Coach"));
             }
         }
     }
@@ -1038,11 +1054,13 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             {
                 if (_config.EnableOverlay && !_userPaused)
                 {
-                    _overlay.ShowCallout(
+                    _overlay.ShowMessage(new OverlayCalloutMessage(
                         outGuard.FallbackReplacement,
                         UrgencyLevel.Low,
                         prof?.Manifest.DisplayName ?? "HUDMind Live",
-                        3.5);
+                        3.5,
+                        OverlayEntryKind.Status,
+                        "HUD"));
                 }
                 _onLog?.Invoke($"🛡️ Coach [safety-filter]: \"{outGuard.FallbackReplacement}\"");
                 if (outGuard.Category == SafetyCategory.SevereSexualOrIllegal)
@@ -1061,11 +1079,13 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
             if (_config.EnableOverlay && !_userPaused)
             {
-                _overlay.ShowCallout(
+                _overlay.ShowMessage(new OverlayCalloutMessage(
                     spoken,
                     UrgencyLevel.Medium,
                     prof?.Manifest.DisplayName ?? "HUDMind Live",
-                    _config.OverlayDurationSeconds);
+                    _config.OverlayDurationSeconds,
+                    OverlayEntryKind.CoachFinal,
+                    "Coach"));
             }
             Interlocked.Increment(ref _interventions);
             double ttfa = Volatile.Read(ref _lastTtfaMs);

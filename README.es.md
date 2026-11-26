@@ -57,7 +57,7 @@
 # 1. Compilar solución completa (0 warnings / 0 errors)
 dotnet build native\HUDMind.sln -c Release
 
-# 2. Suite Core multiplataforma (50 pruebas) + suite nativa Windows (15 pruebas) + smoke WPF
+# 2. Suite Core multiplataforma (51 pruebas) + suite nativa Windows (15 pruebas) + smoke WPF
 dotnet run --project native\HUDMind.Tests\HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native\HUDMind.Windows.Tests\HUDMind.Windows.Tests.csproj -c Release --no-build
 .\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe --smoke-startup
@@ -111,7 +111,7 @@ También podés iniciar directamente con [HUDMind.bat](HUDMind.bat).
 │   ├── HUDMind.Windows/            # GDI Capture, WinMM Audio/Devices, WinRT Natural TTS + OneCore, GSI, OCR, KnownFolders
 │   ├── HUDMind.App/                # UI WPF (0% GPU), PerMonitorV2 Overlay, Tray Icon Win32 y Banner de Updates
 │   ├── HUDMind.Packer/             # Compilador build-time del vault AES-256-GCM (Perfiles + ProtectedAssets -> Vault.bin)
-│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (50 casos)
+│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (51 casos)
 │   └── HUDMind.Windows.Tests/      # Suite de pruebas Win32, WASAPI, GSI, TLS, Logs, Audio y KnownFolders (15 casos)
 ├── profiles/                       # Perfiles de juegos y prompts tácticos
 ├── docs/                           # Documentación técnica bilingüe (*.es.md y *.en.md)

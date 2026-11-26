@@ -10,33 +10,23 @@
         ShowActivated="False"
         ResizeMode="NoResize"
         SizeToContent="Height"
-        Width="456">
+        Width="440">
     <!-- Cyber-Tactical In-Game Overlay (0% GPU SoftwareOnly, crisp layered frame & WS_EX_TRANSPARENT) -->
-    <Border CornerRadius="13" Background="#5A020810" Padding="2" Margin="4">
+    <Border x:Name="OuterShadowFrame" CornerRadius="13" Background="Transparent" Padding="0" Margin="4">
         <Border x:Name="CardBorder"
                 CornerRadius="11"
-                BorderBrush="#22D3EE"
-                BorderThickness="1.35"
-                Padding="13,11">
-            <Border.Background>
-                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                    <GradientStop Color="#EA0A131E" Offset="0.0" />
-                    <GradientStop Color="#E2070D15" Offset="1.0" />
-                </LinearGradientBrush>
-            </Border.Background>
+                BorderBrush="Transparent"
+                BorderThickness="1"
+                Padding="11,8">
             <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
-                <!-- Left Edge Urgency Indicator -->
-                <Border x:Name="UrgencyBar" Grid.Column="0" Width="3" CornerRadius="2" Background="#22D3EE" Margin="0,2,8,2" />
-
-                <!-- Tactical Copilot Icon Badge -->
+                <!-- Left Card Icon Badge (shown only in full tactical 'card' style) -->
                 <Border x:Name="IconBadge"
-                        Grid.Column="1"
+                        Grid.Column="0"
                         Width="32"
                         Height="32"
                         CornerRadius="7"
@@ -44,7 +34,8 @@
                         BorderBrush="#22D3EE"
                         BorderThickness="1"
                         VerticalAlignment="Top"
-                        Margin="0,1,10,0">
+                        Margin="0,1,10,0"
+                        Visibility="Collapsed">
                     <Path Data="M12,2 A3,3 0 0,1 15,5 V11 A3,3 0 0,1 9,11 V5 A3,3 0 0,1 12,2 M19,11 A7,7 0 0,1 5,11 H7 A5,5 0 0,0 17,11 H19 M11,18.9 V22 H13 V18.9"
                           Stretch="Uniform"
                           Width="16"
@@ -54,9 +45,9 @@
                           VerticalAlignment="Center" />
                 </Border>
 
-                <!-- Content Stack -->
-                <StackPanel Grid.Column="2">
-                    <DockPanel Margin="0,0,0,2">
+                <!-- Content Stack: Compact Header + Discord-Style Stacked Messages + Card Footer -->
+                <StackPanel Grid.Column="1">
+                    <DockPanel x:Name="HeaderDock" Margin="0,0,0,4">
                         <Border x:Name="StatusTagBorder"
                                 DockPanel.Dock="Right"
                                 Background="#0A2B33"
@@ -66,43 +57,74 @@
                                 Padding="6,1.5"
                                 VerticalAlignment="Center"
                                 Margin="8,0,0,0">
-                            <TextBlock x:Name="StatusTagText"
-                                       Text="ACTIVO"
-                                       Foreground="#6EE7B7"
-                                       FontFamily="Consolas"
-                                       FontSize="9.5"
-                                       FontWeight="Bold" />
+                            <controls:OverlayTextBlock x:Name="StatusTagText"
+                                                       Text="ACTIVO"
+                                                       Foreground="#6EE7B7"
+                                                       FontFamily="Consolas"
+                                                       FontSize="9.5"
+                                                       FontWeight="Bold"
+                                                       TextWrapping="NoWrap" />
                         </Border>
-                        <TextBlock x:Name="TitleBlock"
-                                   Text="AI COPILOT · HUDMIND"
-                                   Foreground="#22D3EE"
-                                   FontFamily="Segoe UI"
-                                   FontSize="10.5"
-                                   FontWeight="Bold"
-                                   TextTrimming="CharacterEllipsis"
-                                   VerticalAlignment="Center" />
+                        <controls:OverlayTextBlock x:Name="TitleBlock"
+                                                   Text="HUDMIND"
+                                                   Foreground="#22D3EE"
+                                                   FontFamily="Segoe UI"
+                                                   FontSize="10.5"
+                                                   FontWeight="Bold"
+                                                   TextWrapping="NoWrap"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center" />
                     </DockPanel>
 
-                    <TextBlock x:Name="MessageBlock"
-                               Text=""
-                               Foreground="#F8FAFC"
-                               FontFamily="Segoe UI"
-                               FontSize="14.5"
-                               FontWeight="SemiBold"
-                               TextWrapping="Wrap"
-                               Margin="0,2,0,0" />
+                    <ItemsControl x:Name="FeedItemsHost" IsHitTestVisible="False">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Opacity="{Binding RowOpacity}" Margin="{Binding RowMargin}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
 
-                    <!-- Sleek Vector Telemetry Waveform + Compact Hotkey Chips -->
-                    <DockPanel x:Name="FooterDock" Margin="0,8,0,0">
+                                    <Border Grid.Column="0"
+                                            Width="3"
+                                            CornerRadius="1.5"
+                                            Background="{Binding AccentBrush}"
+                                            Margin="0,2,8,2" />
+
+                                    <StackPanel Grid.Column="1">
+                                        <controls:OverlayTextBlock Text="{Binding SpeakerLabel}"
+                                                                   Visibility="{Binding SpeakerVisibility}"
+                                                                   Foreground="{Binding SpeakerBrush}"
+                                                                   FontFamily="Consolas"
+                                                                   FontSize="{Binding SpeakerFontSize}"
+                                                                   FontWeight="Bold"
+                                                                   StrongHalo="{Binding StrongHalo}"
+                                                                   TextWrapping="NoWrap"
+                                                                   Margin="0,0,0,1" />
+                                        <controls:OverlayTextBlock Text="{Binding Text}"
+                                                                   Foreground="{Binding MessageBrush}"
+                                                                   FontFamily="Segoe UI"
+                                                                   FontSize="{Binding MessageFontSize}"
+                                                                   FontWeight="SemiBold"
+                                                                   StrongHalo="{Binding StrongHalo}"
+                                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <!-- Sleek Vector Telemetry Waveform + Hotkey Chips (shown in 'card' style) -->
+                    <DockPanel x:Name="FooterDock" Margin="0,8,0,0" Visibility="Collapsed">
                         <StackPanel x:Name="HotkeyHintsPanel"
                                     DockPanel.Dock="Right"
                                     Orientation="Horizontal"
                                     VerticalAlignment="Bottom"
                                     Margin="10,0,0,0">
-                            <Border Background="#09131F" BorderBrush="#1B3247" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,5,0">
+                            <Border x:Name="ChipPauseBorder" Background="#09131F" BorderBrush="#1B3247" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="0,0,5,0">
                                 <TextBlock x:Name="TxtPauseChip" Text="F9 PAUSA" Foreground="#94A3B8" FontFamily="Consolas" FontSize="9.5" FontWeight="SemiBold" />
                             </Border>
-                            <Border Background="#09131F" BorderBrush="#1B3247" BorderThickness="1" CornerRadius="4" Padding="6,2">
+                            <Border x:Name="ChipAnalyzeBorder" Background="#09131F" BorderBrush="#1B3247" BorderThickness="1" CornerRadius="4" Padding="6,2">
                                 <TextBlock x:Name="TxtAnalyzeChip" Text="F10 IA" Foreground="#94A3B8" FontFamily="Consolas" FontSize="9.5" FontWeight="SemiBold" />
                             </Border>
                         </StackPanel>

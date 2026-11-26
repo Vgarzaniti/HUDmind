@@ -223,11 +223,12 @@ public partial class MainWindow : Window
             SelectByTag(CmbEfficiency, _config.TokenEfficiencyMode);
             string memBucket = _config.MemoryMatchWindow switch { <= 7 => "5", <= 15 => "10", _ => "20" };
             SelectByTag(CmbMemoryWindow, memBucket);
+            SelectByTag(CmbOverlayStyle, _config.ResolveOverlayStyle());
+            SelectByTag(CmbOverlayFeedLines, _config.ResolveOverlayMaxMessages() == 1 ? "1" : "3");
             SelectByTag(CmbOverlayPos, _config.OverlayPosition);
             SldOverlayScale.Value = Math.Clamp(_config.OverlayScale, 0.75, 1.45);
-            LblOverlayScale.Text = $"{(int)Math.Round(SldOverlayScale.Value * 100)}%";
-            SldOverlayOpacity.Value = Math.Clamp(_config.OverlayOpacity, 0.45, 1.0);
-            LblOverlayOpacity.Text = $"{(int)Math.Round(SldOverlayOpacity.Value * 100)}%";
+            SldOverlayOpacity.Value = Math.Clamp(_config.OverlayOpacity, 0.0, 0.95);
+            UpdateOverlaySliderLabels();
             SldVolume.Value = _config.TtsVolume;
             LblVolumePct.Text = $"{(int)Math.Round(_config.TtsVolume * 100)}%";
         }
@@ -237,7 +238,6 @@ public partial class MainWindow : Window
         }
 
         ChkEnableOverlay.IsChecked = _config.EnableOverlay;
-        ChkOverlayCompact.IsChecked = _config.OverlayCompact;
         ChkEnableHotkeys.IsChecked = _config.EnableHotkeys;
         ChkMinimizeToTray.IsChecked = _config.MinimizeToTray;
         ChkEnableAudioCues.IsChecked = _config.EnableAudioCues;
@@ -290,6 +290,8 @@ public partial class MainWindow : Window
 
     private void ConfigureOverlayFromCurrentConfig()
     {
+        string style = _config.ResolveOverlayStyle();
+        int maxMessages = _config.ResolveOverlayMaxMessages();
         _overlay.SetHotkeyHints(_config.HotkeyTogglePause, _config.HotkeyAnalyzeNow);
         _overlay.Configure(
             _config.OverlayPosition,
@@ -297,7 +299,9 @@ public partial class MainWindow : Window
             _config.OverlayOpacity,
             _config.CaptureMonitor,
             _config.OverlayScale,
-            _config.OverlayCompact);
+            compact: style != UserConfig.OverlayStyleCard,
+            style: style,
+            maxMessages: maxMessages);
     }
 
     private List<GameProfile> GetProfilesSnapshot()
@@ -675,7 +679,7 @@ public partial class MainWindow : Window
 
     private void ApplyStoppedUiState()
     {
-        _overlay.HideImmediately();
+        _overlay.ClearHistory();
         SetRunningControlLocks(false);
         ResetStatsCards();
         RefreshMatchReviewButtonState();
@@ -697,11 +701,13 @@ public partial class MainWindow : Window
                 Win32AudioCue.Play(_config.IsMicActive ? AudioCueKind.SoftOn : AudioCueKind.SoftOff);
             if (_config.EnableOverlay)
             {
-                _overlay.ShowCallout(
+                _overlay.ShowMessage(new OverlayCalloutMessage(
                     _config.IsMicActive ? "🎤 Micrófono ACTIVO" : "🔇 Micrófono SILENCIADO",
                     UrgencyLevel.Low,
                     "HUDMind Live",
-                    2.0);
+                    2.0,
+                    OverlayEntryKind.Status,
+                    "HUD"));
             }
         });
     }
@@ -1496,14 +1502,52 @@ public partial class MainWindow : Window
         _coordinator.ActiveEngine?.UpdateAudioLive(_config);
     }
 
+    private void UpdateOverlaySliderLabels()
+    {
+        if (LblOverlayScale is null || LblOverlayOpacity is null)
+            return;
+        string style = CmbOverlayStyle is not null ? GetSelectedTag(CmbOverlayStyle, _config.ResolveOverlayStyle()) : _config.ResolveOverlayStyle();
+        int scalePct = (int)Math.Round(SldOverlayScale.Value * 100);
+        int opacityPct = (int)Math.Round(SldOverlayOpacity.Value * 100);
+        LblOverlayScale.Text = $"{scalePct}%";
+        LblOverlayOpacity.Text = style == UserConfig.OverlayStyleTransparentText
+            ? "0% (Sin caja)"
+            : opacityPct == 0
+                ? "0% (Transparente)"
+                : $"{opacityPct}%";
+    }
+
+    private void SyncOverlayVisualSettingsFromUi()
+    {
+        if (CmbOverlayStyle is not null)
+        {
+            _config.OverlayStyle = UserConfig.NormalizeOverlayStyle(GetSelectedTag(CmbOverlayStyle, _config.ResolveOverlayStyle()));
+            _config.OverlayCompact = _config.OverlayStyle != UserConfig.OverlayStyleCard;
+        }
+        if (CmbOverlayFeedLines is not null && int.TryParse(GetSelectedTag(CmbOverlayFeedLines, "3"), out int maxMsg))
+            _config.OverlayMaxMessages = Math.Clamp(maxMsg, 1, 4);
+        if (CmbOverlayPos is not null)
+            _config.OverlayPosition = GetSelectedTag(CmbOverlayPos, "top-right");
+        if (CmbMonitor?.SelectedValue is int mon)
+            _config.CaptureMonitor = mon;
+        if (SldOverlayScale is not null)
+            _config.OverlayScale = Math.Round(SldOverlayScale.Value, 2);
+        if (SldOverlayOpacity is not null)
+            _config.OverlayOpacity = Math.Round(SldOverlayOpacity.Value, 2);
+        UpdateOverlaySliderLabels();
+        ConfigureOverlayFromCurrentConfig();
+    }
+
+    private void CmbOverlayVisual_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingUi || LblOverlayScale is null) return;
+        SyncOverlayVisualSettingsFromUi();
+    }
+
     private void SldOverlayVisual_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_syncingUi || LblOverlayScale is null || LblOverlayOpacity is null) return;
-        _config.OverlayScale = Math.Round(SldOverlayScale.Value, 2);
-        _config.OverlayOpacity = Math.Round(SldOverlayOpacity.Value, 2);
-        LblOverlayScale.Text = $"{(int)Math.Round(_config.OverlayScale * 100)}%";
-        LblOverlayOpacity.Text = $"{(int)Math.Round(_config.OverlayOpacity * 100)}%";
-        ConfigureOverlayFromCurrentConfig();
+        SyncOverlayVisualSettingsFromUi();
     }
 
     private void BtnGoAccounts_Click(object sender, RoutedEventArgs e) =>
@@ -1753,10 +1797,14 @@ public partial class MainWindow : Window
         _config.MemoryMatchWindow = int.TryParse(GetSelectedTag(CmbMemoryWindow, "10"), out int memWin)
             ? PlayerMemoryStore.ClampWindowSize(memWin)
             : PlayerMemoryStore.DefaultWindowSize;
+        _config.OverlayStyle = UserConfig.NormalizeOverlayStyle(GetSelectedTag(CmbOverlayStyle, UserConfig.OverlayStyleDiscordPill));
+        _config.OverlayCompact = _config.OverlayStyle != UserConfig.OverlayStyleCard;
+        _config.OverlayMaxMessages = int.TryParse(GetSelectedTag(CmbOverlayFeedLines, "3"), out int ovMax)
+            ? Math.Clamp(ovMax, 1, 4)
+            : 3;
         _config.OverlayPosition = GetSelectedTag(CmbOverlayPos, "top-right");
         _config.CaptureMonitor = CmbMonitor.SelectedValue is int m ? m : 1;
         _config.EnableOverlay = ChkEnableOverlay.IsChecked == true;
-        _config.OverlayCompact = ChkOverlayCompact.IsChecked == true;
         _config.EnableHotkeys = ChkEnableHotkeys.IsChecked == true;
         _config.MinimizeToTray = ChkMinimizeToTray.IsChecked == true;
         _config.EnableAudioCues = ChkEnableAudioCues.IsChecked == true;
@@ -1800,7 +1848,26 @@ public partial class MainWindow : Window
         if (!ApplyConfigFromUi()) return;
         ConfigureOverlayFromCurrentConfig();
         if (_config.EnableOverlay)
-            _overlay.ShowCallout("Rotá segundo palo, tenés 18 de boost.", UrgencyLevel.High, "Rocket League", 4.0);
+        {
+            _overlay.ClearHistory();
+            if (_config.ResolveOverlayMaxMessages() > 1)
+            {
+                _overlay.ShowMessage(new OverlayCalloutMessage(
+                    "¿Dónde me paro ahora?",
+                    UrgencyLevel.Low,
+                    "Rocket League",
+                    7.0,
+                    OverlayEntryKind.UserMessage,
+                    "Vos"));
+            }
+            _overlay.ShowMessage(new OverlayCalloutMessage(
+                "Rotá segundo palo, tenés 18 de boost.",
+                UrgencyLevel.High,
+                "Rocket League",
+                7.0,
+                OverlayEntryKind.CoachFinal,
+                "Coach"));
+        }
 
         if (!_config.IsCoachVoiceActive)
         {

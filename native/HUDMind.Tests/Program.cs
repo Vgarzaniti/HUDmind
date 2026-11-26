@@ -2654,6 +2654,82 @@ await RunTest("50. Conversational connectors prevent skipped/cut audio, yield to
     }
 });
 
+await RunTest("51. OverlayFeedBuffer Discord mini-feed coalescing, Live->Final promotion, TTL prune & UserConfig overlay_style round-trip", () =>
+{
+    var t0 = new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero);
+    var buf = new OverlayFeedBuffer { MaxMessages = 3 };
+
+    // 1. User question + streaming CoachLive partials coalesce in place without duplicating entries
+    buf.Upsert(new OverlayCalloutMessage("¿Qué compro ahora?", UrgencyLevel.Low, "Dota 2", 6.0, OverlayEntryKind.UserMessage, "Vos"), t0);
+    buf.Upsert(new OverlayCalloutMessage("Comprá BKB", UrgencyLevel.Medium, "Dota 2", 6.0, OverlayEntryKind.CoachLive, "Coach"), t0.AddSeconds(0.5));
+    var liveSnap = buf.Upsert(new OverlayCalloutMessage("Comprá BKB antes de pelear", UrgencyLevel.Medium, "Dota 2", 6.0, OverlayEntryKind.CoachLive, "Coach"), t0.AddSeconds(0.8));
+    Assert(liveSnap.Count == 2 && liveSnap[0].Kind == OverlayEntryKind.UserMessage && liveSnap[1].IsStreamingLive,
+        $"Live partial must coalesce in-place above user row (count={liveSnap.Count})");
+
+    long liveId = liveSnap[1].Id;
+    var finalSnap = buf.Upsert(new OverlayCalloutMessage("Comprá BKB antes de pelear Roshan.", UrgencyLevel.High, "Dota 2", 7.0, OverlayEntryKind.CoachFinal, "Coach"), t0.AddSeconds(1.0));
+    Assert(finalSnap.Count == 2 && finalSnap[1].Id == liveId && !finalSnap[1].IsStreamingLive && finalSnap[1].Urgency == UrgencyLevel.High,
+        "CoachFinal must promote the in-flight CoachLive slot cleanly");
+
+    // 2. Transient Status dismisses cleanly when next Coach tip arrives
+    buf.Upsert(new OverlayCalloutMessage("Analizando jugada...", UrgencyLevel.Low, "Dota 2", 2.0, OverlayEntryKind.Status, "HUD"), t0.AddSeconds(2.0));
+    buf.Upsert(new OverlayCalloutMessage("Coach PAUSADO", UrgencyLevel.Low, "Dota 2", 2.0, OverlayEntryKind.Status, "HUD"), t0.AddSeconds(2.2));
+    Assert(buf.Snapshot().Count(e => e.Kind == OverlayEntryKind.Status) == 1, "Consecutive statuses coalesce into 1");
+
+    var afterTip = buf.Upsert(new OverlayCalloutMessage("Usá smoke arriba", UrgencyLevel.Medium, "Dota 2", 6.0, OverlayEntryKind.CoachFinal, "Coach"), t0.AddSeconds(3.0));
+    Assert(afterTip.Count == 3 && !afterTip.Any(e => e.Kind == OverlayEntryKind.Status),
+        $"Coach output must replace ephemeral Status cleanly and cap at MaxMessages=3 (count={afterTip.Count})");
+
+    // 3. Per-item TTL expiry prunes older messages without hiding newer ones
+    Assert(buf.PruneExpired(t0.AddSeconds(6.5)) && buf.Snapshot().Count == 2,
+        $"Only earliest entry expires at t+6.5s (remaining={buf.Snapshot().Count})");
+    Assert(buf.PruneExpired(t0.AddSeconds(10.0)) && buf.IsEmpty, "All entries expire cleanly by t+10s");
+
+    // 4. MaxMessages = 1 strictly keeps 1 entry
+    buf.MaxMessages = 1;
+    buf.Upsert(new OverlayCalloutMessage("Msg 1", UrgencyLevel.Low, "CS2", 5.0, OverlayEntryKind.UserMessage, "Vos"), t0);
+    var singleSnap = buf.Upsert(new OverlayCalloutMessage("Msg 2", UrgencyLevel.High, "CS2", 5.0, OverlayEntryKind.CoachFinal, "Coach"), t0.AddSeconds(0.5));
+    Assert(singleSnap.Count == 1 && singleSnap[0].Text == "Msg 2", "MaxMessages=1 keeps only latest message");
+
+    // 5. UserConfig overlay style normalization, legacy compact fallback & round-trip persistence
+    Assert(UserConfig.NormalizeOverlayStyle("transparent_text") == UserConfig.OverlayStyleTransparentText &&
+           UserConfig.NormalizeOverlayStyle("card") == UserConfig.OverlayStyleCard &&
+           UserConfig.NormalizeOverlayStyle(null, compactFallback: false) == UserConfig.OverlayStyleCard &&
+           UserConfig.NormalizeOverlayStyle(null, compactFallback: true) == UserConfig.OverlayStyleDiscordPill,
+        "OverlayStyle normalizer must handle transparent_text, card, discord_pill & legacy compact fallback");
+
+    var root = Path.Combine(Path.GetTempPath(), $"hudmind_overlay_test_{Guid.NewGuid():N}");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var repo = new ConfigRepository(root);
+        var cfg = new UserConfig
+        {
+            OverlayStyle = UserConfig.OverlayStyleTransparentText,
+            OverlayOpacity = 0.0,
+            OverlayMaxMessages = 3,
+            OverlayPosition = "bottom-center"
+        };
+        repo.SaveUserConfig(cfg);
+        var loaded = repo.LoadUserConfig();
+        Assert(loaded.OverlayStyle == UserConfig.OverlayStyleTransparentText &&
+               loaded.OverlayOpacity == 0.0 &&
+               loaded.OverlayMaxMessages == 3 &&
+               loaded.OverlayPosition == "bottom-center",
+            "Overlay transparency style, 0% backdrop opacity & max messages must round-trip cleanly");
+
+        var copied = new UserConfig();
+        copied.CopyRuntimePreferencesFrom(loaded);
+        Assert(copied.OverlayStyle == UserConfig.OverlayStyleTransparentText && copied.OverlayMaxMessages == 3,
+            "CopyRuntimePreferencesFrom must preserve overlay style & max messages");
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

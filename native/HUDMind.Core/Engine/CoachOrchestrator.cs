@@ -340,7 +340,7 @@ public sealed class CoachOrchestrator : ICoachEngine
         if (!inputGuard.IsAllowed)
         {
             if (_config.EnableOverlay)
-                _overlay.ShowCallout(inputGuard.SafeRedirectReply, UrgencyLevel.Low, profile.Manifest.DisplayName, Math.Min(_config.OverlayDurationSeconds, 3.5));
+                _overlay.ShowMessage(new OverlayCalloutMessage(inputGuard.SafeRedirectReply, UrgencyLevel.Low, profile.Manifest.DisplayName, Math.Min(_config.OverlayDurationSeconds, 3.5), OverlayEntryKind.Status, "HUD"));
             double guardVoiceMs = 0;
             if (_config.IsCoachVoiceActive && !_userPaused)
             {
@@ -382,6 +382,8 @@ public sealed class CoachOrchestrator : ICoachEngine
             return true;
         }
         int taskId = Interlocked.Increment(ref _chatSeq);
+        if (_config.EnableOverlay && !_userPaused)
+            _overlay.ShowMessage(new OverlayCalloutMessage(msg, UrgencyLevel.Low, profile.Manifest.DisplayName, _config.OverlayDurationSeconds, OverlayEntryKind.UserMessage, "Vos"));
         CancellationTokenSource? linkedCts = null;
         try
         {
@@ -456,7 +458,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                     _session.Memory.RecordMatchEvent(profile.Manifest.GameId, profile.Manifest.DisplayName, "CHAT", msg, reply);
 
                     if (_config.EnableOverlay)
-                        _overlay.ShowCallout(reply, UrgencyLevel.Medium, profile.Manifest.DisplayName, _config.OverlayDurationSeconds);
+                        _overlay.ShowMessage(new OverlayCalloutMessage(reply, UrgencyLevel.Medium, profile.Manifest.DisplayName, _config.OverlayDurationSeconds, OverlayEntryKind.CoachFinal, "Coach"));
 
                     double voiceMs = 0;
                     if (_config.IsCoachVoiceActive && !_userPaused && !linkedCts.Token.IsCancellationRequested)
@@ -520,14 +522,14 @@ public sealed class CoachOrchestrator : ICoachEngine
             }
             _onLog?.Invoke($"Coach PAUSADO ({_config.HotkeyTogglePause} para reanudar).");
             if (_config.EnableOverlay)
-                _overlay.ShowCallout($"Coach PAUSADO — {_config.HotkeyTogglePause} para reanudar", UrgencyLevel.Low, title, 2.5);
+                _overlay.ShowMessage(new OverlayCalloutMessage($"Coach PAUSADO — {_config.HotkeyTogglePause} para reanudar", UrgencyLevel.Low, title, 2.5, OverlayEntryKind.Status, "HUD"));
         }
         else
         {
             WakeNow();
             _onLog?.Invoke("Coach REANUDADO.");
             if (_config.EnableOverlay)
-                _overlay.ShowCallout("Coach ACTIVO — observando", UrgencyLevel.Low, title, 2.5);
+                _overlay.ShowMessage(new OverlayCalloutMessage("Coach ACTIVO — observando", UrgencyLevel.Low, title, 2.5, OverlayEntryKind.Status, "HUD"));
         }
         EmitStats();
     }
@@ -559,7 +561,7 @@ public sealed class CoachOrchestrator : ICoachEngine
         WakeNow();
         _onLog?.Invoke($"Análisis inmediato ({_config.HotkeyAnalyzeNow}) disparado (<1ms wake).");
         if (_config.EnableOverlay)
-            _overlay.ShowCallout("Analizando jugada...", UrgencyLevel.Low, active.Manifest.DisplayName, 1.8);
+            _overlay.ShowMessage(new OverlayCalloutMessage("Analizando jugada...", UrgencyLevel.Low, active.Manifest.DisplayName, 1.8, OverlayEntryKind.Status, "HUD"));
     }
 
     public void WakeNow()
@@ -879,7 +881,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                         _session.Memory.RecordMatchEvent(profile.Manifest.GameId, profile.Manifest.DisplayName, "PLAY", resp.MatchContext, resp.OverlayText);
 
                         if (_config.EnableOverlay)
-                            _overlay.ShowCallout(resp.OverlayText, resp.Urgency, profile.Manifest.DisplayName, _config.OverlayDurationSeconds);
+                            _overlay.ShowMessage(new OverlayCalloutMessage(resp.OverlayText, resp.Urgency, profile.Manifest.DisplayName, _config.OverlayDurationSeconds, OverlayEntryKind.CoachFinal, "Coach"));
 
                         double voiceMs = 0;
                         if (_config.IsCoachVoiceActive && !_userPaused && !ct.IsCancellationRequested && !string.IsNullOrWhiteSpace(resp.VoiceLine))

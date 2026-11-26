@@ -1,0 +1,49 @@
+<UserControl x:Class="HUDMind.App.Controls.OverlayTextBlock"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Name="Root"
+             IsHitTestVisible="False"
+             SnapsToDevicePixels="True"
+             TextOptions.TextFormattingMode="Display">
+    <Grid>
+        <!-- Crisp upper-left rim (shown in borderless / low-backdrop transparent mode, 0% GPU) -->
+        <TextBlock x:Name="HaloRimText"
+                   Visibility="Collapsed"
+                   IsHitTestVisible="False"
+                   Text="{Binding Text, ElementName=Root}"
+                   FontFamily="{Binding FontFamily, ElementName=Root}"
+                   FontSize="{Binding FontSize, ElementName=Root}"
+                   FontWeight="{Binding FontWeight, ElementName=Root}"
+                   TextWrapping="{Binding TextWrapping, ElementName=Root}"
+                   TextTrimming="{Binding TextTrimming, ElementName=Root}">
+            <TextBlock.RenderTransform>
+                <TranslateTransform X="-0.9" Y="-0.9" />
+            </TextBlock.RenderTransform>
+        </TextBlock>
+
+        <!-- Primary bottom-right vector shadow (0% GPU TranslateTransform, identical measure box for wrapping) -->
+        <TextBlock x:Name="ShadowText"
+                   IsHitTestVisible="False"
+                   Text="{Binding Text, ElementName=Root}"
+                   FontFamily="{Binding FontFamily, ElementName=Root}"
+                   FontSize="{Binding FontSize, ElementName=Root}"
+                   FontWeight="{Binding FontWeight, ElementName=Root}"
+                   TextWrapping="{Binding TextWrapping, ElementName=Root}"
+                   TextTrimming="{Binding TextTrimming, ElementName=Root}">
+            <TextBlock.RenderTransform>
+                <TranslateTransform X="1.2" Y="1.2" />
+            </TextBlock.RenderTransform>
+        </TextBlock>
+
+        <!-- Razor-sharp foreground glyphs -->
+        <TextBlock x:Name="MainText"
+                   IsHitTestVisible="False"
+                   Text="{Binding Text, ElementName=Root}"
+                   Foreground="{Binding Foreground, ElementName=Root}"
+                   FontFamily="{Binding FontFamily, ElementName=Root}"
+                   FontSize="{Binding FontSize, ElementName=Root}"
+                   FontWeight="{Binding FontWeight, ElementName=Root}"
+                   TextWrapping="{Binding TextWrapping, ElementName=Root}"
+                   TextTrimming="{Binding TextTrimming, ElementName=Root}" />
+    </Grid>
+</UserControl>

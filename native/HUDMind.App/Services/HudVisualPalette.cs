@@ -17,7 +17,8 @@ public sealed record HudUrgencyVisual(
     SolidColorBrush BadgeBackgroundBrush,
     SolidColorBrush BadgeBorderBrush,
     SolidColorBrush TagForegroundBrush,
-    string TagText
+    string TagText,
+    MediaColor BorderBaseColor
 );
 
 public sealed record HudRunStateVisual(
@@ -49,7 +50,8 @@ public static class HudVisualPalette
         BadgeBackgroundBrush: CreateFrozenBrush(0x3B, 0x11, 0x18),
         BadgeBorderBrush: CreateFrozenBrush(0xEF, 0x44, 0x44),
         TagForegroundBrush: CreateFrozenBrush(0xFC, 0xA5, 0xA5),
-        TagText: "URGENTE");
+        TagText: "URGENTE",
+        BorderBaseColor: MediaColor.FromRgb(0xEF, 0x44, 0x44));
 
     private static readonly HudUrgencyVisual MediumUrgency = new(
         BorderBrush: CreateFrozenBrush(0x22, 0xD3, 0xEE, 0xCC),
@@ -57,7 +59,8 @@ public static class HudVisualPalette
         BadgeBackgroundBrush: CreateFrozenBrush(0x0D, 0x2C, 0x3A),
         BadgeBorderBrush: CreateFrozenBrush(0x22, 0xD3, 0xEE),
         TagForegroundBrush: CreateFrozenBrush(0xFC, 0xD3, 0x4D),
-        TagText: "TÁCTICO");
+        TagText: "TÁCTICO",
+        BorderBaseColor: MediaColor.FromRgb(0x22, 0xD3, 0xEE));
 
     private static readonly HudUrgencyVisual LowUrgency = new(
         BorderBrush: CreateFrozenBrush(0x22, 0xD3, 0xEE, 0xCC),
@@ -65,7 +68,18 @@ public static class HudVisualPalette
         BadgeBackgroundBrush: CreateFrozenBrush(0x0A, 0x2B, 0x33),
         BadgeBorderBrush: CreateFrozenBrush(0x10, 0xB9, 0x81),
         TagForegroundBrush: CreateFrozenBrush(0x6E, 0xE7, 0xB7),
-        TagText: "ACTIVO");
+        TagText: "ACTIVO",
+        BorderBaseColor: MediaColor.FromRgb(0x22, 0xD3, 0xEE));
+
+    public static readonly SolidColorBrush TextWhitePrimary = CreateFrozenBrush(0xF8, 0xFA, 0xFC);
+    public static readonly SolidColorBrush TextUserCyan = CreateFrozenBrush(0xBA, 0xE6, 0xFD);
+    public static readonly SolidColorBrush TextStatusMuted = CreateFrozenBrush(0xCB, 0xD5, 0xE1);
+    public static readonly SolidColorBrush SpeakerUserCyan = CreateFrozenBrush(0x38, 0xBD, 0xF8);
+    public static readonly SolidColorBrush SpeakerStatusCyan = CreateFrozenBrush(0x67, 0xE8, 0xF9);
+    public static readonly SolidColorBrush HeaderCyan = CreateFrozenBrush(0x22, 0xD3, 0xEE);
+    public static readonly SolidColorBrush ShadowSoftDark = CreateFrozenBrush(0x02, 0x06, 0x0B, 0xD2);
+    public static readonly SolidColorBrush ShadowStrongDark = CreateFrozenBrush(0x02, 0x06, 0x0B, 0xF0);
+    public static readonly SolidColorBrush HaloRimDark = CreateFrozenBrush(0x02, 0x06, 0x0B, 0xC4);
 
     private static readonly HudRunStateVisual IdleRunState = new(
         DotBrush: CreateFrozenBrush(0x64, 0x74, 0x8B),
