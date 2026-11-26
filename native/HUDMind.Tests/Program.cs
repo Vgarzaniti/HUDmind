@@ -2873,6 +2873,17 @@ await RunTest("53. Live suppresses NONE prebuffered audio/overlay, keeps clips <
            overlay.Shown.Any(s => s.Contains("segundo palo")),
         "Genuine coaching turn must flush audio and show on overlay");
 
+    // Partial transcript starting with silent-prefix ("Nada") MUST NOT poison valid continuations like "Nada de double commit"!
+    stubLive.EmitIncomingAudio(new byte[2048]);
+    int flushesBeforeNadaPrefix = player.FlushCount;
+    stubLive.EmitPartialTranscript("Nada");
+    stubLive.EmitIncomingAudio(new byte[2048]);
+    stubLive.EmitPartialTranscript("Nada de double commit en segundo palo.");
+    stubLive.EmitTurnComplete("Nada de double commit en segundo palo.");
+    Assert(player.FlushCount == flushesBeforeNadaPrefix + 1 &&
+           overlay.Shown.Any(s => s.Contains("Nada de double commit")),
+        $"Silent-prefix partial followed by valid coaching continuation must flush audio intact (flush={player.FlushCount}/{flushesBeforeNadaPrefix})");
+
     stubLive.EmitTurnComplete("No hablo chino, yo me concentro en el Rocket.");
     var digest = live.GetMatchSessionDigest(isEn: false);
     Assert(digest.Digest.Contains("segundo palo") && !digest.Digest.Contains("No hablo chino"),
