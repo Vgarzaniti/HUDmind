@@ -54,7 +54,7 @@
                     <DockPanel>
                         <Button x:Name="BtnVersionCheck"
                                 DockPanel.Dock="Left"
-                                Content="v1.2.1"
+                                Content="v1.2.2"
                                 FontSize="10.5"
                                 Padding="9,4"
                                 Background="#09121C"
@@ -821,45 +821,60 @@
                                 <Border Style="{StaticResource CardPanel}" Margin="0,0,0,10">
                                     <StackPanel>
                                         <DockPanel Margin="0,0,0,10">
-                                            <TextBlock Text="💬 CARTEL HUD SOBRE EL JUEGO (OVERLAY)" Foreground="#22D3EE" FontWeight="Bold" FontSize="12.5" VerticalAlignment="Center" />
+                                            <TextBlock Text="💬 CARTEL HUD SOBRE EL JUEGO (OVERLAY · 0% GPU)" Foreground="#22D3EE" FontWeight="Bold" FontSize="12.5" VerticalAlignment="Center" />
                                             <Button DockPanel.Dock="Right" Content="👁 Probar HUD + Voz" Padding="10,4" Click="BtnPreviewOverlay_Click" />
                                         </DockPanel>
                                         <WrapPanel Margin="0,0,0,8">
-                                            <CheckBox x:Name="ChkEnableOverlay" Content="Mostrar cartel sobre el juego (no molesta el mouse)" Margin="0,0,20,6" />
-                                            <CheckBox x:Name="ChkOverlayCompact" Content="Estilo compacto (solo mensaje, sin onda ni atajos)" Margin="0,0,0,6" />
+                                            <CheckBox x:Name="ChkEnableOverlay" Content="Mostrar cartel sobre el juego (transparente al mouse)" Margin="0,0,20,6" />
                                         </WrapPanel>
                                         <Grid>
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="220" />
-                                                <ColumnDefinition Width="360" />
-                                                <ColumnDefinition Width="80" />
+                                                <ColumnDefinition Width="210" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="128" />
                                             </Grid.ColumnDefinitions>
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="36" />
                                                 <RowDefinition Height="36" />
                                                 <RowDefinition Height="36" />
                                                 <RowDefinition Height="36" />
+                                                <RowDefinition Height="36" />
+                                                <RowDefinition Height="36" />
                                             </Grid.RowDefinitions>
 
-                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Posición en Pantalla:" VerticalAlignment="Center" />
-                                            <ComboBox x:Name="CmbOverlayPos" Grid.Row="0" Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Estilo del Overlay:" VerticalAlignment="Center" />
+                                            <ComboBox x:Name="CmbOverlayStyle" Grid.Row="0" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbOverlayVisual_SelectionChanged" ToolTip="El texto se mantiene nítido con sombra 0% GPU incluso con fondo 0% transparente">
+                                                <ComboBoxItem Content="🫥 Solo texto flotante (sin caja ni bordes)" Tag="transparent_text" />
+                                                <ComboBoxItem Content="💠 Cápsula translúcida (estilo Discord)" Tag="discord_pill" />
+                                                <ComboBoxItem Content="🖥 Tarjeta táctica completa (onda + atajos)" Tag="card" />
+                                            </ComboBox>
+
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Mensajes en Pantalla:" VerticalAlignment="Center" />
+                                            <ComboBox x:Name="CmbOverlayFeedLines" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbOverlayVisual_SelectionChanged" ToolTip="Elegí ver un solo consejo táctico o un mini-feed apilado estilo Discord Overlay">
+                                                <ComboBoxItem Content="💬 Mini-feed Discord (últimos 3 mensajes)" Tag="3" />
+                                                <ComboBoxItem Content="⚡ Aviso único (solo el último consejo)" Tag="1" />
+                                            </ComboBox>
+
+                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Posición en Pantalla:" VerticalAlignment="Center" />
+                                            <ComboBox x:Name="CmbOverlayPos" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbOverlayVisual_SelectionChanged">
                                                 <ComboBoxItem Content="↗ Arriba a la derecha" Tag="top-right" />
                                                 <ComboBoxItem Content="↖ Arriba a la izquierda" Tag="top-left" />
                                                 <ComboBoxItem Content="⬆ Arriba al centro" Tag="top-center" />
                                                 <ComboBoxItem Content="↘ Abajo a la derecha" Tag="bottom-right" />
                                                 <ComboBoxItem Content="↙ Abajo a la izquierda" Tag="bottom-left" />
+                                                <ComboBoxItem Content="⬇ Abajo al centro (estilo subtítulos)" Tag="bottom-center" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Pantalla / Monitor:" VerticalAlignment="Center" />
-                                            <ComboBox x:Name="CmbMonitor" Grid.Row="1" Grid.Column="1" DisplayMemberPath="Label" SelectedValuePath="Index" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Pantalla / Monitor:" VerticalAlignment="Center" />
+                                            <ComboBox x:Name="CmbMonitor" Grid.Row="3" Grid.Column="1" DisplayMemberPath="Label" SelectedValuePath="Index" VerticalAlignment="Center" SelectionChanged="CmbOverlayVisual_SelectionChanged" />
 
-                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Tamaño del Cartel:" VerticalAlignment="Center" />
-                                            <Slider x:Name="SldOverlayScale" Grid.Row="2" Grid.Column="1" Minimum="0.75" Maximum="1.45" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldOverlayVisual_ValueChanged" />
-                                            <TextBlock x:Name="LblOverlayScale" Grid.Row="2" Grid.Column="2" Text="100%" Foreground="#22D3EE" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Tamaño del Texto:" VerticalAlignment="Center" />
+                                            <Slider x:Name="SldOverlayScale" Grid.Row="4" Grid.Column="1" Minimum="0.75" Maximum="1.45" TickFrequency="0.05" IsSnapToTickEnabled="True" VerticalAlignment="Center" ValueChanged="SldOverlayVisual_ValueChanged" />
+                                            <TextBlock x:Name="LblOverlayScale" Grid.Row="4" Grid.Column="2" Text="100%" Foreground="#22D3EE" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
 
-                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Transparencia / Opacidad:" VerticalAlignment="Center" />
-                                            <Slider x:Name="SldOverlayOpacity" Grid.Row="3" Grid.Column="1" Minimum="0.45" Maximum="1.0" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldOverlayVisual_ValueChanged" />
-                                            <TextBlock x:Name="LblOverlayOpacity" Grid.Row="3" Grid.Column="2" Text="90%" Foreground="#22D3EE" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                            <TextBlock Grid.Row="5" Grid.Column="0" Text="Opacidad del Fondo:" VerticalAlignment="Center" ToolTip="Regulá qué tan translúcida es la caja (0% = transparente, texto siempre nítido)" />
+                                            <Slider x:Name="SldOverlayOpacity" Grid.Row="5" Grid.Column="1" Minimum="0.00" Maximum="0.95" TickFrequency="0.05" IsSnapToTickEnabled="True" VerticalAlignment="Center" ValueChanged="SldOverlayVisual_ValueChanged" />
+                                            <TextBlock x:Name="LblOverlayOpacity" Grid.Row="5" Grid.Column="2" Text="55%" Foreground="#22D3EE" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
                                         </Grid>
                                     </StackPanel>
                                 </Border>
@@ -871,6 +886,7 @@
                                         <WrapPanel Margin="0,0,0,8">
                                             <CheckBox x:Name="ChkEnableHotkeys" Content="Activar teclas rápidas dentro del juego" Margin="0,0,20,6" />
                                             <CheckBox x:Name="ChkMinimizeToTray" Content="Minimizar junto al reloj (Bandeja)" Margin="0,0,20,6" />
+                                            <CheckBox x:Name="ChkLaunchWithWindows" Content="Iniciar con Windows minimizado junto al reloj" IsChecked="False" Margin="0,0,20,6" ToolTip="Desactivado por defecto: marcalo solo si querés que HUDMind arranque en segundo plano al encender la PC." />
                                             <CheckBox x:Name="ChkCheckUpdatesOnStartup" Content="Avisar nuevas versiones disponibles" Margin="0,0,0,6" ToolTip="Busca actualizaciones en GitHub Releases al abrir y cada 60 min en reposo." />
                                         </WrapPanel>
                                         <Grid Margin="0,0,0,10">
@@ -879,6 +895,7 @@
                                                 <ColumnDefinition Width="360" />
                                             </Grid.ColumnDefinitions>
                                             <Grid.RowDefinitions>
+                                                <RowDefinition Height="36" />
                                                 <RowDefinition Height="36" />
                                                 <RowDefinition Height="36" />
                                                 <RowDefinition Height="36" />
@@ -892,6 +909,9 @@
 
                                             <TextBlock Grid.Row="2" Grid.Column="0" Text="Tecla Silenciar Micrófono:" VerticalAlignment="Center" />
                                             <TextBox x:Name="TxtMicKey" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" ToolTip="Ej: F8, Ctrl+M" />
+
+                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Tecla Chat Rápido en Juego:" VerticalAlignment="Center" />
+                                            <TextBox x:Name="TxtQuickChatKey" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" ToolTip="Abre un chat rápido flotante sin salir del juego (ej: F7, Alt+Q, Insert)" />
                                         </Grid>
                                         <WrapPanel>
                                             <Button Content="🎮 Activar conexión CS2 / Dota 2" Click="BtnInstallGsi_Click" Margin="0,0,10,4" ToolTip="Instala el archivo oficial de lectura de partida en Steam (100% seguro, sin tocar memoria)" />

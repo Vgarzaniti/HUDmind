@@ -1,6 +1,6 @@
 > 🌐 **Idioma / Language:** **[🇪🇸 Español](architecture.es.md)** | [🇺🇸 English](architecture.en.md)
 
-# Arquitectura Técnica — HUDMind Native v1.2.1 (ISO/IEC/IEEE 42010)
+# Arquitectura Técnica — HUDMind Native v1.2.2 (ISO/IEC/IEEE 42010)
 
 Este documento describe la arquitectura modular de **HUDMind Native** sobre **.NET 9**, su separación estricta entre lógica pura, capa Win32 y UI WPF, sus motores polimórficos y sus Registros de Decisión de Arquitectura (ADRs).
 
@@ -9,9 +9,9 @@ Este documento describe la arquitectura modular de **HUDMind Native** sobre **.N
 ## 1. Principios de Diseño
 
 1. **Separación de Responsabilidades y Portabilidad (`Core` vs `Windows` vs `App`):**
-   - `HUDMind.Core` (`net9.0`, 100% multiplataforma): modelos, configuración atómica, seguridad SSRF/CWE-22/redacción, vault AES-256-GCM (`HUDMind.Vault.bin`), protocolo compacto, memoria anti-repetición y `.md` rodante de `N` partidas, registro extensible de proveedores, failover router, buffer dual estilo OBS (`RecentFrameRingBuffer`), cola conversacional sin cortes (`ConversationalSpeechCoordinator` + `NaturalConnectorResolver`), servicio de actualizaciones (`GitHubReleaseUpdateService`) y ambos orquestadores (`CoachOrchestrator` y `RealtimeLiveCoachOrchestrator`).
-   - `HUDMind.Windows` (`net9.0-windows10.0.19041.0`): captura GDI `StretchBlt`, detección de proceso/ventana cliente, WinRT OCR, Valve GSI TCP, Riot TLS client, tailers de logs, Win32 hotkeys/PTT, audio WinMM streaming, monitor pasivo de audio externo WASAPI (`WasapiAudioSceneMonitor`), tonos `PlaySoundW`, `RuntimeHardeningGuard` y resolución de carpetas conocidas (`KnownFolders`).
-   - `HUDMind.App` (`net9.0-windows10.0.19041.0` WPF): `MainWindow` (con banner integrado de actualizaciones), `OverlayWindow`, `Win32TrayIcon` y `CoachEngineCoordinator`.
+   - `HUDMind.Core` (`net9.0`, 100% multiplataforma): modelos, configuración atómica + `ISecretProtector`, seguridad SSRF/CWE-22/redacción, vault AES-256-GCM (`HUDMind.Vault.bin`), protocolo compacto, memoria anti-repetición y `.md` rodante de `N` partidas, estado del mini-feed HUD (`OverlayFeedBuffer`), registro extensible de proveedores, failover router, buffer dual estilo OBS (`RecentFrameRingBuffer`), cola conversacional sin cortes (`ConversationalSpeechCoordinator` + `NaturalConnectorResolver`), servicio de actualizaciones (`GitHubReleaseUpdateService`) y ambos orquestadores (`CoachOrchestrator` y `RealtimeLiveCoachOrchestrator`).
+   - `HUDMind.Windows` (`net9.0-windows10.0.19041.0`): captura GDI `StretchBlt`, detección/restauración de ventana cliente, WinRT OCR, Valve GSI TCP, Riot TLS client, tailers de logs, Win32 hotkeys (`F7`–`F10`) / PTT, audio WinMM streaming, monitor pasivo WASAPI (`WasapiAudioSceneMonitor`), tonos `PlaySoundW`, cifrado DPAPI local (`Win32DpapiSecretProtector`), inicio opcional en HKCU (`WindowsStartupManager`), `RuntimeHardeningGuard` y carpetas conocidas (`KnownFolders`).
+   - `HUDMind.App` (`net9.0-windows10.0.19041.0` WPF): `MainWindow` (con banner de actualizaciones / Setup 1-clic), `OverlayWindow` (estilos translúcidos + `OverlayTextBlock` + Quick-Chat `F7`), `Win32TrayIcon` y `CoachEngineCoordinator`.
 2. **0% GPU y Anticheat-Safe por construcción:**
    - Renderizado WPF forzado por CPU (`RenderMode.SoftwareOnly`).
    - Captura sin hooks invasivos ni inyección de procesos; detección por `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` cacheada por `(HWND, PID)` y PTT mediante consulta directa `GetAsyncKeyState`.

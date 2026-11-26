@@ -20,7 +20,7 @@
   - `🔊 Solo voz del coach`: microphone off, coach speaks while you can send text chat messages.
   - `💬 Solo texto`: 100% silent, written chat + overlay only.
 - **Skill Tier / Rank & Pro-Standard Calibration:** adapts tactical depth, terminology, and strictness from *Beginner* to *Pro / GC / Radiant / Faceit 10* in Spanish or English.
-- **Flexible Hardware Audio & System Tray:** WinMM microphone and speaker selection, RMS mic test, minimize to **System Tray (Win32 `Shell_NotifyIconW`)**, scalable/compact **PerMonitorV2** click-through overlay, and **`📊 Resumen Partida`** post-match review generator.
+- **Flexible Hardware Audio & System Tray:** WinMM microphone and speaker selection, RMS mic test, minimize to **System Tray (Win32 `Shell_NotifyIconW`)**, optional Windows startup (`--minimized`, **disabled by default**), Discord-style translucent **PerMonitorV2** click-through overlay (3 styles: *Floating Text*, *Translucent Pill*, *Tactical Card*, `0%–95%` background opacity with 0% GPU crisp shadowed text, `1–3` message mini-feed, live PTT/waveform pill, and `F7` Quick-Chat without Alt-Tab), and **`📊 Resumen Partida`** post-match reviews.
 
 ---
 
@@ -40,14 +40,14 @@
 *(For CS2 / Dota 2 GSI, install `gamestate_integration_hudmind.cfg` in 1 click from **🎙 Voz y Ajustes → 🎮 Activar conexión CS2 / Dota 2**).*
 
 - **Full GUI Management (No JSON editing):** add or **edit** AI accounts (custom HTTPS `BaseUrl`, `Vision` vs `Text-Only` override), create or edit **game profiles** (`EXEs`, `Cooldown`, `pHash`, and personal rules), toggle subtle Win32 audio cues, open saved Markdown reviews (`logs/reviews/`), and get automatic Exclusive-Fullscreen black-screen diagnostics.
-- **100% Portable, Hardened & In-App Update Alerts:** all 7 bundled profiles and core guard templates are sealed inside an authenticated AES-256-GCM binary vault (`HUDMind.Vault.bin`) within the `ReadyToRun` single-file executable and auto-seed into `%LocalAppData%\HUDMind\profiles`. On startup (and every 60 min while idle), HUDMind checks **GitHub Releases** in the background and shows an in-app banner whenever a newer version is available, featuring a **`⬇ Descargar actualización`** button and automatic **SHA-256** verification.
+- **100% Portable, Encrypted & Auto-Updatable:** local API keys are protected per user with **Windows DPAPI (`crypt32.dll`)**, all 7 profiles and safety rules are sealed inside the AES-256-GCM `HUDMind.Vault.bin` container within the `ReadyToRun` single-file binary, and HUDMind checks **GitHub Releases** on startup (and every 60 min while idle) with **SHA-256** verification and 1-click Setup updates.
 
 ---
 
 ## Quick Download (Releases)
 
-1. Download **`HUDMind.Native-Standalone-win-x64.exe`** from **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** (no .NET 9 installation needed), or **`HUDMind.Native-win-x64.exe`** (~26 MB) if you already have the .NET 9 Desktop Runtime.
-2. Run the `.exe` and paste a free **Groq** or **Gemini** API key in **🤖 Proveedores IA**.
+1. Download the **`HUDMind-Setup-win-x64.exe`** installer from **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** *(recommended: per-user install without Admin, adds Start Menu shortcut & icon)* — or grab portable **`HUDMind.Native-Standalone-win-x64.exe`** / **`HUDMind.Native-win-x64.exe`** (~26 MB with .NET 9 Desktop Runtime).
+2. Launch **HUDMind** and paste a free **Groq** or **Gemini** API key in **🤖 Proveedores IA**.
 
 ---
 
@@ -57,7 +57,7 @@
 # 1. Build entire solution (0 warnings / 0 errors)
 dotnet build native\HUDMind.sln -c Release
 
-# 2. Cross-platform Core suite (50 tests) + Native Windows suite (15 tests) + WPF smoke
+# 2. Cross-platform Core suite (52 tests) + Native Windows suite (16 tests) + WPF smoke
 dotnet run --project native\HUDMind.Tests\HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native\HUDMind.Windows.Tests\HUDMind.Windows.Tests.csproj -c Release --no-build
 .\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe --smoke-startup
@@ -111,8 +111,8 @@ You can also launch directly via [HUDMind.bat](HUDMind.bat).
 │   ├── HUDMind.Windows/            # GDI Capture, WinMM Audio/Devices, WinRT Natural TTS + OneCore, GSI, OCR, KnownFolders
 │   ├── HUDMind.App/                # WPF UI (0% GPU), PerMonitorV2 Overlay, Win32 Tray Icon & Update Banner
 │   ├── HUDMind.Packer/             # Build-time AES-256-GCM vault compiler (Profiles + ProtectedAssets -> Vault.bin)
-│   ├── HUDMind.Tests/              # Cross-platform Core test suite (50 tests)
-│   └── HUDMind.Windows.Tests/      # Win32, WASAPI, GSI, TLS, Logs, Audio & KnownFolders test suite (15 tests)
+│   ├── HUDMind.Tests/              # Cross-platform Core test suite (52 tests)
+│   └── HUDMind.Windows.Tests/      # Win32, WASAPI, GSI, TLS, DPAPI, Startup, Audio & KnownFolders test suite (16 tests)
 ├── profiles/                       # Game profiles and tactical prompts
 ├── docs/                           # Bilingual technical documentation (*.es.md and *.en.md)
 └── archive/legacy_python/          # Archived legacy Python code after the .NET 9 migration

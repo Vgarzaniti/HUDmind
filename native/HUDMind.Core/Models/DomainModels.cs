@@ -168,6 +168,12 @@ public sealed class UserConfig
     [JsonPropertyName("hotkey_toggle_mic")]
     public string HotkeyToggleMic { get; set; } = "F8";
 
+    [JsonPropertyName("hotkey_quick_chat")]
+    public string HotkeyQuickChat { get; set; } = "F7";
+
+    [JsonPropertyName("launch_with_windows")]
+    public bool LaunchWithWindows { get; set; }
+
     [JsonPropertyName("tts_engine")]
     public string TtsEngine { get; set; } = "pyttsx3";
 
@@ -279,14 +285,43 @@ public sealed class UserConfig
     [JsonPropertyName("overlay_width")]
     public int OverlayWidth { get; set; } = 440;
 
+    public const string OverlayStyleTransparentText = "transparent_text";
+    public const string OverlayStyleDiscordPill = "discord_pill";
+    public const string OverlayStyleCard = "card";
+
     [JsonPropertyName("overlay_opacity")]
-    public double OverlayOpacity { get; set; } = 0.90;
+    public double OverlayOpacity { get; set; } = 0.55;
 
     [JsonPropertyName("overlay_scale")]
     public double OverlayScale { get; set; } = 1.0;
 
     [JsonPropertyName("overlay_compact")]
     public bool OverlayCompact { get; set; }
+
+    [JsonPropertyName("overlay_style")]
+    public string OverlayStyle { get; set; } = OverlayStyleDiscordPill;
+
+    [JsonPropertyName("overlay_max_messages")]
+    public int OverlayMaxMessages { get; set; } = 3;
+
+    public static string NormalizeOverlayStyle(string? style, bool compactFallback = true)
+    {
+        var norm = (style ?? string.Empty).Trim().ToLowerInvariant();
+        return norm switch
+        {
+            "transparent_text" or "transparent" or "floating" or "floating_text" or "none" or "text" => OverlayStyleTransparentText,
+            "card" or "full" or "tactical_card" => OverlayStyleCard,
+            "discord_pill" or "pill" or "compact" or "glass" or "discord" => OverlayStyleDiscordPill,
+            "" => compactFallback ? OverlayStyleDiscordPill : OverlayStyleCard,
+            _ => OverlayStyleDiscordPill
+        };
+    }
+
+    public string ResolveOverlayStyle() =>
+        NormalizeOverlayStyle(OverlayStyle, compactFallback: OverlayCompact || string.IsNullOrWhiteSpace(OverlayStyle));
+
+    public int ResolveOverlayMaxMessages() =>
+        Math.Clamp(OverlayMaxMessages <= 0 ? 3 : OverlayMaxMessages, 1, 4);
 
     [JsonPropertyName("capture_monitor")]
     public int CaptureMonitor { get; set; } = 1;
@@ -349,12 +384,16 @@ public sealed class UserConfig
         OverlayOpacity = source.OverlayOpacity;
         OverlayScale = source.OverlayScale;
         OverlayCompact = source.OverlayCompact;
+        OverlayStyle = source.OverlayStyle;
+        OverlayMaxMessages = source.OverlayMaxMessages;
         CaptureMonitor = source.CaptureMonitor;
         MinInferenceIntervalSeconds = source.MinInferenceIntervalSeconds;
         ImageCompressionQuality = source.ImageCompressionQuality;
         TokenEfficiencyMode = source.TokenEfficiencyMode;
         EnableAudioCues = source.EnableAudioCues;
         CheckUpdatesOnStartup = source.CheckUpdatesOnStartup;
+        HotkeyQuickChat = source.HotkeyQuickChat;
+        LaunchWithWindows = source.LaunchWithWindows;
         MemoryMatchWindow = Math.Clamp(source.MemoryMatchWindow, 3, 30);
         PreviousMatchFocus = source.PreviousMatchFocus;
         CoachSoulSummary = source.CoachSoulSummary;

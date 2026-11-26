@@ -103,9 +103,33 @@ public interface IVoiceOutputService : IDisposable
     void StopSpeaking();
 }
 
+public enum OverlayEntryKind
+{
+    Status = 0,
+    CoachLive = 1,
+    CoachFinal = 2,
+    UserMessage = 3
+}
+
+public sealed record OverlayCalloutMessage(
+    string Text,
+    UrgencyLevel Urgency,
+    string Title,
+    double DurationSeconds,
+    OverlayEntryKind Kind = OverlayEntryKind.CoachFinal,
+    string? Speaker = null
+);
+
 public interface IOverlayOutputService
 {
     void ShowCallout(string text, UrgencyLevel urgency, string title, double durationSeconds);
+
+    void ShowMessage(OverlayCalloutMessage message) =>
+        ShowCallout(message.Text, message.Urgency, message.Title, message.DurationSeconds);
+
+    void UpdateVoiceActivity(bool userMicActive, double userLevel01, bool coachVoiceActive, double coachLevel01) { }
+
+    void ClearHistory() { }
 }
 
 /// <summary>

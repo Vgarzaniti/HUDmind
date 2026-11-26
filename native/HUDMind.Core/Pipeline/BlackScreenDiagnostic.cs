@@ -41,7 +41,13 @@ public sealed class BlackScreenDiagnostic
             var name = activeProfile.Manifest.DisplayName;
             onLog?.Invoke($"⚠ Captura en negro consecutiva detectada en '{name}': si jugás en Pantalla Completa Exclusiva, cambialo a 'Ventana sin bordes' (Borderless) para que HUDMind vea el HUD.");
             if (enableOverlay)
-                overlay?.ShowCallout("⚠ Captura negra: usá Ventana sin bordes (Borderless)", UrgencyLevel.Medium, name, 4.5);
+                overlay?.ShowMessage(new OverlayCalloutMessage(
+                    "⚠ Captura negra: usá Ventana sin bordes (Borderless)",
+                    UrgencyLevel.Medium,
+                    name,
+                    4.5,
+                    OverlayEntryKind.Status,
+                    "HUD"));
         }
     }
 }

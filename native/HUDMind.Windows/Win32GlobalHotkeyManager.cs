@@ -46,6 +46,7 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
     private Action? _onPause;
     private Action? _onAnalyze;
     private Action? _onToggleMic;
+    private Action? _onQuickChat;
 
     public (bool PauseOk, bool AnalyzeOk, bool MicOk) Start(
         string pauseHotkey,
@@ -54,6 +55,23 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
         Action onPause,
         Action onAnalyze,
         Action? onToggleMic = null,
+        Action<string>? onWarning = null)
+    {
+        var (p, a, m, _) = StartWithQuickChat(
+            pauseHotkey, analyzeHotkey, micHotkey, string.Empty,
+            onPause, onAnalyze, onToggleMic, null, onWarning);
+        return (p, a, m);
+    }
+
+    public (bool PauseOk, bool AnalyzeOk, bool MicOk, bool QuickChatOk) StartWithQuickChat(
+        string pauseHotkey,
+        string analyzeHotkey,
+        string micHotkey,
+        string quickChatHotkey,
+        Action onPause,
+        Action onAnalyze,
+        Action? onToggleMic = null,
+        Action? onQuickChat = null,
         Action<string>? onWarning = null)
     {
         uint pMod = 0, pVk = 0x78;
@@ -81,9 +99,19 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
             mVk = 0x77;
         }
 
+        bool hasQuickChat = !string.IsNullOrWhiteSpace(quickChatHotkey) && onQuickChat is not null;
+        uint qMod = 0, qVk = 0x76;
+        if (hasQuickChat && !HotkeyParser.TryParse(quickChatHotkey, out qMod, out qVk, out _))
+        {
+            onWarning?.Invoke($"Tecla Chat Rápido '{quickChatHotkey}' inválida; usando F7 por defecto.");
+            qMod = 0;
+            qVk = 0x76;
+        }
+
         bool pauseOk = false;
         bool analyzeOk = false;
         bool micOk = false;
+        bool quickChatOk = false;
 
         lock (_sync)
         {
@@ -91,6 +119,7 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
             _onPause = onPause;
             _onAnalyze = onAnalyze;
             _onToggleMic = onToggleMic;
+            _onQuickChat = onQuickChat;
 
             var readyEv = new ManualResetEventSlim(false);
             int evOwners = 2;
@@ -115,6 +144,13 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
                         onWarning?.Invoke($"No se pudo registrar tecla Mic '{micHotkey}' (Win32 err={Marshal.GetLastWin32Error()}).");
                 }
 
+                if (hasQuickChat)
+                {
+                    quickChatOk = RegisterHotKey(IntPtr.Zero, 4, qMod | ModNoRepeat, qVk);
+                    if (!quickChatOk)
+                        onWarning?.Invoke($"No se pudo registrar tecla Chat Rápido '{quickChatHotkey}' (Win32 err={Marshal.GetLastWin32Error()}).");
+                }
+
                 readyEv.Set();
                 if (Interlocked.Decrement(ref evOwners) == 0)
                     readyEv.Dispose();
@@ -129,6 +165,7 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
                             1 => _onPause,
                             2 => _onAnalyze,
                             3 => _onToggleMic,
+                            4 => _onQuickChat,
                             _ => null
                         };
                         if (target is null) continue;
@@ -147,6 +184,7 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
                     if (pauseOk) UnregisterHotKey(IntPtr.Zero, 1);
                     if (analyzeOk) UnregisterHotKey(IntPtr.Zero, 2);
                     if (micOk) UnregisterHotKey(IntPtr.Zero, 3);
+                    if (quickChatOk) UnregisterHotKey(IntPtr.Zero, 4);
                 }
             })
             {
@@ -157,7 +195,7 @@ public sealed class Win32GlobalHotkeyManager : IDisposable
             readyEv.Wait(TimeSpan.FromSeconds(2));
             if (Interlocked.Decrement(ref evOwners) == 0)
                 readyEv.Dispose();
-            return (pauseOk, analyzeOk, micOk);
+            return (pauseOk, analyzeOk, micOk, quickChatOk);
         }
     }
 

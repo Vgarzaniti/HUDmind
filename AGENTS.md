@@ -11,7 +11,7 @@ This file provides immediate architectural, security, testing, and workflow cont
   - `HUDMind.Windows` (`net9.0-windows10.0.19041.0`): GDI `StretchBlt` capture, Win32 foreground/hotkeys/PTT, WinMM streaming audio, WinRT TTS/OCR, passive `WasapiAudioSceneMonitor`, passive game sensors (GSI TCP, Riot TLS, log tailers), `RuntimeHardeningGuard`, and `KnownFolders`.
   - `HUDMind.App` (`net9.0-windows10.0.19041.0` WPF): `MainWindow` (with in-app GitHub Releases `UpdateBanner`), click-through `OverlayWindow`, `Win32TrayIcon`, and `CoachEngineCoordinator`.
   - `HUDMind.Packer` (`net9.0` build tool, `IsPublishable=false`): compiles `profiles/**/*` and `ProtectedAssets/` into authenticated `HUDMind.Vault.bin` at build time.
-  - `HUDMind.Tests` (`net9.0`, 50 tests) & `HUDMind.Windows.Tests` (`net9.0-windows`, 15 tests).
+  - `HUDMind.Tests` (`net9.0`, 52 tests) & `HUDMind.Windows.Tests` (`net9.0-windows`, 16 tests).
   - `profiles/`: 7 game cartridges compiled into sealed `HUDMind.Vault.bin` (`profiles/*/*.md` filenames are runtime resources—never rename them).
   - `docs/`: All developer/project documentation in bilingual pairs (`*.es.md` and `*.en.md`).
 

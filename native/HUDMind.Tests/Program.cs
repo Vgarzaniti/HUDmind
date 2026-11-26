@@ -10,6 +10,7 @@ using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 using HUDMind.Core.Pipeline;
+using HUDMind.Core.Security;
 using HUDMind.Core.Updates;
 
 int passed = 0;
@@ -1128,6 +1129,7 @@ await RunTest("35. GitHubReleaseUpdateService parses semver tags, skips drafts/p
       "draft": false,
       "prerelease": false,
       "assets": [
+        { "name": "HUDMind-Setup-win-x64.exe", "browser_download_url": "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/HUDMind-Setup-win-x64.exe", "size": 95500000, "content_type": "application/octet-stream" },
         { "name": "HUDMind.Native-Standalone-win-x64.exe", "browser_download_url": "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/HUDMind.Native-Standalone-win-x64.exe", "size": 95000000, "content_type": "application/octet-stream" },
         { "name": "HUDMind.Native-win-x64.exe", "browser_download_url": "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/HUDMind.Native-win-x64.exe", "size": 26000000, "content_type": "application/octet-stream" },
         { "name": "SHA256SUMS.txt", "browser_download_url": "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/SHA256SUMS.txt", "size": 256, "content_type": "text/plain" }
@@ -1135,13 +1137,29 @@ await RunTest("35. GitHubReleaseUpdateService parses semver tags, skips drafts/p
     }
     """;
 
-    var standaloneRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: true);
+    var standaloneRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: true, preferInstaller: false);
     Assert(standaloneRes.IsUpdateAvailable && standaloneRes.Update is not null, "Update should be detected");
     Assert(standaloneRes.Update!.PreferredAsset?.Name == "HUDMind.Native-Standalone-win-x64.exe", "Self-contained should prefer Standalone asset");
     Assert(standaloneRes.Update.ChecksumAsset?.Name == "SHA256SUMS.txt", "SHA256SUMS.txt selected");
 
-    var compactRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: false);
-    Assert(compactRes.Update!.PreferredAsset?.Name == "HUDMind.Native-win-x64.exe", "Framework-dependent should prefer compact asset");
+    var compactRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: false, preferInstaller: false);
+    Assert(compactRes.Update!.PreferredAsset?.Name == "HUDMind.Native-win-x64.exe", "Framework-dependent should prefer compact asset over Setup");
+
+    var setupRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: true, preferInstaller: true);
+    Assert(setupRes.Update!.PreferredAsset?.Name == "HUDMind-Setup-win-x64.exe", "Installed Setup directory must prefer Setup installer");
+
+    var probeDir = Path.Combine(Path.GetTempPath(), $"hudmind_setup_probe_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(probeDir);
+    try
+    {
+        Assert(!GitHubReleaseUpdateService.IsInstalledSetupDirectory(probeDir), "Empty folder is not a Setup install");
+        File.WriteAllBytes(Path.Combine(probeDir, "unins000.exe"), [0x4D, 0x5A]);
+        Assert(GitHubReleaseUpdateService.IsInstalledSetupDirectory(probeDir), "Folder containing unins000.exe is detected as Setup install");
+    }
+    finally
+    {
+        try { Directory.Delete(probeDir, true); } catch { }
+    }
 
     var upToDate = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 2, 0), preferSelfContained: false);
     Assert(!upToDate.IsUpdateAvailable, "Same version should report up to date");
@@ -2637,6 +2655,142 @@ await RunTest("50. Conversational connectors prevent skipped/cut audio, yield to
     }
 });
 
+await RunTest("51. OverlayFeedBuffer Discord mini-feed coalescing, Live->Final promotion, TTL prune & UserConfig overlay_style round-trip", () =>
+{
+    var t0 = new DateTimeOffset(2026, 11, 26, 12, 0, 0, TimeSpan.Zero);
+    var buf = new OverlayFeedBuffer { MaxMessages = 3 };
+
+    // 1. User question + streaming CoachLive partials coalesce in place without duplicating entries
+    buf.Upsert(new OverlayCalloutMessage("¿Qué compro ahora?", UrgencyLevel.Low, "Dota 2", 6.0, OverlayEntryKind.UserMessage, "Vos"), t0);
+    buf.Upsert(new OverlayCalloutMessage("Comprá BKB", UrgencyLevel.Medium, "Dota 2", 6.0, OverlayEntryKind.CoachLive, "Coach"), t0.AddSeconds(0.5));
+    var liveSnap = buf.Upsert(new OverlayCalloutMessage("Comprá BKB antes de pelear", UrgencyLevel.Medium, "Dota 2", 6.0, OverlayEntryKind.CoachLive, "Coach"), t0.AddSeconds(0.8));
+    Assert(liveSnap.Count == 2 && liveSnap[0].Kind == OverlayEntryKind.UserMessage && liveSnap[1].IsStreamingLive,
+        $"Live partial must coalesce in-place above user row (count={liveSnap.Count})");
+
+    long liveId = liveSnap[1].Id;
+    var finalSnap = buf.Upsert(new OverlayCalloutMessage("Comprá BKB antes de pelear Roshan.", UrgencyLevel.High, "Dota 2", 7.0, OverlayEntryKind.CoachFinal, "Coach"), t0.AddSeconds(1.0));
+    Assert(finalSnap.Count == 2 && finalSnap[1].Id == liveId && !finalSnap[1].IsStreamingLive && finalSnap[1].Urgency == UrgencyLevel.High,
+        "CoachFinal must promote the in-flight CoachLive slot cleanly");
+
+    // 2. Transient Status dismisses cleanly when next Coach tip arrives
+    buf.Upsert(new OverlayCalloutMessage("Analizando jugada...", UrgencyLevel.Low, "Dota 2", 2.0, OverlayEntryKind.Status, "HUD"), t0.AddSeconds(2.0));
+    buf.Upsert(new OverlayCalloutMessage("Coach PAUSADO", UrgencyLevel.Low, "Dota 2", 2.0, OverlayEntryKind.Status, "HUD"), t0.AddSeconds(2.2));
+    Assert(buf.Snapshot().Count(e => e.Kind == OverlayEntryKind.Status) == 1, "Consecutive statuses coalesce into 1");
+
+    var afterTip = buf.Upsert(new OverlayCalloutMessage("Usá smoke arriba", UrgencyLevel.Medium, "Dota 2", 6.0, OverlayEntryKind.CoachFinal, "Coach"), t0.AddSeconds(3.0));
+    Assert(afterTip.Count == 3 && !afterTip.Any(e => e.Kind == OverlayEntryKind.Status),
+        $"Coach output must replace ephemeral Status cleanly and cap at MaxMessages=3 (count={afterTip.Count})");
+
+    // 3. Per-item TTL expiry prunes older messages without hiding newer ones
+    Assert(buf.PruneExpired(t0.AddSeconds(6.5)) && buf.Snapshot().Count == 2,
+        $"Only earliest entry expires at t+6.5s (remaining={buf.Snapshot().Count})");
+    Assert(buf.PruneExpired(t0.AddSeconds(10.0)) && buf.IsEmpty, "All entries expire cleanly by t+10s");
+
+    // 4. MaxMessages = 1 strictly keeps 1 entry
+    buf.MaxMessages = 1;
+    buf.Upsert(new OverlayCalloutMessage("Msg 1", UrgencyLevel.Low, "CS2", 5.0, OverlayEntryKind.UserMessage, "Vos"), t0);
+    var singleSnap = buf.Upsert(new OverlayCalloutMessage("Msg 2", UrgencyLevel.High, "CS2", 5.0, OverlayEntryKind.CoachFinal, "Coach"), t0.AddSeconds(0.5));
+    Assert(singleSnap.Count == 1 && singleSnap[0].Text == "Msg 2", "MaxMessages=1 keeps only latest message");
+
+    // 5. UserConfig overlay style normalization, legacy compact fallback & round-trip persistence
+    Assert(UserConfig.NormalizeOverlayStyle("transparent_text") == UserConfig.OverlayStyleTransparentText &&
+           UserConfig.NormalizeOverlayStyle("card") == UserConfig.OverlayStyleCard &&
+           UserConfig.NormalizeOverlayStyle(null, compactFallback: false) == UserConfig.OverlayStyleCard &&
+           UserConfig.NormalizeOverlayStyle(null, compactFallback: true) == UserConfig.OverlayStyleDiscordPill,
+        "OverlayStyle normalizer must handle transparent_text, card, discord_pill & legacy compact fallback");
+
+    var root = Path.Combine(Path.GetTempPath(), $"hudmind_overlay_test_{Guid.NewGuid():N}");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var repo = new ConfigRepository(root);
+        var cfg = new UserConfig
+        {
+            OverlayStyle = UserConfig.OverlayStyleTransparentText,
+            OverlayOpacity = 0.0,
+            OverlayMaxMessages = 3,
+            OverlayPosition = "bottom-center"
+        };
+        repo.SaveUserConfig(cfg);
+        var loaded = repo.LoadUserConfig();
+        Assert(loaded.OverlayStyle == UserConfig.OverlayStyleTransparentText &&
+               loaded.OverlayOpacity == 0.0 &&
+               loaded.OverlayMaxMessages == 3 &&
+               loaded.OverlayPosition == "bottom-center",
+            "Overlay transparency style, 0% backdrop opacity & max messages must round-trip cleanly");
+
+        var copied = new UserConfig();
+        copied.CopyRuntimePreferencesFrom(loaded);
+        Assert(copied.OverlayStyle == UserConfig.OverlayStyleTransparentText && copied.OverlayMaxMessages == 3,
+            "CopyRuntimePreferencesFrom must preserve overlay style & max messages");
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+    return Task.CompletedTask;
+});
+
+await RunTest("52. DPAPI ISecretProtector encryption/migration/tamper recovery & opt-in LaunchWithWindows=false + HotkeyQuickChat defaults", () =>
+{
+    var defCfg = new UserConfig();
+    Assert(!defCfg.LaunchWithWindows && defCfg.HotkeyQuickChat == "F7",
+        "Fresh UserConfig must default LaunchWithWindows=false and HotkeyQuickChat=F7");
+
+    var root = Path.Combine(Path.GetTempPath(), $"hudmind_dpapi_test_{Guid.NewGuid():N}");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var protector = new StubXorSecretProtector();
+        var repo = new ConfigRepository(root, secretProtector: protector);
+
+        var accounts = new List<ProviderAccount>
+        {
+            new() { Id = "g1", Label = "Groq", Provider = "groq", ApiKey = "gsk_super_secret_123456", Model = "llama-4-scout", Priority = 1 },
+            new() { Id = "f1", Label = "Free", Provider = "pollinations", ApiKey = "", Model = "openai-fast", Priority = 2 }
+        };
+        repo.SaveAccounts(accounts);
+        Assert(accounts[0].ApiKey == "gsk_super_secret_123456", "SaveAccounts must NOT mutate caller in-memory ApiKey");
+
+        var diskJson = File.ReadAllText(repo.AccountsPath);
+        Assert(!diskJson.Contains("gsk_super_secret_123456", StringComparison.Ordinal) &&
+               diskJson.Contains(ConfigRepository.ProtectedSecretPrefix, StringComparison.Ordinal),
+            "Disk accounts.json must store sealed DPAPI prefix without plaintext API key");
+
+        var loaded = repo.LoadAccounts();
+        Assert(loaded.Count == 2 && loaded[0].ApiKey == "gsk_super_secret_123456" && loaded[1].ApiKey == string.Empty,
+            "LoadAccounts must transparently decrypt protected keys and preserve empty keyless slots");
+
+        // Legacy plaintext accounts.json auto-migrates to DPAPI on first load
+        var plainRepo = new ConfigRepository(root);
+        plainRepo.SaveAccounts([new ProviderAccount { Id = "leg", Label = "Legacy", Provider = "gemini", ApiKey = "AIzaLegacyPlain123", Priority = 1 }]);
+        Assert(File.ReadAllText(repo.AccountsPath).Contains("AIzaLegacyPlain123", StringComparison.Ordinal), "Setup plaintext fixture");
+        var migrated = repo.LoadAccounts();
+        Assert(migrated.Count == 1 && migrated[0].ApiKey == "AIzaLegacyPlain123" &&
+               !File.ReadAllText(repo.AccountsPath).Contains("AIzaLegacyPlain123", StringComparison.Ordinal) &&
+               File.ReadAllText(repo.AccountsPath).Contains(ConfigRepository.ProtectedSecretPrefix, StringComparison.Ordinal),
+            "Legacy plaintext accounts.json must migrate to sealed storage automatically on LoadAccounts");
+
+        // Wrong-user / corrupted DPAPI payload clears key safely with warning instead of crashing
+        File.WriteAllText(repo.AccountsPath, "[{\"id\":\"bad\",\"provider\":\"groq\",\"api_key\":\"dpapi:INVALID_CORRUPT_BLOB\",\"priority\":1}]");
+        var recovered = repo.LoadAccounts();
+        Assert(recovered.Count == 1 && recovered[0].ApiKey == string.Empty && !string.IsNullOrWhiteSpace(repo.LastLoadWarning),
+            "Corrupt DPAPI entry must clear key cleanly and emit LastLoadWarning");
+
+        // Quick-chat & opt-in LaunchWithWindows round-trip cleanly
+        var cfg = new UserConfig { HotkeyQuickChat = "Alt+Q", LaunchWithWindows = false };
+        repo.SaveUserConfig(cfg);
+        var loadedCfg = repo.LoadUserConfig();
+        Assert(loadedCfg.HotkeyQuickChat == "Alt+Q" && !loadedCfg.LaunchWithWindows,
+            "HotkeyQuickChat and LaunchWithWindows must round-trip cleanly");
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -3021,4 +3175,24 @@ sealed class ManualTimeProvider(DateTimeOffset startUtc) : TimeProvider
     private long _utcTicks = startUtc.UtcTicks;
     public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
     public void Advance(TimeSpan delta) => Interlocked.Add(ref _utcTicks, delta.Ticks);
+}
+
+sealed class StubXorSecretProtector : ISecretProtector
+{
+    public bool IsSupported => true;
+    public string Protect(string plainSecret)
+    {
+        var b = Encoding.UTF8.GetBytes(plainSecret);
+        for (int i = 0; i < b.Length; i++) b[i] ^= 0x5A;
+        return $"{ConfigRepository.ProtectedSecretPrefix}{Convert.ToBase64String(b)}";
+    }
+    public string Unprotect(string protectedSecret)
+    {
+        var b64 = protectedSecret[ConfigRepository.ProtectedSecretPrefix.Length..];
+        if (b64.StartsWith("INVALID", StringComparison.Ordinal))
+            throw new CryptographicException("Simulated wrong-user DPAPI failure.");
+        var b = Convert.FromBase64String(b64);
+        for (int i = 0; i < b.Length; i++) b[i] ^= 0x5A;
+        return Encoding.UTF8.GetString(b);
+    }
 }

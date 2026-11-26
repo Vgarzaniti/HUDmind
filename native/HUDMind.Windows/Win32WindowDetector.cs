@@ -34,6 +34,14 @@ public sealed class Win32WindowDetector : IForegroundWindowDetector
     private static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
     [DllImport("user32.dll")]
@@ -114,6 +122,25 @@ public sealed class Win32WindowDetector : IForegroundWindowDetector
             _lastExternalRect = rect;
         }
         return rect;
+    }
+
+    public static IntPtr GetExternalForegroundWindowHandle()
+    {
+        var hwnd = GetForegroundWindow();
+        if (hwnd == IntPtr.Zero)
+            return IntPtr.Zero;
+        _ = GetWindowThreadProcessId(hwnd, out uint pid);
+        return pid != 0 && pid != (uint)SelfPid ? hwnd : IntPtr.Zero;
+    }
+
+    public static bool TryRestoreForegroundWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd))
+            return false;
+        _ = GetWindowThreadProcessId(hwnd, out uint pid);
+        if (pid == 0 || pid == (uint)SelfPid)
+            return false;
+        return SetForegroundWindow(hwnd);
     }
 
     private (int Left, int Top, int Width, int Height)? GetLastExternalRectLocked()

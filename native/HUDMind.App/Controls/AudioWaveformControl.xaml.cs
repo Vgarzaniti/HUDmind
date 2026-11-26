@@ -1,5 +1,4 @@
 using System.Windows;
-using System.Windows.Media;
 using MediaBrush = System.Windows.Media.Brush;
 using MediaRectangle = System.Windows.Shapes.Rectangle;
 
@@ -7,7 +6,7 @@ namespace HUDMind.App.Controls;
 
 /// <summary>
 /// Reusable pure-vector 0% GPU symmetric audio spectrum waveform control shared cleanly
-/// between Voice settings and the in-game Overlay HUD.
+/// between Voice settings and the in-game Overlay HUD, supporting real-time RMS level modulation.
 /// </summary>
 public partial class AudioWaveformControl : System.Windows.Controls.UserControl
 {
@@ -17,6 +16,10 @@ public partial class AudioWaveformControl : System.Windows.Controls.UserControl
         0.44, 0.82, 1.00, 0.76, 0.54, 0.90, 0.68, 0.46, 0.74, 0.52,
         0.34, 0.56, 0.30, 0.22, 0.16
     ];
+
+    private readonly List<MediaRectangle> _bars = new(ProfileNormalized.Length);
+    private double _maxBarHeight = 32.0;
+    private int _phaseTick;
 
     public AudioWaveformControl()
     {
@@ -38,17 +41,48 @@ public partial class AudioWaveformControl : System.Windows.Controls.UserControl
     public void SetBarHeightScale(double maxHeightPx)
     {
         double clamped = Math.Clamp(maxHeightPx, 12, 54);
+        _maxBarHeight = clamped;
         BarsHost.Height = clamped;
         BuildBars();
+    }
+
+    public void UpdateAudioLevel(double level01)
+    {
+        if (_bars.Count != ProfileNormalized.Length)
+            return;
+
+        double clamped = Math.Clamp(level01, 0.0, 1.0);
+        if (clamped <= 0.015)
+        {
+            ResetToIdleCurve();
+            return;
+        }
+
+        _phaseTick = (_phaseTick + 1) % 360;
+        double phase = _phaseTick * 0.45;
+        for (int i = 0; i < _bars.Count; i++)
+        {
+            double wave = 0.68 + 0.32 * Math.Sin(phase + i * 0.52);
+            double ratio = Math.Clamp(0.18 + (ProfileNormalized[i] * clamped * wave * 1.15), 0.14, 1.0);
+            _bars[i].Height = Math.Max(3.0, Math.Round(_maxBarHeight * ratio));
+        }
+    }
+
+    public void ResetToIdleCurve()
+    {
+        for (int i = 0; i < _bars.Count && i < ProfileNormalized.Length; i++)
+            _bars[i].Height = Math.Max(3.0, Math.Round(_maxBarHeight * ProfileNormalized[i]));
     }
 
     private void BuildBars()
     {
         BarsHost.Children.Clear();
+        _bars.Clear();
         MediaBrush fill = (TryFindResource("WaveCyanGreenBrush") as MediaBrush)
             ?? HudVisualPalette.CreateFrozenBrush(0x22, 0xD3, 0xEE);
 
         double hostH = double.IsNaN(BarsHost.Height) || BarsHost.Height <= 0 ? 32.0 : BarsHost.Height;
+        _maxBarHeight = hostH;
         foreach (double ratio in ProfileNormalized)
         {
             var bar = new MediaRectangle
@@ -61,6 +95,7 @@ public partial class AudioWaveformControl : System.Windows.Controls.UserControl
                 Margin = new Thickness(1.5, 0, 1.5, 0),
                 VerticalAlignment = VerticalAlignment.Center
             };
+            _bars.Add(bar);
             BarsHost.Children.Add(bar);
         }
     }
