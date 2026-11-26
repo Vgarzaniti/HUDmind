@@ -549,11 +549,11 @@ public static partial class TacticalSignalEvaluator
                 return new TacticalEvaluation(
                     "REPLAY_GOAL",
                     ShouldSilence: false,
-                    ShouldDelayNonUrgent: false,
-                    TriggerImmediate: newGoal,
+                    ShouldDelayNonUrgent: newGoal,
+                    TriggerImmediate: false,
                     MatchEnded: false,
-                    CooldownMultiplier: 0.75,
-                    DeterministicFact: isEn ? "Goal scored recently — kickoff role reminder" : "Gol reciente — recordá rol de saque");
+                    CooldownMultiplier: newGoal ? 1.25 : 1.0,
+                    DeterministicFact: isEn ? "Goal replay — prep next kickoff role" : "Replay de gol — prepará tu rol para el saque");
             }
 
             return TacticalEvaluation.Neutral;

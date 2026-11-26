@@ -823,8 +823,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                 var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
                     _storyboardComposer,
                     frame,
-                    maxFrames: 6,
-                    maxAgeSeconds: forceNow ? 8.0 : 12.0,
+                    maxFrames: forceNow ? 4 : 3,
+                    maxAgeSeconds: forceNow ? 4.5 : 3.2,
                     jpegQuality: Math.Max(cfgQuality, 82),
                     isEn: isEn);
 
@@ -893,7 +893,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                                 IsDirectUserResponse: forceNow,
                                 InterruptCurrent: forceNow,
                                 TopicTag: resp.MatchContext,
-                                FreshnessTtlSeconds: Math.Clamp(EffectiveCooldown(profile), 4.0, 9.0)));
+                                FreshnessTtlSeconds: Math.Clamp(EffectiveCooldown(profile) * 0.75, 2.5, 4.5)));
                             voiceMs = Math.Max(0.1, System.Diagnostics.Stopwatch.GetElapsedTime(tSpeech).TotalMilliseconds);
                         }
 

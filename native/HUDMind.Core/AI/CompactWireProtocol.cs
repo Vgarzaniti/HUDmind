@@ -12,6 +12,48 @@ public static class CompactWireProtocol
         "MENU", "LOBBY", "LOADING", "CARGANDO", "REPLAY", "PAUSE", "PAUSA", "PAUSED", "SCOREBOARD", "DEAD", "DESKTOP"
     };
 
+    private static readonly HashSet<string> SilentMarkers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "NONE", "SILENCE", "SILENT", "SILENCIO", "SKIP", "NADA", "NULL", "VACIO", "VACÍO",
+        "NO COMMENT", "SIN COMENTARIOS", "NOTHING TO SAY", "NOTHING TO ADD", "NADA QUE AGREGAR",
+        "NO CALLOUT", "NONE DETECTED"
+    };
+
+    /// <summary>
+    /// Returns true when a model response or streamed transcript is an explicit silence/no-callout marker
+    /// (including bracketed/quoted/punctuated variants like <c>[NONE]</c> or <c>NONE, ...</c>)
+    /// while preserving real negative coaching sentences such as <c>"No rotés cerrado"</c>.
+    /// </summary>
+    public static bool IsSilentMarker(string? text, bool includeAmbiguousNo = true)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return true;
+
+        var stripped = text.Trim().Trim(' ', '\t', '\r', '\n', '.', ',', '!', '?', ':', ';', '-', '—', '"', '\'', '`', '[', ']', '(', ')', '*', '_');
+        if (stripped.Length == 0)
+            return true;
+
+        var upper = stripped.ToUpperInvariant();
+        if (SilentMarkers.Contains(upper))
+            return true;
+        if (includeAmbiguousNo && upper is "NO" or "NOPE")
+            return true;
+
+        if (upper.StartsWith("NONE", StringComparison.Ordinal))
+        {
+            if (upper.Length == 4)
+                return true;
+            char next = upper[4];
+            if (!char.IsLetterOrDigit(next) &&
+                !upper.AsSpan(4).TrimStart().StartsWith("OF ", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static readonly HashSet<string> KnownPhases = new(StringComparer.OrdinalIgnoreCase)
     {
         "MENU", "LOBBY", "LOADING", "CARGANDO", "REPLAY", "PAUSE", "PAUSA", "PAUSED", "SCOREBOARD", "DEAD", "DESKTOP",
@@ -307,8 +349,7 @@ public static class CompactWireProtocol
         if (string.IsNullOrEmpty(firstLine))
             return null;
 
-        var upper = firstLine.Trim(' ', '.', '!', '"', '\'', '`').ToUpperInvariant();
-        if (upper is "NONE" or "NO" or "SILENCE" or "SILENT" or "SKIP" or "NADA" or "NULL")
+        if (IsSilentMarker(firstLine))
             return CoachResponse.Silent();
 
         if (firstLine.Contains('|'))
@@ -324,14 +365,14 @@ public static class CompactWireProtocol
                 var urgToken = parts[2].ToUpperInvariant();
                 var advice = parts.Length >= 4 ? parts[3] : string.Empty;
 
-                if (SilentPhases.Contains(phase) || urgToken is "NONE" or "NO" or "SILENCE" or "SILENT" or "NADA" or "SKIP")
+                if (SilentPhases.Contains(phase) || IsSilentMarker(urgToken))
                     return CoachResponse.Silent(Truncate(ctxTag, 155));
 
                 if (!TryMapUrgency(urgToken, out var urgency))
                     return null;
 
                 // If urgency is H/M/L but advice was truncated or empty -> return null (422 failover to backup provider)
-                if (string.IsNullOrWhiteSpace(advice) || advice.Equals("NONE", StringComparison.OrdinalIgnoreCase))
+                if (IsSilentMarker(advice, includeAmbiguousNo: false))
                     return null;
 
                 return new CoachResponse(
@@ -346,7 +387,7 @@ public static class CompactWireProtocol
             if (parts.Length >= 2 && TryMapUrgency(parts[0], out var legacyUrg))
             {
                 var callout = parts[1];
-                if (string.IsNullOrWhiteSpace(callout) || callout.Equals("NONE", StringComparison.OrdinalIgnoreCase))
+                if (IsSilentMarker(callout, includeAmbiguousNo: false))
                     return CoachResponse.Silent();
 
                 var ctx = parts.Length >= 3 ? Truncate(parts[2], 150) : string.Empty;

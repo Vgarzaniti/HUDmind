@@ -2791,6 +2791,100 @@ await RunTest("52. DPAPI ISecretProtector encryption/migration/tamper recovery &
     return Task.CompletedTask;
 });
 
+// 53. Live NONE-Audio Suppression, Tight Real-Time Freshness Window, Replay Gate & Safety Memory Filter
+await RunTest("53. Live suppresses NONE prebuffered audio/overlay, keeps clips <=3.2s fresh & avoids RL goal-replay triggers", async () =>
+{
+    // 1) CompactWireProtocol.IsSilentMarker catches noisy NONE/SILENCE variants while preserving real coaching advice
+    Assert(CompactWireProtocol.IsSilentMarker("NONE") &&
+           CompactWireProtocol.IsSilentMarker("None.") &&
+           CompactWireProtocol.IsSilentMarker("[NONE]") &&
+           CompactWireProtocol.IsSilentMarker("\"NONE\", replay") &&
+           CompactWireProtocol.IsSilentMarker("SILENCE") &&
+           CompactWireProtocol.IsSilentMarker("Nada."),
+        "IsSilentMarker must catch punctuated/bracketed NONE and silence tokens");
+    Assert(!CompactWireProtocol.IsSilentMarker("No hagas double commit en segundo palo.") &&
+           !CompactWireProtocol.IsSilentMarker("Rotá rápido al arco"),
+        "IsSilentMarker must NEVER silence genuine Spanish negative or imperative coaching advice");
+    Assert(!CompactWireProtocol.IsSilentMarker("No", includeAmbiguousNo: false) &&
+           CompactWireProtocol.IsSilentMarker("No", includeAmbiguousNo: true),
+        "Ambiguous 'No' must only be treated as silent once a turn completes, never mid-stream");
+
+    // 2) Rocket League GoalScored must NOT trigger immediate live turns straight into a goal replay (nor lock silence)
+    var tracker = new TacticalSignalTracker();
+    var rlProf = new GameProfile
+    {
+        DirectoryPath = ".",
+        Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League", CaptureFps = 2.5, ProcessNames = ["RocketLeague.exe"] }
+    };
+    var goalEval = TacticalSignalEvaluator.Evaluate("RL_LOG: Gol anotado reciente", rlProf, tracker, isEn: false);
+    Assert(!goalEval.TriggerImmediate && !goalEval.ShouldSilence && goalEval.CooldownMultiplier >= 1.0,
+        $"RL GoalScored should defer during replay rather than poking immediate turn or silencing match: {goalEval}");
+
+    // 3) Live system instruction & proactive turn prompt must never coach Gemini Live Audio to speak 'NONE'
+    var liveCfg = new UserConfig { LiveAutoCoachSeconds = 10.0, VoiceLanguage = "es", TextLanguage = "es" };
+    liveCfg.SetCommunicationMode("coach_voice");
+    var sysEs = CoachingPersonaBuilder.BuildLiveSystemInstruction(liveCfg, rlProf);
+    Assert(sysEs.Contains("PREDICTIVO", StringComparison.OrdinalIgnoreCase) &&
+           !sysEs.Contains("devolvé NONE", StringComparison.OrdinalIgnoreCase) &&
+           !sysEs.Contains("respondé `NONE`", StringComparison.OrdinalIgnoreCase),
+        "Live Voice system instruction must not tell native-audio model to speak NONE");
+
+    // 4) Live orchestrator: 'None.' / '[NONE]' audio chunks NEVER flush to speaker, never render overlay, never enter match memory,
+    //    real turns stay compact/fresh (<=3.5s lookback), and safety deflections do not pollute Rocket League match memory!
+    var stubLive = new StubLiveBackend();
+    var player = new StubStreamingPlayer();
+    var overlay = new RecordingOverlay();
+    await using var live = new RealtimeLiveCoachOrchestrator(
+        stubLive, liveCfg, [rlProf], new StubWindowDetector("RocketLeague.exe"),
+        new HighMotionStubCapture(), player, new StubStreamingMic(), overlay,
+        testMode: true, forcedGameId: "rocket_league", storyboardComposer: new StubStoryboardComposer());
+
+    await live.StartAsync();
+    for (int i = 0; i < 80 && stubLive.SentTextTurns < 1; i++) await Task.Delay(30);
+    Assert(stubLive.SentTextTurns >= 1, "Initial proactive turn must fire");
+    Assert(stubLive.LastMultiFrameTurnCount <= 3 && stubLive.LastTurnSpanSeconds <= 3.5,
+        $"Live proactive turn must stay tightly anchored near NOW (frames={stubLive.LastMultiFrameTurnCount}, span={stubLive.LastTurnSpanSeconds:F2}s)");
+    Assert(!stubLive.LastTurnPrompt.Contains("devolvé NONE", StringComparison.OrdinalIgnoreCase),
+        $"Proactive Live prompt must not request spoken NONE: {stubLive.LastTurnPrompt}");
+
+    int overlayBeforeNone = overlay.Shown.Count;
+    int flushesBeforeNone = player.FlushCount;
+    int interruptsBeforeNone = player.InterruptCount;
+    stubLive.EmitIncomingAudio(new byte[2048]);
+    stubLive.EmitPartialTranscript("None.");
+    stubLive.EmitTurnComplete("None.");
+    Assert(player.FlushCount == flushesBeforeNone && player.InterruptCount > interruptsBeforeNone,
+        $"Silent 'None.' turn must clear prebuffered audio without calling FlushBuffered (flush={player.FlushCount}/{flushesBeforeNone}, int={player.InterruptCount}/{interruptsBeforeNone})");
+    Assert(overlay.Shown.Count == overlayBeforeNone,
+        "Silent 'None.' turn must never appear on overlay");
+
+    // Even if partial transcript missed it, TurnComplete '[NONE]' must STILL abort before FlushBuffered!
+    stubLive.EmitIncomingAudio(new byte[2048]);
+    int flushesBeforeBracketNone = player.FlushCount;
+    int intsBeforeBracketNone = player.InterruptCount;
+    stubLive.EmitTurnComplete("[NONE]");
+    Assert(player.FlushCount == flushesBeforeBracketNone && player.InterruptCount > intsBeforeBracketNone,
+        "Bracketed '[NONE]' turn completion must interrupt prebuffered PCM instead of flushing it");
+
+    // Real coaching callout flushes audio cleanly, displays on overlay & enters match digest; safety boilerplate stays out of memory
+    stubLive.EmitIncomingAudio(new byte[2048]);
+    stubLive.EmitTurnComplete("Rotá rápido al segundo palo");
+    Assert(player.FlushCount == flushesBeforeBracketNone + 1 &&
+           overlay.Shown.Any(s => s.Contains("segundo palo")),
+        "Genuine coaching turn must flush audio and show on overlay");
+
+    stubLive.EmitTurnComplete("No hablo chino, yo me concentro en el Rocket.");
+    var digest = live.GetMatchSessionDigest(isEn: false);
+    Assert(digest.Digest.Contains("segundo palo") && !digest.Digest.Contains("No hablo chino"),
+        $"Conversational safety deflection must not pollute match memory digest: {digest.Digest}");
+
+    // 5) GeminiLiveBackend.ResetSessionStateAsync clears stale session resumption handle cleanly
+    await using var gemini = new HUDMind.Core.AI.LiveBackends.GeminiLiveBackend("AIzaDummyTestKey12345");
+    await gemini.ResetSessionStateAsync();
+
+    await live.StopAsync();
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -2928,18 +3022,20 @@ sealed class StubStreamingPlayer : IStreamingPcmPlayer
     private double _lastVolume = 1.0;
     private int _preOpenedCount;
     private int _enqueuedCount;
+    private int _flushCount;
     private int _interruptCount;
     public bool IsPlayingAudio { get => _isPlayingAudio; set => _isPlayingAudio = value; }
     public string? LastDeviceName => _lastDeviceName;
     public double LastVolume => Volatile.Read(ref _lastVolume);
     public int PreOpenedCount => Volatile.Read(ref _preOpenedCount);
     public int EnqueuedCount => Volatile.Read(ref _enqueuedCount);
+    public int FlushCount => Volatile.Read(ref _flushCount);
     public int InterruptCount => Volatile.Read(ref _interruptCount);
     public void SetDevice(string? deviceName) => _lastDeviceName = deviceName;
     public void PreOpenDevice() => Interlocked.Increment(ref _preOpenedCount);
     public void SetVolume(double volume) => Volatile.Write(ref _lastVolume, Math.Clamp(volume, 0.0, 1.0));
     public void EnqueuePcm24k(byte[] pcmBytes) => Interlocked.Increment(ref _enqueuedCount);
-    public void FlushBuffered() { }
+    public void FlushBuffered() => Interlocked.Increment(ref _flushCount);
     public void InterruptAndClear() { _isPlayingAudio = false; Interlocked.Increment(ref _interruptCount); }
     public void Dispose() { }
 }
@@ -3013,6 +3109,8 @@ sealed class StubLiveBackend : ILiveRealtimeBackend
     private int _sessionCount;
     private volatile bool _isConnected;
     private volatile bool _lastSessionWasTextOnly;
+    private volatile string _lastTurnPrompt = string.Empty;
+    private double _lastTurnSpanSeconds;
     private TaskCompletionSource? _firstHandshakeBlocker;
     public TaskCompletionSource? FirstHandshakeBlocker { get => Volatile.Read(ref _firstHandshakeBlocker); init => Volatile.Write(ref _firstHandshakeBlocker, value); }
     public TaskCompletionSource? FirstHandshakeEntered { get; init; }
@@ -3022,6 +3120,8 @@ sealed class StubLiveBackend : ILiveRealtimeBackend
     public int SentTextTurns => Volatile.Read(ref _sentTextTurns);
     public int SentVideoFrames => Volatile.Read(ref _sentVideoFrames);
     public int LastMultiFrameTurnCount => Volatile.Read(ref _lastMultiFrameTurnCount);
+    public string LastTurnPrompt => _lastTurnPrompt;
+    public double LastTurnSpanSeconds => Volatile.Read(ref _lastTurnSpanSeconds);
     public bool LastSessionWasTextOnly => _lastSessionWasTextOnly;
     public GameProfile? LastProfile => _lastProfile;
     public string ProviderName => "StubLive";
@@ -3075,9 +3175,17 @@ sealed class StubLiveBackend : ILiveRealtimeBackend
         Interlocked.Increment(ref _sentMicChunks);
         return Task.CompletedTask;
     }
-    public Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct) { Volatile.Write(ref _lastMultiFrameTurnCount, 1); Interlocked.Increment(ref _sentTextTurns); return Task.CompletedTask; }
-    public Task SendFrameSequenceAndPromptTurnAsync(IReadOnlyList<TemporalFrameSample> frames, string promptText, CancellationToken ct) { Volatile.Write(ref _lastMultiFrameTurnCount, frames.Count); Interlocked.Increment(ref _sentTextTurns); return Task.CompletedTask; }
-    public Task SendTextTurnAsync(string promptText, CancellationToken ct) { Interlocked.Increment(ref _sentTextTurns); return Task.CompletedTask; }
+    public Task SendImageAndPromptTurnAsync(byte[] jpegBytes, string promptText, CancellationToken ct) { _lastTurnPrompt = promptText; Volatile.Write(ref _lastTurnSpanSeconds, 0.0); Volatile.Write(ref _lastMultiFrameTurnCount, 1); Interlocked.Increment(ref _sentTextTurns); return Task.CompletedTask; }
+    public Task SendFrameSequenceAndPromptTurnAsync(IReadOnlyList<TemporalFrameSample> frames, string promptText, CancellationToken ct)
+    {
+        _lastTurnPrompt = promptText;
+        double span = frames.Count >= 2 ? (frames[^1].CapturedAtUtc - frames[0].CapturedAtUtc).TotalSeconds : 0.0;
+        Volatile.Write(ref _lastTurnSpanSeconds, span);
+        Volatile.Write(ref _lastMultiFrameTurnCount, frames.Count);
+        Interlocked.Increment(ref _sentTextTurns);
+        return Task.CompletedTask;
+    }
+    public Task SendTextTurnAsync(string promptText, CancellationToken ct) { _lastTurnPrompt = promptText; Interlocked.Increment(ref _sentTextTurns); return Task.CompletedTask; }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
