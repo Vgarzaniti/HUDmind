@@ -62,15 +62,44 @@ public interface IScreenCaptureService : IDisposable
     int ConsecutiveBlackFrames => 0;
 }
 
+public sealed record AudioSceneSnapshot(
+    double OtherSessionsPeak01,
+    bool HighBurstActive,
+    DateTimeOffset SampledAtUtc
+)
+{
+    public static AudioSceneSnapshot Quiet { get; } = new(0.0, false, DateTimeOffset.MinValue);
+}
+
+/// <summary>
+/// Passive read-only Windows/OS mixer telemetry observing non-HUDMind session peak levels
+/// without mutating or hooking game processes (100% Anti-Cheat Safe).
+/// </summary>
+public interface IAudioSceneMonitor : IDisposable
+{
+    AudioSceneSnapshot SampleOtherAudio();
+}
+
+public sealed class NullAudioSceneMonitor : IAudioSceneMonitor
+{
+    public static NullAudioSceneMonitor Instance { get; } = new();
+    private NullAudioSceneMonitor() { }
+    public AudioSceneSnapshot SampleOtherAudio() => AudioSceneSnapshot.Quiet;
+    public void Dispose() { }
+}
+
 public interface IVoiceOutputService : IDisposable
 {
     string EngineName { get; }
     bool IsSpeaking => false;
+    bool IsActivelySpeaking => IsSpeaking;
+    bool SupportsContinuationQueue => false;
     void WarmUp(string language, double volume, string gender = "male", string style = "neural");
     void UpdateSettings(string language, double volume, string gender = "male", string style = "neural");
     void SetSpeechRate(string? rate) { }
     void SetOutputDevice(string? deviceName) { }
     double SpeakInstant(string text);
+    double SpeakOrQueue(string text, bool chainIfSpeaking, bool interruptCurrent) => SpeakInstant(text);
     void StopSpeaking();
 }
 
@@ -95,7 +124,9 @@ public interface ITextOnlySensorService
 public interface IStreamingPcmPlayer : IDisposable
 {
     bool IsPlayingAudio { get; }
+    bool IsActivelyPlaying => IsPlayingAudio;
     void SetDevice(string? deviceName) { }
+    void PreOpenDevice() { }
     void SetVolume(double volume);
     void EnqueuePcm24k(byte[] pcmBytes);
     void FlushBuffered();

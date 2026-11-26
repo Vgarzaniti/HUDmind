@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>HUDMind.Native</AssemblyName>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <ApplicationIcon>Assets\hudmind.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <LangVersion>latest</LangVersion>
@@ -61,8 +61,6 @@
 $(_HudSearchPathBlock)
   <Module file="$(_HudObfIn)\HUDMind.Core.dll">
     <SkipNamespace name="HUDMind.Core.Models" />
-    <SkipType name="HUDMind.Core.Config.UserConfig" />
-    <SkipType name="HUDMind.Core.Config.ProviderAccount" />
     <SkipType name="HUDMind.Core.Pipeline.PlayerGameMemory" skipFields="true" skipMethods="true" skipProperties="true" />
     <SkipType name="HUDMind.Core.Pipeline.MatchMemoryEntry" skipFields="true" skipMethods="true" skipProperties="true" />
     <SkipType name="HUDMind.Core.Pipeline.MasteredHabitRecord" skipFields="true" skipMethods="true" skipProperties="true" />

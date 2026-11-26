@@ -136,7 +136,7 @@ public static class SharedHttpFactory
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower
         };
         var asmVer = (System.Reflection.Assembly.GetEntryAssembly() ?? typeof(SharedHttpFactory).Assembly).GetName().Version;
-        var uaVer = asmVer is not null ? $"{asmVer.Major}.{asmVer.Minor}.{Math.Max(0, asmVer.Build)}" : "1.1.0";
+        var uaVer = asmVer is not null ? $"{asmVer.Major}.{asmVer.Minor}.{Math.Max(0, asmVer.Build)}" : "1.2.1";
         client.DefaultRequestHeaders.UserAgent.ParseAdd($"HUDMind-Native/{uaVer}");
         return client;
     }

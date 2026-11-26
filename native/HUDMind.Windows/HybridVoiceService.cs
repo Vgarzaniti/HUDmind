@@ -10,14 +10,16 @@ namespace HUDMind.Windows;
 /// </summary>
 public sealed class HybridVoiceService : IVoiceOutputService
 {
+    private readonly object _dispatchLock = new();
     private readonly WinRtNaturalVoiceService _winRt = new();
     private readonly InstantSapiVoiceService _instant = new();
     private volatile bool _disposed;
 
     private string _language = "es";
     private string _gender = "male";
-    private string _style = "neural";
+    private volatile string _style = "neural";
     private double _volume = 0.75;
+    private long _settingsGen;
 
     public HybridVoiceService(string? _ = null)
     {
@@ -25,41 +27,61 @@ public sealed class HybridVoiceService : IVoiceOutputService
     }
 
     public bool IsNeuralWorkerPresent => _winRt.IsAvailable;
-    public bool IsSpeaking => (_style == "neural" && _winRt.IsAvailable) ? _winRt.IsSpeaking : _instant.IsSpeaking;
+    public bool SupportsContinuationQueue => true;
+    public bool IsSpeaking => (_style == "neural" && _winRt.IsInitializedAndAvailable) ? _winRt.IsSpeaking : _instant.IsSpeaking;
+    public bool IsActivelySpeaking => (_style == "neural" && _winRt.IsInitializedAndAvailable) ? _winRt.IsActivelySpeaking : _instant.IsActivelySpeaking;
 
-    public string EngineName =>
-        _style == "neural" && _winRt.IsAvailable
-            ? _winRt.EngineName
-            : _instant.EngineName;
+    public string EngineName
+    {
+        get
+        {
+            lock (_dispatchLock)
+                return _style == "neural" && _winRt.IsAvailable ? _winRt.EngineName : _instant.EngineName;
+        }
+    }
 
     public void WarmUp(string language, double volume, string gender = "male", string style = "neural")
     {
         if (_disposed) return;
-        _language = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
-        _gender = string.Equals(gender, "female", StringComparison.OrdinalIgnoreCase) ? "female" : "male";
-        _style = string.Equals(style, "instant", StringComparison.OrdinalIgnoreCase) ? "instant" : "neural";
-        _volume = Math.Clamp(volume, 0.0, 1.0);
+        string styleNorm;
+        long gen;
+        lock (_dispatchLock)
+        {
+            if (_disposed) return;
+            gen = Interlocked.Increment(ref _settingsGen);
+            string langNorm = _language = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
+            string genderNorm = _gender = string.Equals(gender, "female", StringComparison.OrdinalIgnoreCase) ? "female" : "male";
+            styleNorm = _style = string.Equals(style, "instant", StringComparison.OrdinalIgnoreCase) ? "instant" : "neural";
+            double volNorm = _volume = Math.Clamp(volume, 0.0, 1.0);
+            _winRt.UpdateSettings(langNorm, volNorm, genderNorm, styleNorm);
+            _instant.UpdateSettings(langNorm, volNorm, genderNorm, "instant");
+        }
 
-        if (_style == "neural")
-            _winRt.WarmUp(_language, _volume, _gender, _style);
-        _instant.WarmUp(_language, _volume, _gender, "instant");
+        if (_disposed || Interlocked.Read(ref _settingsGen) != gen) return;
+        if (styleNorm == "neural")
+            _winRt.EnsureInitializedInternal();
+        if (_disposed || Interlocked.Read(ref _settingsGen) != gen) return;
+        _instant.EnsureInitializedFromStoredSettings();
     }
 
     public void UpdateSettings(string language, double volume, string gender = "male", string style = "neural")
     {
         if (_disposed) return;
-        _language = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
-        _gender = string.Equals(gender, "female", StringComparison.OrdinalIgnoreCase) ? "female" : "male";
-        var newStyle = string.Equals(style, "instant", StringComparison.OrdinalIgnoreCase) ? "instant" : "neural";
-        bool switchedToInstant = _style == "neural" && newStyle == "instant";
-        _style = newStyle;
-        _volume = Math.Clamp(volume, 0.0, 1.0);
-
-        if (switchedToInstant)
-            _winRt.StopSpeaking();
-
-        _winRt.UpdateSettings(_language, _volume, _gender, _style);
-        _instant.UpdateSettings(_language, _volume, _gender, "instant");
+        lock (_dispatchLock)
+        {
+            if (_disposed) return;
+            Interlocked.Increment(ref _settingsGen);
+            string langNorm = _language = string.IsNullOrWhiteSpace(language) ? "es" : language.ToLowerInvariant();
+            string genderNorm = _gender = string.Equals(gender, "female", StringComparison.OrdinalIgnoreCase) ? "female" : "male";
+            string styleNorm = string.Equals(style, "instant", StringComparison.OrdinalIgnoreCase) ? "instant" : "neural";
+            bool switchedToInstant = _style == "neural" && styleNorm == "instant";
+            _style = styleNorm;
+            double volNorm = _volume = Math.Clamp(volume, 0.0, 1.0);
+            if (switchedToInstant)
+                _winRt.StopSpeaking();
+            _winRt.UpdateSettings(langNorm, volNorm, genderNorm, styleNorm);
+            _instant.UpdateSettings(langNorm, volNorm, genderNorm, "instant");
+        }
     }
 
     public void SetOutputDevice(string? deviceName) => _winRt.SetOutputDevice(deviceName);
@@ -70,31 +92,45 @@ public sealed class HybridVoiceService : IVoiceOutputService
         _instant.SetSpeechRate(rate);
     }
 
-    public double SpeakInstant(string text)
+    public double SpeakInstant(string text) =>
+        SpeakOrQueue(text, chainIfSpeaking: false, interruptCurrent: true);
+
+    public double SpeakOrQueue(string text, bool chainIfSpeaking, bool interruptCurrent)
     {
         if (_disposed || string.IsNullOrWhiteSpace(text))
             return 0;
 
-        if (_style == "neural" && _winRt.IsAvailable)
+        lock (_dispatchLock)
         {
-            _instant.StopSpeaking();
-            return _winRt.SpeakInstant(text);
-        }
+            if (_disposed) return 0;
+            bool useNeural = _style == "neural" && _winRt.IsAvailable;
+            if (useNeural)
+            {
+                _instant.StopSpeaking();
+                return _winRt.SpeakOrQueue(text, chainIfSpeaking, interruptCurrent);
+            }
 
-        _winRt.StopSpeaking();
-        return _instant.SpeakInstant(text);
+            _winRt.StopSpeaking();
+            return _instant.SpeakOrQueue(text, chainIfSpeaking, interruptCurrent);
+        }
     }
 
     public void StopSpeaking()
     {
-        _winRt.StopSpeaking();
-        _instant.StopSpeaking();
+        lock (_dispatchLock)
+        {
+            _winRt.StopSpeaking();
+            _instant.StopSpeaking();
+        }
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        lock (_dispatchLock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+        }
         _winRt.Dispose();
         _instant.Dispose();
     }

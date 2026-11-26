@@ -35,7 +35,7 @@ public sealed class MatchSessionCoordinator
     private long _profileEpoch;
 
     public InterventionMemory Memory { get; } = new(maxItems: 12, ttlSeconds: 75.0);
-    public RecentFrameRingBuffer FrameRingBuffer { get; } = new(maxFrames: 10, minSpacingMs: 125.0);
+    public RecentFrameRingBuffer FrameRingBuffer { get; } = new(maxFrames: 24, minSpacingMs: 95.0, macroMaxFrames: 25, macroMinSpacingMs: 900.0);
     public TacticalSignalTracker TacticalTracker { get; } = new();
     public BlackScreenDiagnostic BlackScreenDiagnostic { get; } = new();
 

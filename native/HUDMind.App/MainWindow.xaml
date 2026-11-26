@@ -54,7 +54,7 @@
                     <DockPanel>
                         <Button x:Name="BtnVersionCheck"
                                 DockPanel.Dock="Left"
-                                Content="v1.2.0"
+                                Content="v1.2.1"
                                 FontSize="10.5"
                                 Padding="9,4"
                                 Background="#09121C"
@@ -692,11 +692,11 @@
                                             </ComboBox>
 
                                             <TextBlock Grid.Row="4" Grid.Column="0" Text="Frecuencia en modo Live:" VerticalAlignment="Center" />
-                                            <ComboBox x:Name="CmbLiveAutoRate" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" ToolTip="El coach sigue viendo continuamente en segundo plano aunque no hables">
-                                                <ComboBoxItem Content="🎙 Solo cuando le hablo o toco F10 (sigue mirando en vivo)" Tag="0" />
-                                                <ComboBoxItem Content="⚖ Equilibrado (cada 12s viendo jugada completa)" Tag="12" />
-                                                <ComboBoxItem Content="⚡ Activo (cada 8s viendo jugada completa · recomendado)" Tag="8" />
-                                                <ComboBoxItem Content="🔥 Continuo (cada 5s viendo jugada completa)" Tag="5" />
+                                            <ComboBox x:Name="CmbLiveAutoRate" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" ToolTip="Buffer continuo estilo OBS (~10 FPS en RAM · 25s historial): observa todo y predice jugadas incluso sin hablar">
+                                                <ComboBoxItem Content="🎙 Solo cuando le hablo o toco F10 (sigue mirando tipo OBS)" Tag="0" />
+                                                <ComboBoxItem Content="⚖ Equilibrado (cada 10s · jugada completa)" Tag="10" />
+                                                <ComboBoxItem Content="⚡ Activo (cada 6s · OBS continuo recomendado)" Tag="6" />
+                                                <ComboBoxItem Content="🔥 OBS Máximo (cada 4s · observa y predice todo sin hablar)" Tag="4" />
                                             </ComboBox>
 
                                             <TextBlock Grid.Row="5" Grid.Column="0" Text="Velocidad vs Nitidez visual:" VerticalAlignment="Center" />

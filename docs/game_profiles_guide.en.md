@@ -27,7 +27,7 @@ profiles/
     └── custom_rules.md       # (Optional, GUI-managed) Personal rules up to 600 chars
 ```
 
-> **Quick GUI Tip:** In the **`🎮 Reglas por Juego`** tab, fill out **`+ Nuevo Perfil`** (`ID`, `Name`, and comma-separated `EXE(s)`) and click **`➕ Crear Perfil`**. HUDMind validates the ID (blocking `..` traversal and `universal`), automatically appends `.exe` if omitted, writes `manifest.json` + `system_prompt.md`, and opens it for editing your personal `custom_rules.md`.
+> **Quick GUI Tip:** In the **`Juegos y Memoria`** tab, fill out **`+ Nuevo Juego`** (`Name` and `Executable (.exe)` — ID is derived cleanly automatically) and click **`➕ Agregar`**. HUDMind validates the ID (blocking `..` traversal and `universal`), automatically appends `.exe` if omitted, writes `manifest.json` + `system_prompt.md`, and opens it for editing your personal `custom_rules.md`.
 
 ---
 
@@ -58,8 +58,8 @@ Real example based on [`profiles/cs2/manifest.json`](../profiles/cs2/manifest.js
 | `process_names` | `string[]` | Case-insensitive list of `.exe` filenames that activate this profile when focused. |
 | `capture_fps` | `double` | Target capture frequency in Hz (`1.0` to `2.0` typical). |
 | `phash_threshold` | `int` | Perceptual Hamming distance (`0`–`64`) used to skip static frames. |
-| `cooldown_seconds` | `double` | Base cooldown between callouts (automatically reduced to 70% in `training` mode, min `3.5s`). |
-| `max_resolution` | `[int, int]` | Profile resolution ceiling; `eco` scales up to `800×450`, `balanced` to `960×540`, and `high` to `1280×720`. |
+| `cooldown_seconds` | `double` | Base cooldown between callouts (automatically reduced to 65% in `training` mode, min `2.8s`). |
+| `max_resolution` | `[int, int]` | Reserved profile metadata hint; runtime capture scaling follows `TokenEfficiencyMode` (`eco`: `960×540`, `balanced`: `1280×720`, `high`: `1440×810`). |
 | `language` | `string` | Base profile language (`"es"` or `"en"`). |
 | `notes` | `string` | Short tactical summary used as a compact fallback if `system_prompt.md` is empty. |
 

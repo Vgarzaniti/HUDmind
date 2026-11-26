@@ -14,22 +14,22 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
 {
     private readonly Win32GlobalHotkeyManager _hotkeys = new();
     private readonly LoopbackGsiService _gsiService = new();
+    private readonly WasapiAudioSceneMonitor _audioMonitor = new();
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+    private readonly object _hotkeySync = new();
 
-    private ICoachEngine? _activeEngine;
-    private string _lastMatchId = string.Empty;
-    private string _lastMatchGameId = string.Empty;
-    private string _lastMatchGameName = string.Empty;
-    private string _lastMatchDigest = string.Empty;
-    private int _lastMatchCount;
-    private bool _disposed;
+    private sealed record LastMatchRecord(string MatchId, string GameId, string GameName, string Digest, int Count);
+
+    private volatile ICoachEngine? _activeEngine;
+    private volatile LastMatchRecord _lastMatch = new(string.Empty, string.Empty, string.Empty, string.Empty, 0);
+    private int _disposed;
 
     public ICoachEngine? ActiveEngine => _activeEngine;
     public bool IsRunning => _activeEngine is { IsRunning: true };
     public bool IsPaused => _activeEngine is { IsPaused: true };
     public bool SupportsLiveMic => _activeEngine is { SupportsLiveMic: true };
     public bool HasMatchHistory(bool isEn = false) =>
-        !string.IsNullOrWhiteSpace(_lastMatchDigest) || (_activeEngine?.GetMatchSessionDigest(isEn).Count > 0);
+        !string.IsNullOrWhiteSpace(_lastMatch.Digest) || (_activeEngine?.GetMatchSessionDigest(isEn).Count > 0);
 
     public async Task<(bool Started, bool FallbackToClassic, string Badge, string Status)> StartAsync(
         UserConfig config,
@@ -47,27 +47,29 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
         Action<MatchSessionSnapshot>? onMatchCompleted = null,
         Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null)
     {
-        await _lifecycleLock.WaitAsync();
+        if (Volatile.Read(ref _disposed) != 0)
+            return (false, false, string.Empty, string.Empty);
         try
         {
-            if (_disposed || IsRunning)
+            await _lifecycleLock.WaitAsync();
+        }
+        catch (ObjectDisposedException)
+        {
+            return (false, false, string.Empty, string.Empty);
+        }
+        try
+        {
+            if (Volatile.Read(ref _disposed) != 0 || IsRunning)
                 return (false, false, string.Empty, string.Empty);
 
-            _lastMatchId = string.Empty;
-            _lastMatchGameId = string.Empty;
-            _lastMatchGameName = string.Empty;
-            _lastMatchDigest = string.Empty;
-            _lastMatchCount = 0;
+            _lastMatch = new LastMatchRecord(string.Empty, string.Empty, string.Empty, string.Empty, 0);
 
             Action<MatchSessionSnapshot>? wrappedMatchCompleted = snap =>
             {
                 if (snap.InterventionsCount > 0 && !string.IsNullOrWhiteSpace(snap.Digest))
                 {
-                    _lastMatchId = snap.MatchId;
-                    _lastMatchGameId = snap.GameId;
-                    _lastMatchGameName = snap.DisplayName;
-                    _lastMatchDigest = snap.Digest;
-                    _lastMatchCount = snap.InterventionsCount;
+                    _lastMatch = new LastMatchRecord(
+                        snap.MatchId, snap.GameId, snap.DisplayName, snap.Digest, snap.InterventionsCount);
                 }
                 onMatchCompleted?.Invoke(snap);
             };
@@ -113,7 +115,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                         },
                         onMatchCompleted: wrappedMatchCompleted,
                         resolveContextForProfile: resolveContextForProfile,
-                        storyboardComposer: new Win32TemporalStoryboardComposer()
+                        storyboardComposer: new Win32TemporalStoryboardComposer(),
+                        audioMonitor: _audioMonitor
                     );
                 }
                 catch
@@ -149,7 +152,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                     telemetrySensor: textOnlySensor,
                     onMatchCompleted: wrappedMatchCompleted,
                     resolveContextForProfile: resolveContextForProfile,
-                    storyboardComposer: new Win32TemporalStoryboardComposer()
+                    storyboardComposer: new Win32TemporalStoryboardComposer(),
+                    audioMonitor: _audioMonitor
                 );
             }
 
@@ -170,7 +174,7 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
         }
         finally
         {
-            _lifecycleLock.Release();
+            try { _lifecycleLock.Release(); } catch (ObjectDisposedException) { }
         }
     }
 
@@ -184,72 +188,93 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
 
     public void RegisterHotkeys(UserConfig config, Action onMicHotkey, Action<string> onLog)
     {
-        _hotkeys.Stop();
-        var engine = _activeEngine;
-        if (!config.EnableHotkeys || engine is not { IsRunning: true })
-            return;
+        bool pOk = true, aOk = true, mOk = true;
+        bool registered = false;
+        lock (_hotkeySync)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+            _hotkeys.Stop();
+            var engine = _activeEngine;
+            if (!config.EnableHotkeys || engine is not { IsRunning: true })
+                return;
 
-        var (pOk, aOk, mOk) = _hotkeys.Start(
-            config.HotkeyTogglePause,
-            config.HotkeyAnalyzeNow,
-            config.HotkeyToggleMic,
-            () => _activeEngine?.TogglePause(),
-            () => _activeEngine?.TriggerOnDemandAnalysis(),
-            onToggleMic: onMicHotkey,
-            onWarning: onLog
-        );
-        if (!pOk || !aOk || !mOk)
+            (pOk, aOk, mOk) = _hotkeys.Start(
+                config.HotkeyTogglePause,
+                config.HotkeyAnalyzeNow,
+                config.HotkeyToggleMic,
+                () => _activeEngine?.TogglePause(),
+                () => _activeEngine?.TriggerOnDemandAnalysis(),
+                onToggleMic: onMicHotkey,
+                onWarning: onLog
+            );
+            registered = true;
+        }
+        if (registered && (!pOk || !aOk || !mOk))
             onLog($"ℹ️ Atajos activos — Pausa:{(pOk ? "OK" : "OCUPADA")} | Analizar:{(aOk ? "OK" : "OCUPADA")} | Mic:{(mOk ? "OK" : "OCUPADA")}");
     }
 
     public async Task StopAsync()
     {
+        if (Volatile.Read(ref _disposed) != 0) return;
+        try
+        {
+            await StopCoreAsync();
+        }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task StopCoreAsync()
+    {
         await _lifecycleLock.WaitAsync();
         try
         {
-            _hotkeys.Stop();
+            lock (_hotkeySync)
+                _hotkeys.Stop();
             SnapshotLastMatchSession();
-            if (_activeEngine is not null)
+            var engine = _activeEngine;
+            if (engine is not null)
             {
-                await _activeEngine.DisposeAsync();
-                _activeEngine = null;
+                try { await engine.DisposeAsync(); }
+                finally { _activeEngine = null; }
             }
         }
         finally
         {
-            _lifecycleLock.Release();
+            try { _lifecycleLock.Release(); } catch (ObjectDisposedException) { }
         }
     }
 
     public (string GameName, string Digest, int Count) SnapshotLastMatchSession(bool isEn = false)
     {
-        if (_activeEngine is not null)
+        var engine = _activeEngine;
+        if (engine is not null)
         {
-            var snap = _activeEngine.CaptureMatchSnapshot(isEn);
+            var snap = engine.CaptureMatchSnapshot(isEn);
             if (snap is not null && snap.InterventionsCount > 0 && !string.IsNullOrWhiteSpace(snap.Digest))
             {
-                _lastMatchId = snap.MatchId;
-                _lastMatchGameId = snap.GameId;
-                _lastMatchGameName = snap.DisplayName;
-                _lastMatchDigest = snap.Digest;
-                _lastMatchCount = snap.InterventionsCount;
+                _lastMatch = new LastMatchRecord(
+                    snap.MatchId, snap.GameId, snap.DisplayName, snap.Digest, snap.InterventionsCount);
             }
             else
             {
-                var (g, d, count) = _activeEngine.GetMatchSessionDigest(isEn);
+                var (g, d, count) = engine.GetMatchSessionDigest(isEn);
                 if (count > 0 && !string.IsNullOrWhiteSpace(d))
                 {
-                    _lastMatchGameName = g;
-                    _lastMatchDigest = d;
-                    _lastMatchCount = count;
+                    var prev = _lastMatch;
+                    _lastMatch = new LastMatchRecord(prev.MatchId, prev.GameId, g, d, count);
                 }
             }
         }
-        return (_lastMatchGameName, _lastMatchDigest, _lastMatchCount);
+        var latest = _lastMatch;
+        return (latest.GameName, latest.Digest, latest.Count);
     }
 
-    public (string MatchId, string GameId, string GameName, int Count) GetLastMatchMeta() =>
-        (_lastMatchId, _lastMatchGameId, _lastMatchGameName, _lastMatchCount);
+    public (string MatchId, string GameId, string GameName, int Count) GetLastMatchMeta()
+    {
+        var latest = _lastMatch;
+        return (latest.MatchId, latest.GameId, latest.GameName, latest.Count);
+    }
 
     public (int InstalledCount, string Message) InstallValveGsiConfigs()
     {
@@ -277,11 +302,11 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) return;
-        _disposed = true;
-        await StopAsync();
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        await StopCoreAsync();
         _hotkeys.Dispose();
         _gsiService.Dispose();
+        _audioMonitor.Dispose();
         _lifecycleLock.Dispose();
     }
 }

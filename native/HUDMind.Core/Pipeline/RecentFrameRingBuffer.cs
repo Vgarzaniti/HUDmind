@@ -6,10 +6,10 @@ using HUDMind.Core.Models;
 namespace HUDMind.Core.Pipeline;
 
 /// <summary>
-/// Dual-tier thread-safe circular buffer in RAM (0% GPU):
-/// 1) High-density micro burst ring (~7.4 FPS, ~125ms spacing) for rapid mechanics (`flip reset`, `flick`, `peek`).
-/// 2) Long-horizon macro keyframe timeline (~1 FPS, ~18s window) continuously recorded even when the player is silent,
-/// so proactive callouts and questions perceive the full play development rather than a single isolated snapshot.
+/// OBS-style dual-tier continuous Replay Buffer in RAM (0% GPU):
+/// 1) High-density micro burst ring (~10 FPS, ~95ms spacing) capturing every rapid mechanic in the last ~2.5-3s.
+/// 2) Long-horizon macro keyframe timeline (~1.1 FPS, ~25s OBS lookback) continuously recording even while silent,
+/// paired with real-time dHash motion energy tracking so the coach sees everything and predicts ahead proactively.
 /// </summary>
 public sealed class RecentFrameRingBuffer
 {
@@ -22,14 +22,14 @@ public sealed class RecentFrameRingBuffer
     private readonly double _macroMinSpacingMs;
 
     public RecentFrameRingBuffer(
-        int maxFrames = 12,
-        double minSpacingMs = 125.0,
-        int macroMaxFrames = 18,
-        double macroMinSpacingMs = 950.0)
+        int maxFrames = 24,
+        double minSpacingMs = 95.0,
+        int macroMaxFrames = 25,
+        double macroMinSpacingMs = 900.0)
     {
-        _maxFrames = Math.Clamp(maxFrames, 2, 24);
-        _minSpacingMs = Math.Clamp(minSpacingMs, 60.0, 1500.0);
-        _macroMaxFrames = Math.Clamp(macroMaxFrames, 4, 30);
+        _maxFrames = Math.Clamp(maxFrames, 2, 48);
+        _minSpacingMs = Math.Clamp(minSpacingMs, 50.0, 1500.0);
+        _macroMaxFrames = Math.Clamp(macroMaxFrames, 4, 40);
         _macroMinSpacingMs = Math.Clamp(macroMinSpacingMs, 500.0, 3000.0);
     }
 
@@ -43,6 +43,19 @@ public sealed class RecentFrameRingBuffer
         get { lock (_sync) return _macroFrames.Count; }
     }
 
+    public TemporalFrameSample? LatestSample
+    {
+        get
+        {
+            lock (_sync)
+            {
+                if (_frames.Count > 0) return _frames[^1];
+                if (_macroFrames.Count > 0) return _macroFrames[^1];
+                return null;
+            }
+        }
+    }
+
     public bool NeedsMacroKeyframe(DateTimeOffset nowUtc)
     {
         lock (_sync)
@@ -50,6 +63,40 @@ public sealed class RecentFrameRingBuffer
             if (_macroFrames.Count == 0)
                 return true;
             return (nowUtc - _macroFrames[^1].CapturedAtUtc).TotalMilliseconds >= _macroMinSpacingMs;
+        }
+    }
+
+    /// <summary>
+    /// Normalized recent visual motion intensity (0.0 = static/stalled/single-jump screen, 1.0 = rapid action/camera swing)
+    /// computed strictly from in-RAM 64-bit dHash deltas across the last ~2.1s (&lt; 0.1ms CPU, 0% GPU).
+    /// Requires &gt;= 2 real transitions and decays cleanly to 0 when capture has stalled.
+    /// </summary>
+    public double ComputeRecentMotionEnergy(double windowSeconds = 2.1, DateTimeOffset? utcNow = null)
+    {
+        lock (_sync)
+        {
+            if (_frames.Count < 3)
+                return 0.0;
+
+            var now = utcNow ?? DateTimeOffset.UtcNow;
+            var newest = _frames[^1].CapturedAtUtc;
+            if ((now - newest).TotalSeconds > Math.Max(2.5, windowSeconds * 1.5))
+                return 0.0;
+
+            var cutoff = newest.AddSeconds(-Math.Max(0.4, windowSeconds) - 0.05);
+            double sumNormalized = 0.0;
+            int pairs = 0;
+
+            for (int i = _frames.Count - 1; i >= 1; i--)
+            {
+                if (_frames[i - 1].CapturedAtUtc < cutoff)
+                    break;
+                int dist = PerceptualHasher.HammingDistance(_frames[i].PerceptualHash, _frames[i - 1].PerceptualHash);
+                sumNormalized += Math.Clamp(dist / 20.0, 0.0, 1.0);
+                pairs++;
+            }
+
+            return pairs < 2 ? 0.0 : sumNormalized / pairs;
         }
     }
 
@@ -61,7 +108,7 @@ public sealed class RecentFrameRingBuffer
         var sample = new TemporalFrameSample(frame.JpegBytes, frame.CapturedAtUtc, frame.PerceptualHash);
         lock (_sync)
         {
-            // Continuously append macro keyframes (~1 FPS) regardless of micro burst window
+            // Continuously append macro keyframes (~1 FPS OBS lookback) regardless of micro burst window
             if (_macroFrames.Count == 0 ||
                 (frame.CapturedAtUtc - _macroFrames[^1].CapturedAtUtc).TotalMilliseconds >= _macroMinSpacingMs)
             {
@@ -74,6 +121,8 @@ public sealed class RecentFrameRingBuffer
             {
                 var last = _frames[^1];
                 double elapsedMs = (frame.CapturedAtUtc - last.CapturedAtUtc).TotalMilliseconds;
+                if (elapsedMs < 0)
+                    return; // Ignore older frame arriving out of timestamp order
                 if (elapsedMs < _minSpacingMs)
                 {
                     if (forceReplaceTailIfTooClose)
@@ -90,7 +139,7 @@ public sealed class RecentFrameRingBuffer
 
     /// <summary>
     /// Returns evenly distributed chronological frames within <paramref name="maxAgeSeconds"/> (oldest -> newest).
-    /// Windows > 3.5s blend macro keyframes (~18s lookback) with micro burst frames for complete silent-play awareness.
+    /// Windows &gt; 3.5s blend OBS macro keyframes (~25s lookback) with micro burst frames for complete silent-play awareness.
     /// </summary>
     public List<TemporalFrameSample> SnapshotRecent(DateTimeOffset nowUtc, double maxAgeSeconds = 5.0, int maxCount = 6)
     {
@@ -106,23 +155,21 @@ public sealed class RecentFrameRingBuffer
                 return SelectEvenlySpacedWithTail(microOnly, Math.Clamp(maxCount, 1, _maxFrames));
             }
 
-            // Merge macro timeline + fine micro frames without duplicating nearly-simultaneous timestamps
             var merged = new List<TemporalFrameSample>(_macroFrames.Count + _frames.Count);
-            foreach (var f in _macroFrames)
+            foreach (var f in _frames)
             {
                 if (f.CapturedAtUtc >= minUtc)
                     merged.Add(f);
             }
 
-            foreach (var f in _frames)
+            foreach (var m in _macroFrames)
             {
-                if (f.CapturedAtUtc < minUtc)
+                if (m.CapturedAtUtc < minUtc)
                     continue;
-                int nearIdx = merged.FindIndex(m => Math.Abs((m.CapturedAtUtc - f.CapturedAtUtc).TotalMilliseconds) < 140.0);
-                if (nearIdx >= 0)
-                    merged[nearIdx] = f;
-                else
-                    merged.Add(f);
+                bool dupNear = merged.Any(existing =>
+                    Math.Abs((existing.CapturedAtUtc - m.CapturedAtUtc).TotalMilliseconds) < 85.0);
+                if (!dupNear)
+                    merged.Add(m);
             }
 
             merged.Sort(static (a, b) => a.CapturedAtUtc.CompareTo(b.CapturedAtUtc));
@@ -131,9 +178,8 @@ public sealed class RecentFrameRingBuffer
     }
 
     /// <summary>
-    /// Records <paramref name="latestFrame"/> and builds a rich dual payload containing:
-    /// 1) chronological native HD keyframes (for multi-image Vision APIs &amp; Live WebSockets) and
-    /// 2) a timestamped CPU filmstrip (`2x1`, `2x2`, or `3x2`) for single-image endpoint fallback.
+    /// Builds a visual clip payload from the latest OBS-buffer sample (or explicitly passed frame),
+    /// combining macro context and micro trajectory keyframes cleanly.
     /// </summary>
     public TemporalVisualPayload BuildVisualClipPayload(
         ITemporalStoryboardComposer? composer,
@@ -143,20 +189,26 @@ public sealed class RecentFrameRingBuffer
         int jpegQuality,
         bool isEn)
     {
-        if (latestFrame is null || latestFrame.JpegBytes is not { Length: > 0 })
+        if (latestFrame is { JpegBytes.Length: > 0 })
+            Record(latestFrame, forceReplaceTailIfTooClose: true);
+
+        var anchorSample = latestFrame is { JpegBytes.Length: > 0 }
+            ? new TemporalFrameSample(latestFrame.JpegBytes, latestFrame.CapturedAtUtc, latestFrame.PerceptualHash)
+            : LatestSample;
+
+        if (anchorSample is null || anchorSample.JpegBytes is not { Length: > 0 })
             return new TemporalVisualPayload([], null, 0, string.Empty);
 
-        Record(latestFrame, forceReplaceTailIfTooClose: true);
         int boundedMax = Math.Clamp(maxFrames, 1, 6);
         var seq = boundedMax == 1
-            ? [new TemporalFrameSample(latestFrame.JpegBytes, latestFrame.CapturedAtUtc, latestFrame.PerceptualHash)]
-            : SnapshotRecent(latestFrame.CapturedAtUtc, maxAgeSeconds, boundedMax);
+            ? [anchorSample]
+            : SnapshotRecent(anchorSample.CapturedAtUtc, maxAgeSeconds, boundedMax);
 
         if (seq.Count == 0)
-            seq = [new TemporalFrameSample(latestFrame.JpegBytes, latestFrame.CapturedAtUtc, latestFrame.PerceptualHash)];
+            seq = [anchorSample];
 
         if (seq.Count == 1)
-            return new TemporalVisualPayload(seq, latestFrame.JpegBytes, 1, string.Empty);
+            return new TemporalVisualPayload(seq, anchorSample.JpegBytes, 1, string.Empty);
 
         byte[]? storyboard = null;
         if (composer is not null)
@@ -174,9 +226,6 @@ public sealed class RecentFrameRingBuffer
             seqNote);
     }
 
-    /// <summary>
-    /// Backward-compatible single-image storyboard builder delegating to <see cref="BuildVisualClipPayload"/>.
-    /// </summary>
     public (byte[]? JpegBytes, int PanelCount) BuildTemporalPayload(
         ITemporalStoryboardComposer? composer,
         CapturedFrameData? latestFrame,
@@ -207,8 +256,8 @@ public sealed class RecentFrameRingBuffer
         var newest = frames[^1].CapturedAtUtc;
         var sb = new StringBuilder(112);
         sb.Append(isEn
-            ? $"[Video-like clip sequence: {frames.Count} chronological frames "
-            : $"[Secuencia tipo video: {frames.Count} cuadros cronológicos ");
+            ? $"[OBS Replay clip: {frames.Count} chronological frames "
+            : $"[Clip continuo OBS: {frames.Count} cuadros cronológicos ");
         for (int i = 0; i < frames.Count; i++)
         {
             if (i > 0) sb.Append(" -> ");
@@ -231,6 +280,8 @@ public sealed class RecentFrameRingBuffer
     {
         if (source.Count <= targetCount)
             return source;
+        if (targetCount <= 1)
+            return [source[^1]];
 
         var picked = new List<TemporalFrameSample>(targetCount);
         double step = (source.Count - 1) / (double)(targetCount - 1);

@@ -30,6 +30,8 @@ async Task RunTest(string name, Func<Task> body)
     {
         failed++;
         Console.WriteLine($"[FAIL] {name}: {ex.Message}");
+        if (string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+            Console.WriteLine($"::error::{name}: {ex.Message}");
     }
 }
 
@@ -328,7 +330,7 @@ await RunTest("W9. Enriched GSI C4 countdown/kit, LoL allgamedata CS/DEAD & Read
         $"ParseAllGameData missing CS/Wards/DEAD fields: {lolParsed}");
 });
 
-// W10. Win32StreamingPcmPlayer jitter prebuffer/flush/odd-byte + SAPI5 TtsRate parity
+// W10. Win32StreamingPcmPlayer jitter prebuffer/flush/odd-byte + SAPI5 TtsRate parity (deterministic even on headless CI)
 await RunTest("W10. Win32StreamingPcmPlayer prebuffer/flush/interrupt & WinRt/SAPI5 speech rate parity hold cleanly", () =>
 {
     Assert(Math.Abs(WinRtNaturalVoiceService.ParseRateFactor(null) - 1.05) < 0.001, "Default natural rate should be +5% (1.05)");
@@ -337,13 +339,33 @@ await RunTest("W10. Win32StreamingPcmPlayer prebuffer/flush/interrupt & WinRt/SA
     Assert(WinRtNaturalVoiceService.ParseSapiRateOffset("+15%") == 1, "+15% -> SAPI rate 1");
     Assert(WinRtNaturalVoiceService.ParseSapiRateOffset("+25%") == 2, "+25% -> SAPI rate 2");
 
-    using var player = new Win32StreamingPcmPlayer();
-    player.SetVolume(0.6);
-    player.EnqueuePcm24k(new byte[2401]); // under 160ms prebuffer + odd byte
-    player.EnqueuePcm24k(new byte[6000]); // crosses prebuffer -> submits smoothed block
-    player.FlushBuffered();               // adds fade-out + trailing silence padding & clears odd state
-    player.InterruptAndClear();           // resets safely even if audio hardware is absent on headless runner
-    Assert(!player.IsPlayingAudio, "InterruptAndClear must clear IsPlayingAudio immediately");
+    var slices = new List<int>();
+    using (var vPlayer = new Win32StreamingPcmPlayer(bytes => slices.Add(bytes), headlessVirtualMode: true))
+    {
+        vPlayer.SetVolume(0.6);
+        vPlayer.EnqueuePcm24k(new byte[12001]); // under 14400+192 startup prime + odd byte
+        Assert(slices.Count == 0, $"Below 300ms startup prebuffer must hold silently (got {slices.Count})");
+
+        vPlayer.EnqueuePcm24k(new byte[4000]); // crosses prime (16001 >= 14592) -> submits 1920 lead-in + (16000-192)=15808
+        Assert(slices.Count == 1 && slices[0] == 1920 + (16000 - 192),
+            $"Startup prime slice unexpected: count={slices.Count}, bytes={(slices.Count > 0 ? slices[0] : 0)}");
+        Assert(vPlayer.IsActivelyPlaying && vPlayer.IsPlayingAudio, "Playback state must become active after prime submit");
+
+        vPlayer.FlushBuffered(); // flushes retained 192+1 odd->192 byte tail + 2304 tail padding
+        Assert(slices.Count == 2 && slices[1] == 192 + 2304,
+            $"FlushBuffered tail slice unexpected: count={slices.Count}, bytes={(slices.Count > 1 ? slices[1] : 0)}");
+
+        vPlayer.InterruptAndClear();
+        Assert(!vPlayer.IsPlayingAudio && !vPlayer.IsActivelyPlaying, "InterruptAndClear must clear both audio & active states immediately");
+    }
+
+    // Hardware safety smoke (works cleanly with or without physical audio hardware)
+    using var hwPlayer = new Win32StreamingPcmPlayer();
+    hwPlayer.SetVolume(0.6);
+    hwPlayer.EnqueuePcm24k(new byte[16000]);
+    hwPlayer.FlushBuffered();
+    hwPlayer.InterruptAndClear();
+    Assert(!hwPlayer.IsPlayingAudio, "Hardware InterruptAndClear must clear IsPlayingAudio cleanly");
 
     using var voice = new HybridVoiceService();
     voice.SetSpeechRate("+5%");
@@ -409,20 +431,39 @@ await RunTest("W11. Win32TemporalStoryboardComposer renders valid 2x1 motion str
     return Task.CompletedTask;
 });
 
-// W12. Long multi-slice DMA streaming, continuous turn recovery, and clean TTS markdown speech sanitizer
+// W12. Long multi-slice DMA streaming, tail-fade holdback, and clean TTS markdown speech sanitizer
 await RunTest("W12. Win32StreamingPcmPlayer slices >400ms buffers smoothly & SanitizeForSpeech removes markdown noise", () =>
 {
     var clean = HUDMind.Core.AI.CoachContentGuard.SanitizeForSpeech("**Rotá** [AHORA] | guardá `boost`...");
     Assert(!clean.Contains('*') && !clean.Contains('|') && !clean.Contains('`') && !clean.Contains('['),
         $"SanitizeForSpeech left symbols that cause TTS hesitations: '{clean}'");
 
-    using var player = new Win32StreamingPcmPlayer();
-    player.SetVolume(0.75);
-    player.EnqueuePcm24k(new byte[12000]); // primes 240ms + submits with 20ms silent lead-in
-    player.EnqueuePcm24k(new byte[48000]); // 1000ms continuous chunk -> slices cleanly into <=400ms WAVEHDR blocks
-    player.FlushBuffered();
-    player.InterruptAndClear();
-    Assert(!player.IsPlayingAudio, "InterruptAndClear must clear IsPlayingAudio cleanly after multi-slice write");
+    var slices = new List<int>();
+    using (var vPlayer = new Win32StreamingPcmPlayer(bytes => slices.Add(bytes), headlessVirtualMode: true))
+    {
+        vPlayer.SetVolume(0.75);
+        vPlayer.EnqueuePcm24k(new byte[12000]); // held under 300ms startup prebuffer (0 slices yet)
+        Assert(slices.Count == 0, "12000 bytes must stay buffered under 300ms startup prime");
+
+        vPlayer.EnqueuePcm24k(new byte[48000]); // 1000ms chunk -> splits into <=400ms (19200 byte) DMA blocks
+        Assert(slices.Count >= 4 && slices.All(s => s is > 0 and <= 19200),
+            $"Multi-slice DMA blocks must all be <=19200 bytes (got [{string.Join(", ", slices)}])");
+
+        int beforeFlush = slices.Count;
+        vPlayer.FlushBuffered();
+        Assert(slices.Count == beforeFlush + 1 && slices[^1] == 192 + 2304,
+            $"FlushBuffered must emit retained 4ms tail-fade + 48ms zero padding ({slices[^1]})");
+
+        vPlayer.InterruptAndClear();
+        Assert(!vPlayer.IsPlayingAudio && !vPlayer.IsActivelyPlaying, "InterruptAndClear must reset states after multi-slice write");
+    }
+
+    using var hwPlayer = new Win32StreamingPcmPlayer();
+    hwPlayer.SetVolume(0.75);
+    hwPlayer.EnqueuePcm24k(new byte[16000]);
+    hwPlayer.EnqueuePcm24k(new byte[48000]);
+    hwPlayer.FlushBuffered();
+    hwPlayer.InterruptAndClear();
     return Task.CompletedTask;
 });
 
@@ -438,6 +479,79 @@ await RunTest("W13. RuntimeHardeningGuard & encrypted ProfileVault integrity che
     Assert(entries.Count >= 21 && HUDMind.Core.Security.ProfileVaultReader.IsVaultIntegrityHealthy,
         $"Encrypted vault must unseal >=21 profile assets cleanly (got {entries.Count})");
     return Task.CompletedTask;
+});
+
+// W14. Win32StreamingPcmPlayer hardware PreOpenDevice & mid-turn jitter recovery without re-priming lead-in
+await RunTest("W14. Win32StreamingPcmPlayer PreOpenDevice & mid-turn gap recovery submit steady slices cleanly", () =>
+{
+    var slices = new List<int>();
+    using (var vPlayer = new Win32StreamingPcmPlayer(bytes => slices.Add(bytes), headlessVirtualMode: true))
+    {
+        vPlayer.PreOpenDevice();
+        vPlayer.SetVolume(0.8);
+        vPlayer.EnqueuePcm24k(new byte[16000]); // primes >= 14592 -> emits 1920 + (16000 - 192)
+        Assert(slices.Count == 1, $"Startup prime must emit 1 slice (got {slices.Count})");
+
+        // Simulate mid-turn jitter drain (_inFlight hits 0 within < 950ms idle cutoff)
+        vPlayer.SimulateInFlightDrainForTest();
+        vPlayer.EnqueuePcm24k(new byte[2400]); // below steady threshold (4800 + 192 = 4992)
+        Assert(slices.Count == 1, "2400 bytes during mid-turn recovery must buffer cleanly without tiny DMA fragments");
+
+        vPlayer.EnqueuePcm24k(new byte[3000]); // total (192 retained + 2400 + 3000 = 5592 >= 4992) -> submits WITHOUT 1920 startup lead-in!
+        Assert(slices.Count == 2 && slices[1] == 5592 - 192,
+            $"Mid-turn gap recovery must emit 5400 steady bytes without re-priming 1920 lead-in (got {slices[1]})");
+        vPlayer.FlushBuffered();
+        vPlayer.InterruptAndClear();
+        Assert(!vPlayer.IsPlayingAudio && !vPlayer.IsActivelyPlaying, "Must clear virtual state cleanly");
+    }
+
+    using var hwPlayer = new Win32StreamingPcmPlayer();
+    hwPlayer.PreOpenDevice();
+    hwPlayer.SetVolume(0.8);
+    hwPlayer.EnqueuePcm24k(new byte[16000]);
+    hwPlayer.FlushBuffered();
+    hwPlayer.InterruptAndClear();
+    Assert(!hwPlayer.IsPlayingAudio, "InterruptAndClear after PreOpenDevice must leave player quiescent");
+    return Task.CompletedTask;
+});
+
+// W15. Passive WASAPI Core Audio monitor & zero-cut continuation queue contracts on Windows voice engines
+await RunTest("W15. WasapiAudioSceneMonitor reads non-self mixer peaks safely & HybridVoiceService supports continuation queue", async () =>
+{
+    using var monitor = new WasapiAudioSceneMonitor();
+    var snap = monitor.SampleOtherAudio();
+    Assert(snap.OtherSessionsPeak01 is >= 0.0 and <= 1.0,
+        $"WASAPI peak sample must stay bounded [0,1] (got {snap.OtherSessionsPeak01})");
+    // Must never block or throw on STA threads
+    AudioSceneSnapshot staSnap = AudioSceneSnapshot.Quiet;
+    var staThread = new Thread(() => { staSnap = monitor.SampleOtherAudio(); });
+    staThread.SetApartmentState(ApartmentState.STA);
+    staThread.Start();
+    Assert(staThread.Join(TimeSpan.FromMilliseconds(500)) && staSnap.OtherSessionsPeak01 is >= 0.0 and <= 1.0,
+        "STA caller must sample WasapiAudioSceneMonitor cleanly without blocking on COM");
+
+    using var voice = new HybridVoiceService();
+    Assert(voice.SupportsContinuationQueue, "HybridVoiceService must advertise continuation queue support");
+    // Concurrent WarmUp calls on SAPI/Instant fallback must remain thread-safe without dropping _ready
+    using var sapi = new InstantSapiVoiceService();
+    Assert(sapi.SupportsContinuationQueue, "InstantSapiVoiceService must advertise continuation queue support");
+    await Task.WhenAll(
+        Task.Run(() => sapi.WarmUp("es", 0.5, "male")),
+        Task.Run(() => sapi.WarmUp("es", 0.5, "male")));
+    sapi.StopSpeaking();
+    _ = sapi.SpeakOrQueue("Uno purga", chainIfSpeaking: true, interruptCurrent: false);
+    _ = sapi.SpeakOrQueue("Dos cadena", chainIfSpeaking: true, interruptCurrent: false);
+    _ = sapi.SpeakOrQueue("Tres cadena", chainIfSpeaking: true, interruptCurrent: false);
+    _ = sapi.SpeakOrQueue("Cuatro evicta cabeza", chainIfSpeaking: true, interruptCurrent: false);
+    await Task.Delay(40);
+    sapi.StopSpeaking();
+
+    using var winRt = new WinRtNaturalVoiceService();
+    _ = winRt.SpeakOrQueue("Uno interrumpe", chainIfSpeaking: false, interruptCurrent: true);
+    _ = winRt.SpeakOrQueue("Dos cadena", chainIfSpeaking: true, interruptCurrent: false);
+    _ = winRt.SpeakOrQueue("Tres evicta manteniendo interrupcion", chainIfSpeaking: true, interruptCurrent: false);
+    await Task.Delay(30);
+    winRt.StopSpeaking();
 });
 
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");

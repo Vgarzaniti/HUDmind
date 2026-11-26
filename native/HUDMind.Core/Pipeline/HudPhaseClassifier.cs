@@ -33,7 +33,7 @@ public static partial class HudPhaseClassifier
 
     private static readonly string[] TrainingKeywords =
     [
-        "FREE PLAY", "ENTRENAMIENTO", "PRACTICE", "THE RANGE", "WARMUP", "CALENTAMIENTO", "ART OF WAR", "TUTORIAL"
+        "FREE PLAY", "FREEPLAY", "ENTRENAMIENTO", "PRACTICE", "THE RANGE", "WARMUP", "CALENTAMIENTO", "ART OF WAR", "TUTORIAL"
     ];
 
     private static readonly string[] KickoffKeywords =
@@ -42,7 +42,11 @@ public static partial class HudPhaseClassifier
     ];
 
     private static readonly string[] LogLoadingMarkers = ["WAIT_FOR_PLAYERS", "DISCONNECT"];
-    private static readonly string[] LogMenuMarkers = ["PHASE=GAMEOVER", "POST_GAME", "MENU_MAIN", "HERO_SELECTION", "STRATEGY_TIME"];
+    private static readonly string[] LogMenuMarkers =
+    [
+        "PHASE=GAMEOVER", "POST_GAME", "MENU_MAIN", "HERO_SELECTION", "STRATEGY_TIME",
+        "EN MENÚ PRINCIPAL", "EN MENU PRINCIPAL", "MENU / LOBBY", "PARTIDO FINALIZADO"
+    ];
 
     public static string ClassifyPhase(IReadOnlyDictionary<string, string> zones, string logSummary)
     {
@@ -59,20 +63,21 @@ public static partial class HudPhaseClassifier
         if (LogMenuMarkers.Any(m => logUpper.Contains(m, StringComparison.Ordinal)))
             return "MENU";
 
-        if (ReplayKeywords.Any(k => hudUpper.Contains(k, StringComparison.Ordinal)))
+        if (ReplayKeywords.Any(k => ContainsBoundedPhrase(hudUpper, k)))
             return "REPLAY";
-        if (LoadingKeywords.Any(k => hudUpper.Contains(k, StringComparison.Ordinal)))
+        if (LoadingKeywords.Any(k => ContainsBoundedPhrase(hudUpper, k)))
             return "LOADING";
-        if (TrainingKeywords.Any(k => hudUpper.Contains(k, StringComparison.Ordinal)))
-            return "TRAINING";
 
         // Match timers strictly on screen OCR so DOTA2_GSI / log clocks never suppress OCR menu keywords
         bool hasTimer = TimerRegex().IsMatch(ocrHudUpper);
-        int menuHits = MenuKeywords.Count(k => allUpper.Contains(k, StringComparison.Ordinal));
+        int menuHits = MenuKeywords.Count(k => ContainsBoundedPhrase(allUpper, k));
         if (menuHits >= 2 && !hasTimer)
             return "MENU";
 
-        if (KickoffKeywords.Any(k => hudUpper.Contains(k, StringComparison.Ordinal)) ||
+        if (TrainingKeywords.Any(k => ContainsBoundedPhrase(hudUpper, k)))
+            return "TRAINING";
+
+        if (KickoffKeywords.Any(k => ContainsBoundedPhrase(hudUpper, k)) ||
             (zones.TryGetValue("CENTER", out var centerText) && CountdownRegex().IsMatch(centerText)))
             return "KICKOFF";
 
@@ -83,6 +88,21 @@ public static partial class HudPhaseClassifier
             return "PLAY";
 
         return "UNKNOWN";
+    }
+
+    private static bool ContainsBoundedPhrase(string upperText, string keyword)
+    {
+        int idx = 0;
+        while ((idx = upperText.IndexOf(keyword, idx, StringComparison.Ordinal)) >= 0)
+        {
+            bool leftOk = idx == 0 || !char.IsLetterOrDigit(upperText[idx - 1]);
+            int after = idx + keyword.Length;
+            bool rightOk = after >= upperText.Length || !char.IsLetterOrDigit(upperText[after]);
+            if (leftOk && rightOk)
+                return true;
+            idx = after;
+        }
+        return false;
     }
 
     private static string NormalizePunct(string s) =>

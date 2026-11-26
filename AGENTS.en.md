@@ -12,7 +12,7 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
 
 ### Non-Negotiable Architectural & Safety Invariants
 1. **0% GPU for HUDMind:** `App.xaml.cs` enforces `RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly`. Never add WPF GPU shader effects (e.g. `DropShadowEffect`) or DXGI/GPU hooks.
-2. **Zero External NuGet Dependencies:** All `.csproj` files use only the .NET 9 BCL, WinRT (`net9.0-windows10.0.19041.0`), and direct Win32 P/Invoke (`user32`, `gdi32`, `kernel32`, `winmm`, `shell32`). Never add NuGet packages unless explicitly requested.
+2. **Zero External NuGet Dependencies:** All `.csproj` files use only the .NET 9 BCL, inbox Windows Desktop SDK (`WPF`/`WindowsForms` in Windows-only layers), WinRT (`net9.0-windows10.0.19041.0`), and direct Win32 P/Invoke (`user32`, `gdi32`, `kernel32`, `winmm`, `shell32`). Never add NuGet packages unless explicitly requested.
 3. **100% Passive / Anti-Cheat Safe:**
    - Capture uses external GDI `StretchBlt` over `GetClientRect` (`FastScreenCapture.cs`).
    - Foreground detection uses `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` cached per `(HWND, PID)` (`Win32WindowDetector.cs`).
@@ -27,7 +27,7 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
 5. **Cross-Platform Core Split:** Keep `native/HUDMind.Core` strictly `net9.0` (no `Windows`, `WPF`, or `WinForms` imports) so `HUDMind.Tests` runs on both `ubuntu-latest` and `windows-latest`.
 6. **Archive & Runtime Assets Rules:**
    - Do **not** modify `archive/legacy_python/` or reintroduce Python runtime dependencies.
-   - Do **not** rename `profiles/*/*.md` (`system_prompt.md`, `knowledge_base.md`)—they are embedded assembly resources loaded by `ConfigRepository`.
+   - Do **not** rename `profiles/*/*.md` (`system_prompt.md`, `knowledge_base.md`)—they are compiled into the sealed `HUDMind.Vault.bin` embedded resource loaded by `ConfigRepository`.
 
 ---
 
@@ -41,15 +41,15 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
 | `native/HUDMind.Core/Security/` | AES-256-GCM vault | `ProfileVaultCodec` (Brotli + AES-256-GCM), `ProfileVaultReader` (in-RAM unsealing + integrity probe) |
 | `native/HUDMind.Core/AI/` | AI routing & backends | `ProviderRegistry`, `ProviderFailoverRouter`, `CoachContentGuard` (`ICoachSafetyPipeline` / `CompositeContentSafetyPipeline`), `SharedHttpFactory`, `CompactWireProtocol`, `CoachingPersonaBuilder`, `LiveCoachEngine` (`RealtimeLiveCoachOrchestrator`), `Adapters/*`, `LiveBackends/*` |
 | `native/HUDMind.Core/Engine/` | Orchestrators | `Abstractions.cs` (`ICoachEngine`, etc.), `MatchSessionCoordinator` (shared epoch/memory/ring-buffer coordinator), `CoachOrchestrator.cs` |
-| `native/HUDMind.Core/Pipeline/` | Frame/audio utilities | `PerceptualHasher` (64-bit dHash), `InterventionMemory` (TTL anti-repeat + chat isolation), `RecentFrameRingBuffer`, `GameKnowledgeCompiler`, `TacticalSignalEvaluator`, `HudPhaseClassifier`, `AudioPcmUtilities`, `BlackScreenDiagnostic` |
+| `native/HUDMind.Core/Pipeline/` | Frame/audio utilities | `PerceptualHasher` (64-bit dHash), `InterventionMemory` (TTL anti-repeat + chat isolation), `RecentFrameRingBuffer` (25s macro + ~10 FPS OBS buffer), `ConversationalSpeechCoordinator` (queue + connectors), `GameKnowledgeCompiler`, `TacticalSignalEvaluator`, `HudPhaseClassifier`, `AudioPcmUtilities`, `BlackScreenDiagnostic` |
 | `native/HUDMind.Core/Updates/GitHubReleaseUpdateService.cs` | Self-update check & download | `CheckForUpdatesAsync`, `ParseLatestReleaseJson`, `SelectPreferredAssets`, `DownloadAssetAsync` (GitHub redirect allowlist + `SHA-256`) |
-| `native/HUDMind.Windows/` | `net9.0-windows10.0.19041.0` | GDI capture, Win32 detection, hotkeys, WinMM audio, WinRT TTS/OCR, passive game sensors, `RuntimeHardeningGuard`, `KnownFolders` |
+| `native/HUDMind.Windows/` | `net9.0-windows10.0.19041.0` | GDI capture, Win32 detection, hotkeys, WinMM audio, WASAPI mixer monitor, WinRT TTS/OCR, passive game sensors, `RuntimeHardeningGuard`, `KnownFolders` |
 | `native/HUDMind.Windows/Sensors/` | Passive sensors | `TailLogSensorBase`, `RocketLeagueLogSensor`, `ValorantLogSensor`, `ValveGsiTelemetrySensor`, `LeagueLiveClientSensor` |
-| `native/HUDMind.Windows/Audio/` | Pure WinMM / WinRT audio | `Win32AudioDevices`, `Win32StreamingMicCapture` (16kHz), `Win32StreamingPcmPlayer` (24kHz), `WinRtNaturalVoiceService`, `Win32AudioCue`, `AudioDiagnosticsService` |
+| `native/HUDMind.Windows/Audio/` | Pure WinMM / WinRT / WASAPI audio | `Win32AudioDevices`, `Win32StreamingMicCapture` (16kHz), `Win32StreamingPcmPlayer` (24kHz), `WasapiAudioSceneMonitor` (passive COM peak monitor), `WinRtNaturalVoiceService`, `Win32AudioCue`, `AudioDiagnosticsService` |
 | `native/HUDMind.App/` | WPF UI (`HUDMind.Native.exe`) | `App.xaml.cs` (SoftwareOnly + mutex + `RuntimeHardeningGuard` probe), `MainWindow.xaml/.cs` (`UpdateBanner`), `OverlayWindow.xaml/.cs`, `Controls/`, `Services/` (`CoachEngineCoordinator`), `Win32TrayIcon.cs` |
 | `native/HUDMind.Packer/` | Build tool (`net9.0`) | Seals `profiles/**/*` and `ProtectedAssets/` into `HUDMind.Vault.bin` (`IsPublishable=false`, zero NuGets) |
-| `native/HUDMind.Tests/` | `net9.0` test suite | 48 cross-platform unit/integration tests (`Program.cs`) |
-| `native/HUDMind.Windows.Tests/` | `net9.0-windows` test suite | 13 Windows-native tests for WinMM, GSI, TLS pinning, logs, capture, voice, hardening, and `KnownFolders` (`Program.cs`) |
+| `native/HUDMind.Tests/` | `net9.0` test suite | 50 cross-platform unit/integration tests (`Program.cs`) |
+| `native/HUDMind.Windows.Tests/` | `net9.0-windows` test suite | 15 Windows-native tests for WinMM, WASAPI, GSI, TLS pinning, logs, capture, voice, hardening, and `KnownFolders` (`Program.cs`) |
 | `profiles/` | Game cartridges | 7 bundled profiles (`aoe2_de`, `cs2`, `dota2`, `league_of_legends`, `rob_run`, `rocket_league`, `valorant`) sealed inside `HUDMind.Vault.bin` |
 | `docs/` | Bilingual technical docs | All docs have `.es.md` & `.en.md` pairs (`architecture`, `srs`, `test_plan_ieee29119`, `game_profiles_guide`, `versioning_and_releases`, `pull_request_guide`) |
 | `.github/` | CI/CD & governance | `workflows/ci.yml`, `workflows/release.yml`, `PULL_REQUEST_TEMPLATE.md`, `ISSUE_TEMPLATE/*`, `dependabot.yml` |
@@ -73,7 +73,7 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
 # 1. Build entire solution (must pass with 0 warnings / 0 errors)
 dotnet build native/HUDMind.sln -c Release
 
-# 2. Run cross-platform Core suite (48 tests) & Windows native suite (13 tests)
+# 2. Run cross-platform Core suite (50 tests) & Windows native suite (15 tests)
 dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
 
