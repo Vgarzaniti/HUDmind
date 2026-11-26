@@ -20,7 +20,7 @@
   - `🔊 Solo voz del coach`: microphone off, coach speaks while you can send text chat messages.
   - `💬 Solo texto`: 100% silent, written chat + overlay only.
 - **Skill Tier / Rank & Pro-Standard Calibration:** adapts tactical depth, terminology, and strictness from *Beginner* to *Pro / GC / Radiant / Faceit 10* in Spanish or English.
-- **Flexible Hardware Audio & System Tray:** WinMM microphone and speaker selection, RMS mic test, minimize to **System Tray (Win32 `Shell_NotifyIconW`)**, scalable/compact **PerMonitorV2** click-through overlay, and **`📊 Resumen Partida`** post-match review generator.
+- **Flexible Hardware Audio & System Tray:** WinMM microphone and speaker selection, RMS mic test, minimize to **System Tray (Win32 `Shell_NotifyIconW`)**, optional Windows startup (`--minimized`, **disabled by default**), Discord-style translucent **PerMonitorV2** click-through overlay (3 styles: *Floating Text*, *Translucent Pill*, *Tactical Card*, `0%–95%` background opacity with 0% GPU crisp shadowed text, `1–3` message mini-feed, live PTT/waveform pill, and `F7` Quick-Chat without Alt-Tab), and **`📊 Resumen Partida`** post-match reviews.
 
 ---
 
@@ -40,7 +40,7 @@
 *(For CS2 / Dota 2 GSI, install `gamestate_integration_hudmind.cfg` in 1 click from **🎙 Voz y Ajustes → 🎮 Activar conexión CS2 / Dota 2**).*
 
 - **Full GUI Management (No JSON editing):** add or **edit** AI accounts (custom HTTPS `BaseUrl`, `Vision` vs `Text-Only` override), create or edit **game profiles** (`EXEs`, `Cooldown`, `pHash`, and personal rules), toggle subtle Win32 audio cues, open saved Markdown reviews (`logs/reviews/`), and get automatic Exclusive-Fullscreen black-screen diagnostics.
-- **100% Portable, Hardened & In-App Update Alerts:** all 7 bundled profiles and core guard templates are sealed inside an authenticated AES-256-GCM binary vault (`HUDMind.Vault.bin`) within the `ReadyToRun` single-file executable and auto-seed into `%LocalAppData%\HUDMind\profiles`. On startup (and every 60 min while idle), HUDMind checks **GitHub Releases** in the background and shows an in-app banner whenever a newer version is available, featuring a **`⬇ Descargar actualización`** button and automatic **SHA-256** verification.
+- **100% Portable, Encrypted & Auto-Updatable:** local API keys are protected per user with **Windows DPAPI (`crypt32.dll`)**, all 7 profiles and safety rules are sealed inside the AES-256-GCM `HUDMind.Vault.bin` container within the `ReadyToRun` single-file binary, and HUDMind checks **GitHub Releases** on startup (and every 60 min while idle) with **SHA-256** verification and 1-click Setup updates.
 
 ---
 

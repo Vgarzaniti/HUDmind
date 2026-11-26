@@ -20,7 +20,7 @@
   - `🔊 Solo voz del coach`: micrófono apagado, el coach te habla y podés escribir por chat.
   - `💬 Solo texto`: 100% silencioso, solo chat escrito y overlay.
 - **Calibración por Nivel / Rango y Estándar Pro:** adapta profundidad, vocabulario y criterio táctico desde *Principiante* hasta *Pro / GC / Radiant / Faceit 10* en Español o Inglés.
-- **Audio Hardware Flexible & Tray:** selector de micrófono y salida de audio WinMM, prueba de micrófono con medición RMS, minimización a **Bandeja del Sistema (Win32 `Shell_NotifyIconW`)**, overlay compacto/escalable **PerMonitorV2** y botón **`📊 Resumen Partida`** al finalizar.
+- **Audio Hardware Flexible & Tray:** selector de micrófono y salida de audio WinMM, prueba de micrófono con medición RMS, minimización a **Bandeja del Sistema (Win32 `Shell_NotifyIconW`)**, inicio opcional con Windows (`--minimized`, **desactivado por defecto**), overlay **PerMonitorV2** transparente estilo Discord (3 modos: *Solo texto flotante*, *Cápsula* y *Tarjeta*, opacidad `0%–95%` con texto nítido 0% GPU, mini-feed `1–3` mensajes, indicador PTT/ondas en vivo y Quick-Chat `F7` sin Alt-Tab) y botón **`📊 Resumen Partida`** al finalizar.
 
 ---
 
@@ -40,7 +40,7 @@
 *(Para CS2 / Dota 2 GSI, podés instalar `gamestate_integration_hudmind.cfg` en 1 clic desde **🎙 Voz y Ajustes → 🎮 Activar conexión CS2 / Dota 2**).*
 
 - **Gestión completa sin tocar JSON:** agregá o **editá** cuentas IA (con `BaseUrl` HTTPS custom y selector de modo `Visión` vs `Solo Texto`), creá o editá **perfiles de juegos** (`EXEs`, `Cooldown`, `pHash` y reglas personales), activá tonos sutiles Win32, abrí tus resúmenes Markdown (`logs/reviews/`) en **`📂 Resúmenes`** y aprovechá diagnóstico automático ante pantallas negras de Fullscreen Exclusivo.
-- **100% Portable, Sellado y Auto-Actualizable:** los 7 perfiles incluidos y las reglas base vienen cifrados dentro del vault autenticado AES-256-GCM (`HUDMind.Vault.bin`) en el binario `ReadyToRun` single-file y se auto-crean en `%LocalAppData%\HUDMind\profiles`. Al abrir el `.exe` (y cada 60 min en reposo), HUDMind consulta **GitHub Releases** en segundo plano y muestra un cartel dentro de la ventana cuando hay una versión nueva disponible, con botón **`⬇ Descargar actualización`** y verificación **SHA-256**.
+- **100% Portable, Cifrado y Auto-Actualizable:** tus API keys locales se cifran por usuario con **Windows DPAPI (`crypt32.dll`)**, los 7 perfiles y las reglas base vienen sellados en `HUDMind.Vault.bin` (AES-256-GCM) dentro del binario `ReadyToRun` single-file, y al abrir el `.exe` (o cada 60 min en reposo) HUDMind consulta **GitHub Releases** para descargar con **SHA-256** e instalar en 1 clic si usás el Setup.
 
 ---
 
