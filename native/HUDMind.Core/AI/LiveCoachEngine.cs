@@ -80,6 +80,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private int _waitingFirstAudioInt;
     private int _bargeInConsecutiveFrames;
     private long _lastOverlayPartialTick;
+    private long _lastOverlayAudioTick;
+    private int _lastPttActiveState;
     private long _lastAutoNudgeUtcTicks;
     private long _lastMicVoiceUtcTicks;
     private long _lastPttHeldUtcTicks;
@@ -952,6 +954,28 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _modelSpeaking = true;
             _pcmPlayer.EnqueuePcm24k(pcm24k);
         }
+        double coachRms = AudioPcmUtilities.ComputeRms16(pcm24k);
+        NotifyOverlayVoiceActivity(
+            userMicActive: Interlocked.CompareExchange(ref _lastPttActiveState, 0, 0) == 1,
+            userLevel01: 0,
+            coachVoiceActive: true,
+            coachLevel01: Math.Clamp(coachRms / 4200.0, 0.14, 1.0));
+    }
+
+    private void NotifyOverlayVoiceActivity(
+        bool userMicActive,
+        double userLevel01,
+        bool coachVoiceActive,
+        double coachLevel01,
+        bool force = false)
+    {
+        if (!_config.EnableOverlay)
+            return;
+        long prev = Interlocked.Read(ref _lastOverlayAudioTick);
+        if (!force && prev != 0 && Stopwatch.GetElapsedTime(prev).TotalMilliseconds < 65.0)
+            return;
+        Interlocked.Exchange(ref _lastOverlayAudioTick, Stopwatch.GetTimestamp());
+        _overlay.UpdateVoiceActivity(userMicActive, userLevel01, coachVoiceActive, coachLevel01);
     }
 
     private void HandlePartialTranscript(long sessionEpoch, GameProfile? sessionProfile, string currentLine)
@@ -1027,6 +1051,12 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         Interlocked.Exchange(ref _waitingFirstAudioInt, 0);
         Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
         Interlocked.Exchange(ref _lastOverlayPartialTick, 0);
+        NotifyOverlayVoiceActivity(
+            userMicActive: Interlocked.CompareExchange(ref _lastPttActiveState, 0, 0) == 1,
+            userLevel01: 0,
+            coachVoiceActive: false,
+            coachLevel01: 0,
+            force: true);
 
         bool effectiveSilent = string.IsNullOrWhiteSpace(spoken) ||
             spoken.Trim().Trim('.', '!', ' ').Equals("NONE", StringComparison.OrdinalIgnoreCase);
@@ -1108,6 +1138,12 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         Interlocked.Exchange(ref _proactiveTurnSeq, 0);
         Interlocked.Exchange(ref _waitingFirstAudioInt, 0);
         Interlocked.Exchange(ref _bargeInConsecutiveFrames, 0);
+        NotifyOverlayVoiceActivity(
+            userMicActive: Interlocked.CompareExchange(ref _lastPttActiveState, 0, 0) == 1,
+            userLevel01: 0,
+            coachVoiceActive: false,
+            coachLevel01: 0,
+            force: true);
     }
 
     private string? StartMicIfEnabled()
@@ -1211,6 +1247,20 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     }
 
                     double rms = AudioPcmUtilities.ComputeRms16(pcmChunk);
+                    if (pttMode)
+                    {
+                        int prevPttUi = Interlocked.Exchange(ref _lastPttActiveState, pttHeld ? 1 : 0);
+                        if (pttHeld)
+                            NotifyOverlayVoiceActivity(true, Math.Clamp(rms / 3200.0, 0.14, 1.0), _modelSpeaking, _modelSpeaking ? 0.55 : 0.0, force: prevPttUi == 0);
+                        else if (prevPttUi == 1)
+                            NotifyOverlayVoiceActivity(false, 0, _modelSpeaking, _modelSpeaking ? 0.55 : 0.0, force: true);
+                    }
+                    else
+                    {
+                        Interlocked.Exchange(ref _lastPttActiveState, 0);
+                        if (rms >= 420.0)
+                            NotifyOverlayVoiceActivity(true, Math.Clamp(rms / 3200.0, 0.12, 1.0), _modelSpeaking, _modelSpeaking ? 0.55 : 0.0);
+                    }
                     bool coachAudible = _modelSpeaking || _pcmPlayer.IsPlayingAudio;
 
                     // Acoustic Echo Shield: active strictly while coach audio is playing or hanging over speakers.
@@ -1328,6 +1378,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
     private void StopMicAndDrainChannelLocked()
     {
+        if (Interlocked.Exchange(ref _lastPttActiveState, 0) == 1)
+            NotifyOverlayVoiceActivity(false, 0, _modelSpeaking, _modelSpeaking ? 0.55 : 0.0, force: true);
         _mic.Stop();
         var ch = Interlocked.Exchange(ref _micSendChannel, null);
         ch?.Writer.TryComplete();

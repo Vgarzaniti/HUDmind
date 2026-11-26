@@ -5,9 +5,11 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 using HUDMind.Windows;
+using HUDMind.Windows.Security;
 
 int passed = 0;
 int failed = 0;
@@ -552,6 +554,50 @@ await RunTest("W15. WasapiAudioSceneMonitor reads non-self mixer peaks safely & 
     _ = winRt.SpeakOrQueue("Tres evicta manteniendo interrupcion", chainIfSpeaking: true, interruptCurrent: false);
     await Task.Delay(30);
     winRt.StopSpeaking();
+});
+
+// W16. Native Windows DPAPI (crypt32.dll), HKCU Startup Opt-In Safety & Quick-Chat Window Helpers
+await RunTest("W16. Win32DpapiSecretProtector crypt32 round-trip, WindowsStartupManager HKCU opt-in & foreground focus guards", () =>
+{
+    var dpapi = new Win32DpapiSecretProtector();
+    Assert(dpapi.IsSupported, "DPAPI must be supported on Windows");
+    string sealedVal = dpapi.Protect("AIzaRealSampleSecret987654");
+    Assert(sealedVal.StartsWith(ConfigRepository.ProtectedSecretPrefix, StringComparison.Ordinal) &&
+           !sealedVal.Contains("AIzaRealSampleSecret987654", StringComparison.Ordinal),
+        "DPAPI Protect must emit dpapi: prefix without plaintext leakage");
+    Assert(dpapi.Unprotect(sealedVal) == "AIzaRealSampleSecret987654", "DPAPI Unprotect must recover exact secret");
+    Assert(dpapi.Protect(string.Empty) == string.Empty && dpapi.Unprotect(string.Empty) == string.Empty, "Empty secrets stay empty");
+
+    // Tampered DPAPI payload must throw CryptographicException
+    var tamperedBytes = Convert.FromBase64String(sealedVal[ConfigRepository.ProtectedSecretPrefix.Length..]);
+    tamperedBytes[^1] ^= 0xFF;
+    bool threwTamper = false;
+    try { _ = dpapi.Unprotect($"{ConfigRepository.ProtectedSecretPrefix}{Convert.ToBase64String(tamperedBytes)}"); }
+    catch (CryptographicException) { threwTamper = true; }
+    Assert(threwTamper, "Tampered DPAPI blob must fail verification");
+
+    // Isolated HKCU registry subkey test for WindowsStartupManager (default stays off unless explicitly applied)
+    Assert(!WindowsStartupManager.IsSafeExecutablePath(@"\\unc-share\evil\hudmind.exe"), "UNC path blocked for startup Run key");
+    string testSubKey = $@"Software\HUDMind_Test_{Guid.NewGuid():N}";
+    try
+    {
+        Assert(!WindowsStartupManager.IsEnabled(testSubKey), "New startup key starts disabled by default");
+        string dummyExe = Environment.ProcessPath ?? Path.Combine(Environment.SystemDirectory, "notepad.exe");
+        if (File.Exists(dummyExe) && dummyExe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            Assert(WindowsStartupManager.Apply(true, dummyExe, testSubKey) && WindowsStartupManager.IsEnabled(testSubKey),
+                "Startup opt-in must write quoted --minimized Run entry");
+            Assert(WindowsStartupManager.Apply(false, subKey: testSubKey) && !WindowsStartupManager.IsEnabled(testSubKey),
+                "Disabling Startup must remove Run entry cleanly");
+        }
+    }
+    finally
+    {
+        try { Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(testSubKey, throwOnMissingSubKey: false); } catch { }
+    }
+
+    Assert(!Win32WindowDetector.TryRestoreForegroundWindow(IntPtr.Zero), "Null HWND restore returns false safely");
+    return Task.CompletedTask;
 });
 
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");

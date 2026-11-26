@@ -127,6 +127,8 @@ public interface IOverlayOutputService
     void ShowMessage(OverlayCalloutMessage message) =>
         ShowCallout(message.Text, message.Urgency, message.Title, message.DurationSeconds);
 
+    void UpdateVoiceActivity(bool userMicActive, double userLevel01, bool coachVoiceActive, double coachLevel01) { }
+
     void ClearHistory() { }
 }
 

@@ -15,6 +15,7 @@ using HUDMind.Core.Models;
 using HUDMind.Core.Pipeline;
 using HUDMind.Core.Updates;
 using HUDMind.Windows;
+using HUDMind.Windows.Security;
 using MediaColor = System.Windows.Media.Color;
 
 namespace HUDMind.App;
@@ -39,7 +40,7 @@ public partial class MainWindow : Window
     private const int MaxLogEntries = 180;
     private const int MaxFeedEntries = 120;
 
-    private readonly ConfigRepository _repo = new();
+    private readonly ConfigRepository _repo = new(secretProtector: new Win32DpapiSecretProtector());
     private readonly CoachEngineCoordinator _coordinator = new();
     private readonly object _memoryIoLock = new();
     private readonly object _profilesLock = new();
@@ -56,6 +57,7 @@ public partial class MainWindow : Window
     private readonly HudNavigationMediator _navMediator;
     private Win32TrayIcon? _trayIcon;
     private DispatcherTimer? _updateTimer;
+    private DispatcherTimer? _voiceUiTimer;
     private CancellationTokenSource? _updateCts;
     private AppUpdateInfo? _availableUpdate;
     private string? _downloadedUpdatePath;
@@ -69,13 +71,16 @@ public partial class MainWindow : Window
     private bool _chatSending;
     private bool _rulesDirty;
     private bool _onboardingDismissed;
+    private bool _lastClassicSpeaking;
     private string? _lastRulesGameId;
     private string? _editingAccountId;
     private readonly bool _smokeMode;
+    private readonly bool _startMinimized;
 
-    public MainWindow(bool smokeMode = false)
+    public MainWindow(bool smokeMode = false, bool startMinimized = false)
     {
         _smokeMode = smokeMode;
+        _startMinimized = startMinimized && !smokeMode;
         if (_smokeMode)
         {
             ShowInTaskbar = false;
@@ -84,8 +89,30 @@ public partial class MainWindow : Window
             Top = -32000;
             Opacity = 0;
         }
+        else if (_startMinimized)
+        {
+            WindowState = WindowState.Minimized;
+            ShowInTaskbar = false;
+        }
 
         InitializeComponent();
+        _overlay.QuickChatSubmitted += msg => _ = SendQuickChatFromOverlayAsync(msg);
+        _voiceUiTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+        _voiceUiTimer.Tick += (_, _) =>
+        {
+            if (_shutdownComplete || !_coordinator.IsRunning)
+                return;
+            if (!_coordinator.SupportsLiveMic)
+            {
+                bool speaking = _sharedVoice?.IsActivelySpeaking == true;
+                if (speaking || _lastClassicSpeaking)
+                {
+                    _lastClassicSpeaking = speaking;
+                    _overlay.UpdateVoiceActivity(false, 0, speaking, speaking ? 0.62 : 0.0);
+                    SettingsVoiceWave.UpdateAudioLevel(speaking ? 0.62 : 0.0);
+                }
+            }
+        };
         _navMediator = new HudNavigationMediator(MainTabs, [NavCoach, NavAccounts, NavGames, NavSettings]);
         SettingsVoiceWave.SetBarHeightScale(26);
         LstCoachFeed.ItemsSource = _feedEntries;
@@ -129,10 +156,11 @@ public partial class MainWindow : Window
             _ = Dispatcher.BeginInvoke(Close);
             return;
         }
-        if (_config.MinimizeToTray && WindowState == WindowState.Minimized)
+        if (_startMinimized || (_config.MinimizeToTray && WindowState == WindowState.Minimized))
         {
+            WindowState = WindowState.Minimized;
             Hide();
-            _trayIcon.Show();
+            _trayIcon.Show(HeaderStatusText.Text);
         }
         _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(60) };
         _updateTimer.Tick += (_, _) =>
@@ -158,6 +186,7 @@ public partial class MainWindow : Window
     private void RestoreFromTray()
     {
         if (_shutdownComplete) return;
+        ShowInTaskbar = true;
         Show();
         WindowState = WindowState.Normal;
         Activate();
@@ -240,6 +269,7 @@ public partial class MainWindow : Window
         ChkEnableOverlay.IsChecked = _config.EnableOverlay;
         ChkEnableHotkeys.IsChecked = _config.EnableHotkeys;
         ChkMinimizeToTray.IsChecked = _config.MinimizeToTray;
+        ChkLaunchWithWindows.IsChecked = _config.LaunchWithWindows && WindowsStartupManager.IsEnabled();
         ChkEnableAudioCues.IsChecked = _config.EnableAudioCues;
         ChkCheckUpdatesOnStartup.IsChecked = _config.CheckUpdatesOnStartup;
         TxtCoachSoul.Text = _repo.LoadCoachSoulMarkdown();
@@ -247,6 +277,7 @@ public partial class MainWindow : Window
         TxtPauseKey.Text = _config.HotkeyTogglePause;
         TxtAnalyzeKey.Text = _config.HotkeyAnalyzeNow;
         TxtMicKey.Text = _config.HotkeyToggleMic;
+        TxtQuickChatKey.Text = string.IsNullOrWhiteSpace(_config.HotkeyQuickChat) ? "F7" : _config.HotkeyQuickChat;
         RefreshHotkeyButtonLabels();
 
         var (curVer, _) = GitHubReleaseUpdateService.GetCurrentAppVersion();
@@ -292,7 +323,7 @@ public partial class MainWindow : Window
     {
         string style = _config.ResolveOverlayStyle();
         int maxMessages = _config.ResolveOverlayMaxMessages();
-        _overlay.SetHotkeyHints(_config.HotkeyTogglePause, _config.HotkeyAnalyzeNow);
+        _overlay.SetHotkeyHints(_config.HotkeyTogglePause, _config.HotkeyAnalyzeNow, _config.HotkeyQuickChat);
         _overlay.Configure(
             _config.OverlayPosition,
             _config.OverlayWidth,
@@ -523,6 +554,8 @@ public partial class MainWindow : Window
         {
             _updateTimer?.Stop();
             _updateTimer = null;
+            _voiceUiTimer?.Stop();
+            _voiceUiTimer = null;
             _updateCts?.Cancel();
             _updateCts?.Dispose();
             _updateCts = null;
@@ -586,7 +619,8 @@ public partial class MainWindow : Window
                     OnPauseChanged,
                     ToggleMicViaHotkey,
                     HandleMatchCompleted,
-                    ResolveContextForProfileSafe);
+                    ResolveContextForProfileSafe,
+                    ToggleQuickChatViaHotkey);
 
                 if (_closingInProgress || _shutdownComplete || !result.Started)
                     return;
@@ -607,6 +641,8 @@ public partial class MainWindow : Window
                 SetRunningControlLocks(true);
                 PauseBadge.Visibility = Visibility.Collapsed;
                 RefreshHotkeyButtonLabels();
+                _lastClassicSpeaking = false;
+                _voiceUiTimer?.Start();
                 _trayIcon?.UpdateTooltip($"HUDMind · {HeaderStatusText.Text}");
             }
             catch (Exception ex)
@@ -679,6 +715,10 @@ public partial class MainWindow : Window
 
     private void ApplyStoppedUiState()
     {
+        _voiceUiTimer?.Stop();
+        _lastClassicSpeaking = false;
+        SettingsVoiceWave.ResetToIdleCurve();
+        _overlay.HideImmediately();
         _overlay.ClearHistory();
         SetRunningControlLocks(false);
         ResetStatsCards();
@@ -710,6 +750,27 @@ public partial class MainWindow : Window
                     "HUD"));
             }
         });
+    }
+
+    private void ToggleQuickChatViaHotkey()
+    {
+        if (!_coordinator.IsRunning || _shutdownComplete || _closingInProgress)
+            return;
+        _overlay.ToggleQuickChat();
+    }
+
+    private async Task SendQuickChatFromOverlayAsync(string text)
+    {
+        if (_shutdownComplete || !_coordinator.IsRunning || string.IsNullOrWhiteSpace(text))
+            return;
+        try
+        {
+            await _coordinator.SendUserTextAsync(text);
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Error enviando chat rápido: {SecretRedactor.Redact(ex.Message, GetAccountApiKeysSnapshot())}");
+        }
     }
 
     private void BtnAnalyzeNow_Click(object sender, RoutedEventArgs e) =>
@@ -1751,14 +1812,20 @@ public partial class MainWindow : Window
                 System.Windows.MessageBox.Show($"Tecla Push-to-Talk inválida: '{TxtPttKey.Text}'. Usá ej: V, Alt, CapsLock, Space, Mouse4, Mouse5.", "Push-to-Talk inválido", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
-            if (pNorm == aNorm || pNorm == mNorm || aNorm == mNorm)
+            if (!HotkeyParser.TryParse(TxtQuickChatKey.Text, out _, out _, out var qNorm))
             {
-                System.Windows.MessageBox.Show("Las 3 teclas rápidas (Pausar, Analizar, Mic) no pueden repetirse.", "Conflicto de atajos", MessageBoxButton.OK, MessageBoxImage.Warning);
+                System.Windows.MessageBox.Show($"Tecla Chat Rápido inválida: '{TxtQuickChatKey.Text}'. Usá ej: F7, Alt+Q, Insert.", "Atajo inválido", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+            if (pNorm == aNorm || pNorm == mNorm || pNorm == qNorm || aNorm == mNorm || aNorm == qNorm || mNorm == qNorm)
+            {
+                System.Windows.MessageBox.Show("Las 4 teclas rápidas (Pausar, Analizar, Mic, Chat Rápido) no pueden repetirse.", "Conflicto de atajos", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return false;
             }
             TxtPauseKey.Text = pNorm;
             TxtAnalyzeKey.Text = aNorm;
             TxtMicKey.Text = mNorm;
+            TxtQuickChatKey.Text = qNorm;
             TxtPttKey.Text = pttNorm;
         }
 
@@ -1807,11 +1874,13 @@ public partial class MainWindow : Window
         _config.EnableOverlay = ChkEnableOverlay.IsChecked == true;
         _config.EnableHotkeys = ChkEnableHotkeys.IsChecked == true;
         _config.MinimizeToTray = ChkMinimizeToTray.IsChecked == true;
+        _config.LaunchWithWindows = ChkLaunchWithWindows.IsChecked == true;
         _config.EnableAudioCues = ChkEnableAudioCues.IsChecked == true;
         _config.CheckUpdatesOnStartup = ChkCheckUpdatesOnStartup.IsChecked == true;
         if (HotkeyParser.TryParse(TxtPauseKey.Text, out _, out _, out var pSafe)) _config.HotkeyTogglePause = pSafe;
         if (HotkeyParser.TryParse(TxtAnalyzeKey.Text, out _, out _, out var aSafe)) _config.HotkeyAnalyzeNow = aSafe;
         if (HotkeyParser.TryParse(TxtMicKey.Text, out _, out _, out var mSafe)) _config.HotkeyToggleMic = mSafe;
+        if (HotkeyParser.TryParse(TxtQuickChatKey.Text, out _, out _, out var qSafe)) _config.HotkeyQuickChat = qSafe;
         _config.OverlayScale = Math.Round(SldOverlayScale.Value, 2);
         _config.OverlayOpacity = Math.Round(SldOverlayOpacity.Value, 2);
         _config.TtsVolume = Math.Round(SldVolume.Value, 2);
@@ -1824,6 +1893,12 @@ public partial class MainWindow : Window
             return;
 
         RefreshMonitorsList();
+        if (!WindowsStartupManager.Apply(_config.LaunchWithWindows))
+        {
+            _config.LaunchWithWindows = WindowsStartupManager.IsEnabled();
+            ChkLaunchWithWindows.IsChecked = _config.LaunchWithWindows;
+            AppendLog("⚠ No se pudo actualizar 'Iniciar con Windows' en el Registro de Windows.");
+        }
         _repo.SaveUserConfig(_config);
         _repo.SaveCoachSoulMarkdown(TxtCoachSoul.Text);
         _repo.SavePlayerProfileMarkdown(TxtPlayerProfile.Text);
@@ -1839,7 +1914,7 @@ public partial class MainWindow : Window
         _sharedVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
         _coordinator.ApplyLiveSettings(_config);
         RefreshHotkeyButtonLabels();
-        _coordinator.RegisterHotkeys(_config, ToggleMicViaHotkey, AppendLog);
+        _coordinator.RegisterHotkeys(_config, ToggleMicViaHotkey, AppendLog, ToggleQuickChatViaHotkey);
         AppendLog($"Preferencias guardadas y aplicadas en vivo (Nivel: {_config.PlayerSkillTier}, Mic: {(_config.IsPushToTalkMode ? $"PTT {_config.PushToTalkKey}" : "Abierto")}).");
     }
 
@@ -2044,8 +2119,10 @@ public partial class MainWindow : Window
         UpdateProgressBar.Visibility = Visibility.Collapsed;
         UpdateProgressBar.Value = 0;
 
+        bool isSetupUpdate = update.PreferredAsset is not null &&
+            update.PreferredAsset.Name.Contains("setup", StringComparison.OrdinalIgnoreCase);
         BtnDownloadUpdate.Content = update.PreferredAsset is not null
-            ? "⬇ Descargar actualización"
+            ? (isSetupUpdate ? "⬇ Descargar e Instalar" : "⬇ Descargar actualización")
             : "⬇ Descargar desde GitHub";
         BtnDownloadUpdate.Visibility = Visibility.Visible;
         BtnDownloadUpdate.IsEnabled = true;
@@ -2153,7 +2230,11 @@ public partial class MainWindow : Window
                 TxtUpdateBannerDetails.Text = result.Sha256Verified
                     ? $"Guardado en {result.FilePath} · Integridad SHA-256 verificada."
                     : $"Guardado en {result.FilePath}.";
+                bool isSetupExe = asset.Name.Contains("setup", StringComparison.OrdinalIgnoreCase);
                 BtnDownloadUpdate.Visibility = Visibility.Collapsed;
+                BtnLaunchUpdate.Content = isSetupExe && GitHubReleaseUpdateService.IsInstalledSetupDirectory()
+                    ? "⚡ Instalar y Reiniciar"
+                    : "▶ Abrir nuevo .exe";
                 BtnLaunchUpdate.Visibility = Visibility.Visible;
                 BtnOpenUpdateFolder.Visibility = Visibility.Visible;
                 AppendLog($"✅ {result.Message} ({result.FilePath})");
@@ -2212,7 +2293,22 @@ public partial class MainWindow : Window
             if (wasRunning)
                 ApplyStoppedUiState();
             (System.Windows.Application.Current as App)?.ReleaseSingleInstanceMutex();
-            Process.Start(new ProcessStartInfo(_downloadedUpdatePath) { UseShellExecute = true });
+            bool runSilentSetup = Path.GetFileName(_downloadedUpdatePath).Contains("setup", StringComparison.OrdinalIgnoreCase) &&
+                                  GitHubReleaseUpdateService.IsInstalledSetupDirectory();
+            if (runSilentSetup)
+            {
+                var psi = new ProcessStartInfo(_downloadedUpdatePath) { UseShellExecute = false };
+                psi.ArgumentList.Add("/SILENT");
+                psi.ArgumentList.Add("/SUPPRESSMSGBOXES");
+                psi.ArgumentList.Add("/NORESTART");
+                psi.ArgumentList.Add("/CLOSEAPPLICATIONS");
+                psi.ArgumentList.Add("/relaunch=1");
+                Process.Start(psi);
+            }
+            else
+            {
+                Process.Start(new ProcessStartInfo(_downloadedUpdatePath) { UseShellExecute = true });
+            }
             Close();
         }
         catch (Exception ex)

@@ -45,7 +45,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
         Action<bool> onPauseChanged,
         Action onMicHotkey,
         Action<MatchSessionSnapshot>? onMatchCompleted = null,
-        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null)
+        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null,
+        Action? onQuickChatHotkey = null)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return (false, false, string.Empty, string.Empty);
@@ -169,7 +170,7 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                 throw;
             }
 
-            RegisterHotkeys(config, onMicHotkey, onLog);
+            RegisterHotkeys(config, onMicHotkey, onLog, onQuickChatHotkey);
             return (true, fallbackToClassic, engine.EngineBadge, engine.ActiveChannelStatus);
         }
         finally
@@ -186,9 +187,9 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
     public void RefreshPersona(string? reason = null) => _activeEngine?.RefreshPersona(reason);
     public void ApplyLiveSettings(UserConfig config) => _activeEngine?.ApplyLiveSettings(config);
 
-    public void RegisterHotkeys(UserConfig config, Action onMicHotkey, Action<string> onLog)
+    public void RegisterHotkeys(UserConfig config, Action onMicHotkey, Action<string> onLog, Action? onQuickChatHotkey = null)
     {
-        bool pOk = true, aOk = true, mOk = true;
+        bool pOk = true, aOk = true, mOk = true, qOk = true;
         bool registered = false;
         lock (_hotkeySync)
         {
@@ -199,19 +200,21 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
             if (!config.EnableHotkeys || engine is not { IsRunning: true })
                 return;
 
-            (pOk, aOk, mOk) = _hotkeys.Start(
+            (pOk, aOk, mOk, qOk) = _hotkeys.StartWithQuickChat(
                 config.HotkeyTogglePause,
                 config.HotkeyAnalyzeNow,
                 config.HotkeyToggleMic,
+                config.HotkeyQuickChat,
                 () => _activeEngine?.TogglePause(),
                 () => _activeEngine?.TriggerOnDemandAnalysis(),
                 onToggleMic: onMicHotkey,
+                onQuickChat: onQuickChatHotkey,
                 onWarning: onLog
             );
             registered = true;
         }
-        if (registered && (!pOk || !aOk || !mOk))
-            onLog($"ℹ️ Atajos activos — Pausa:{(pOk ? "OK" : "OCUPADA")} | Analizar:{(aOk ? "OK" : "OCUPADA")} | Mic:{(mOk ? "OK" : "OCUPADA")}");
+        if (registered && (!pOk || !aOk || !mOk || (onQuickChatHotkey is not null && !qOk)))
+            onLog($"ℹ️ Atajos activos — Pausa:{(pOk ? "OK" : "OCUPADA")} | Analizar:{(aOk ? "OK" : "OCUPADA")} | Mic:{(mOk ? "OK" : "OCUPADA")} | Chat:{(qOk ? "OK" : "OCUPADA")}");
     }
 
     public async Task StopAsync()

@@ -18,17 +18,21 @@ public partial class App : System.Windows.Application
         KnownFolders.TrySetAppUserModelId("HUDMind.Native.Desktop");
 
         bool smokeMode = e.Args.Any(a => string.Equals(a, "--smoke-startup", StringComparison.OrdinalIgnoreCase));
+        bool startMinimized = !smokeMode && e.Args.Any(a => string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase));
         ProfileVaultReader.RegisterRuntimeIntegrityProbe(() => RuntimeHardeningGuard.IsExternalDebuggerAttached(smokeMode));
         if (!smokeMode)
         {
             _singleInstanceMutex = new Mutex(true, "HUDMind_Native_SingleInstance_Mutex", out bool createdNew);
             if (!createdNew)
             {
-                System.Windows.MessageBox.Show(
-                    "HUDMind Native ya está abierto en segundo plano.",
-                    "HUDMind",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
+                if (!startMinimized)
+                {
+                    System.Windows.MessageBox.Show(
+                        "HUDMind Native ya está abierto en segundo plano.",
+                        "HUDMind",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
                 Shutdown();
                 return;
             }
@@ -39,7 +43,7 @@ public partial class App : System.Windows.Application
 
         try
         {
-            var win = new MainWindow(smokeMode);
+            var win = new MainWindow(smokeMode, startMinimized);
             MainWindow = win;
             win.Show();
         }

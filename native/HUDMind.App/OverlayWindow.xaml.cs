@@ -3,6 +3,8 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -142,6 +144,10 @@ public partial class OverlayWindow : Window, IOverlayOutputService
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT { public int X; public int Y; }
 
@@ -169,12 +175,26 @@ public partial class OverlayWindow : Window, IOverlayOutputService
     private double _lastActualH;
     private string _lastPosKey = string.Empty;
 
+    private bool _quickChatOpen;
+    private IntPtr _returnFocusHwnd;
+    private string _quickChatKeyLabel = "F7";
+
+    private int _voiceUiPending;
+    private volatile bool _latestUserMicActive;
+    private double _latestUserLevel01;
+    private volatile bool _latestCoachVoiceActive;
+    private double _latestCoachLevel01;
+    private long _lastPttToastTick;
+
     private string _cachedThemeKey = string.Empty;
     private MediaBrush? _cachedOuterBrush;
     private MediaBrush? _cachedCardBgBrush;
     private MediaBrush? _cachedCardBorderBrush;
     private MediaBrush? _cachedStatusBgBrush;
     private MediaBrush? _cachedStatusBorderBrush;
+
+    public event Action<string>? QuickChatSubmitted;
+    public bool IsQuickChatOpen => _quickChatOpen;
 
     public OverlayWindow()
     {
@@ -191,6 +211,11 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             if (IsVisible && !_closed && Math.Abs(ActualHeight - _lastActualH) > 1.0)
                 PositionOnScreen(force: true);
         };
+        Deactivated += (_, _) =>
+        {
+            if (_quickChatOpen && !_closed)
+                CloseQuickChat(restoreFocus: false);
+        };
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
@@ -202,30 +227,237 @@ public partial class OverlayWindow : Window, IOverlayOutputService
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
+        ApplyClickThroughStyle(clickThrough: !_quickChatOpen);
+    }
+
+    private void ApplyClickThroughStyle(bool clickThrough)
+    {
         var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+            return;
+
         if (IntPtr.Size == 8)
         {
-            nint exStyle = GetWindowLongPtr64(hwnd, GwlExStyle);
-            SetWindowLongPtr64(hwnd, GwlExStyle, exStyle | WsExTransparent | WsExToolWindow | WsExNoActivate);
+            nint exStyle = GetWindowLongPtr64(hwnd, GwlExStyle) | WsExToolWindow;
+            exStyle = clickThrough
+                ? exStyle | WsExTransparent | WsExNoActivate
+                : exStyle & ~(nint)(WsExTransparent | WsExNoActivate);
+            SetWindowLongPtr64(hwnd, GwlExStyle, exStyle);
         }
         else
         {
-            int exStyle = GetWindowLong32(hwnd, GwlExStyle);
-            SetWindowLong32(hwnd, GwlExStyle, exStyle | WsExTransparent | WsExToolWindow | WsExNoActivate);
+            int exStyle = GetWindowLong32(hwnd, GwlExStyle) | WsExToolWindow;
+            exStyle = clickThrough
+                ? exStyle | WsExTransparent | WsExNoActivate
+                : exStyle & ~(WsExTransparent | WsExNoActivate);
+            SetWindowLong32(hwnd, GwlExStyle, exStyle);
         }
     }
 
-    public void SetHotkeyHints(string pauseKey, string analyzeKey)
+    public void SetHotkeyHints(string pauseKey, string analyzeKey, string? quickChatKey = null)
     {
         if (_closed) return;
         var p = string.IsNullOrWhiteSpace(pauseKey) ? "F9" : pauseKey.Trim().ToUpperInvariant();
         var a = string.IsNullOrWhiteSpace(analyzeKey) ? "F10" : analyzeKey.Trim().ToUpperInvariant();
+        var q = string.IsNullOrWhiteSpace(quickChatKey) ? "F7" : quickChatKey.Trim().ToUpperInvariant();
         Dispatcher.BeginInvoke(() =>
         {
             if (_closed) return;
             TxtPauseChip.Text = $"{p} PAUSA";
             TxtAnalyzeChip.Text = $"{a} IA";
+            _quickChatKeyLabel = q;
+            TxtQuickChatPlaceholder.Text = $"Preguntale al coach... (Enter = enviar · Esc/{_quickChatKeyLabel} = volver)";
         });
+    }
+
+    public void ToggleQuickChat()
+    {
+        if (_closed) return;
+        IntPtr externalHwnd = Win32WindowDetector.GetExternalForegroundWindowHandle();
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_closed) return;
+            if (_quickChatOpen)
+            {
+                CloseQuickChat(restoreFocus: true);
+                return;
+            }
+
+            _returnFocusHwnd = externalHwnd;
+            _quickChatOpen = true;
+            _pruneTimer.Stop();
+
+            if (_rows.Count == 0 && string.IsNullOrEmpty(_activeHeaderTitle))
+                _activeHeaderTitle = "HUDMind";
+            ApplyVisualTheme(_activeHeaderUrgency, _activeHeaderTitle);
+            QuickChatDock.Visibility = Visibility.Visible;
+            TxtQuickChatPlaceholder.Text = $"Preguntale al coach... (Enter = enviar · Esc/{_quickChatKeyLabel} = volver)";
+            TxtQuickChatPlaceholder.Visibility = Visibility.Visible;
+
+            if (!IsVisible)
+            {
+                BeginAnimation(OpacityProperty, null);
+                Opacity = 1.0;
+                Show();
+            }
+            else
+            {
+                BeginAnimation(OpacityProperty, null);
+                Opacity = 1.0;
+            }
+
+            ApplyClickThroughStyle(clickThrough: false);
+            UpdateLayout();
+            PositionOnScreen(force: true);
+
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd != IntPtr.Zero)
+            {
+                SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize);
+                _ = SetForegroundWindow(hwnd);
+            }
+            Activate();
+            TxtQuickChat.Focus();
+            Keyboard.Focus(TxtQuickChat);
+        });
+    }
+
+    private void CloseQuickChat(bool restoreFocus, bool submitText = false)
+    {
+        if (_closed) return;
+        string submitted = submitText ? (TxtQuickChat.Text ?? string.Empty).Trim() : string.Empty;
+        IntPtr returnTarget = _returnFocusHwnd;
+        _returnFocusHwnd = IntPtr.Zero;
+        _quickChatOpen = false;
+
+        TxtQuickChat.Clear();
+        QuickChatDock.Visibility = Visibility.Collapsed;
+        ApplyClickThroughStyle(clickThrough: true);
+
+        if (_feedBuffer.IsEmpty)
+        {
+            _pruneTimer.Stop();
+            BeginAnimation(OpacityProperty, null);
+            Hide();
+        }
+        else
+        {
+            UpdateLayout();
+            PositionOnScreen(force: true);
+            ScheduleNextPrune(DateTimeOffset.UtcNow);
+        }
+
+        if (restoreFocus && returnTarget != IntPtr.Zero)
+            Win32WindowDetector.TryRestoreForegroundWindow(returnTarget);
+
+        if (!string.IsNullOrEmpty(submitted))
+            QuickChatSubmitted?.Invoke(submitted);
+    }
+
+    private void TxtQuickChat_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            CloseQuickChat(restoreFocus: true, submitText: true);
+        }
+        else if (e.Key == Key.Escape)
+        {
+            e.Handled = true;
+            CloseQuickChat(restoreFocus: true, submitText: false);
+        }
+    }
+
+    private void TxtQuickChat_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (TxtQuickChatPlaceholder is not null)
+            TxtQuickChatPlaceholder.Visibility = string.IsNullOrEmpty(TxtQuickChat.Text) ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void BtnQuickChatSend_Click(object sender, RoutedEventArgs e) =>
+        CloseQuickChat(restoreFocus: true, submitText: true);
+
+    private void BtnQuickChatClose_Click(object sender, RoutedEventArgs e) =>
+        CloseQuickChat(restoreFocus: true, submitText: false);
+
+    public void UpdateVoiceActivity(bool userMicActive, double userLevel01, bool coachVoiceActive, double coachLevel01)
+    {
+        if (_closed) return;
+        _latestUserMicActive = userMicActive;
+        Volatile.Write(ref _latestUserLevel01, userLevel01);
+        _latestCoachVoiceActive = coachVoiceActive;
+        Volatile.Write(ref _latestCoachLevel01, coachLevel01);
+
+        if (userMicActive && !IsVisible && !_quickChatOpen)
+        {
+            long prevToast = Interlocked.Read(ref _lastPttToastTick);
+            if (prevToast == 0 || Environment.TickCount64 - prevToast > 900)
+            {
+                Interlocked.Exchange(ref _lastPttToastTick, Environment.TickCount64);
+                ShowMessage(new OverlayCalloutMessage(
+                    "🎤 Te escucho...",
+                    UrgencyLevel.Low,
+                    string.IsNullOrWhiteSpace(_activeHeaderTitle) ? "HUDMind Live" : _activeHeaderTitle,
+                    1.8,
+                    OverlayEntryKind.Status,
+                    "HUD"));
+            }
+        }
+
+        if (Interlocked.CompareExchange(ref _voiceUiPending, 1, 0) != 0)
+            return;
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            Interlocked.Exchange(ref _voiceUiPending, 0);
+            if (_closed) return;
+            ApplyVoiceActivityUi();
+        });
+    }
+
+    private void ApplyVoiceActivityUi()
+    {
+        bool userOn = _latestUserMicActive;
+        bool coachOn = _latestCoachVoiceActive;
+        double uLvl = Volatile.Read(ref _latestUserLevel01);
+        double cLvl = Volatile.Read(ref _latestCoachLevel01);
+
+        if (userOn)
+        {
+            VoicePillText.Text = "🎤 ESCUCHANDO";
+            VoicePillText.Foreground = HudVisualPalette.MicLiveFgBrush;
+            VoicePillBorder.Background = _style == UserConfig.OverlayStyleTransparentText
+                ? MediaBrushes.Transparent
+                : HudVisualPalette.MicLiveBgBrush;
+            VoicePillBorder.BorderBrush = _style == UserConfig.OverlayStyleTransparentText
+                ? MediaBrushes.Transparent
+                : HudVisualPalette.MicLiveBorderBrush;
+            VoicePillBorder.BorderThickness = new Thickness(_style == UserConfig.OverlayStyleTransparentText ? 0 : 1);
+            VoicePillBorder.Visibility = Visibility.Visible;
+        }
+        else if (coachOn)
+        {
+            VoicePillText.Text = "🔊 VOZ";
+            VoicePillText.Foreground = HudVisualPalette.CoachVoiceFgBrush;
+            VoicePillBorder.Background = _style == UserConfig.OverlayStyleTransparentText
+                ? MediaBrushes.Transparent
+                : HudVisualPalette.CoachVoiceBgBrush;
+            VoicePillBorder.BorderBrush = _style == UserConfig.OverlayStyleTransparentText
+                ? MediaBrushes.Transparent
+                : HudVisualPalette.CoachVoiceBorderBrush;
+            VoicePillBorder.BorderThickness = new Thickness(_style == UserConfig.OverlayStyleTransparentText ? 0 : 1);
+            VoicePillBorder.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            VoicePillBorder.Visibility = Visibility.Collapsed;
+        }
+
+        if (_style == UserConfig.OverlayStyleCard)
+        {
+            double peak = Math.Max(userOn ? uLvl : 0.0, coachOn ? cLvl : 0.0);
+            OverlayWave.UpdateAudioLevel(peak);
+        }
     }
 
     public void Configure(
@@ -264,7 +496,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
 
             if (IsVisible)
             {
-                if (_rows.Count == 0)
+                if (_rows.Count == 0 && !_quickChatOpen)
                 {
                     _pruneTimer.Stop();
                     BeginAnimation(OpacityProperty, null);
@@ -288,6 +520,11 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             _pruneTimer.Stop();
             _feedBuffer.Clear();
             _rows.Clear();
+            _latestUserMicActive = false;
+            _latestCoachVoiceActive = false;
+            ApplyVoiceActivityUi();
+            if (_quickChatOpen)
+                return;
             if (IsVisible)
             {
                 BeginAnimation(OpacityProperty, null);
@@ -303,6 +540,8 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         {
             if (_closed) return;
             _pruneTimer.Stop();
+            if (_quickChatOpen)
+                CloseQuickChat(restoreFocus: false);
             BeginAnimation(OpacityProperty, null);
             Hide();
         });
@@ -329,12 +568,13 @@ public partial class OverlayWindow : Window, IOverlayOutputService
 
             ApplyVisualTheme(_activeHeaderUrgency, _activeHeaderTitle);
             SyncRowsFromSnapshot(snapshot);
+            ApplyVoiceActivityUi();
 
             bool wasVisible = IsVisible;
             if (!wasVisible)
             {
                 BeginAnimation(OpacityProperty, null);
-                Opacity = 0;
+                Opacity = _quickChatOpen ? 1.0 : 0.0;
                 Show();
                 var hwnd = new WindowInteropHelper(this).Handle;
                 if (hwnd != IntPtr.Zero)
@@ -344,7 +584,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             UpdateLayout();
             PositionOnScreen(force: !wasVisible);
 
-            if (!wasVisible)
+            if (!wasVisible && !_quickChatOpen)
             {
                 var anim = new DoubleAnimation(1.0, TimeSpan.FromMilliseconds(120));
                 Timeline.SetDesiredFrameRate(anim, 24);
@@ -357,13 +597,14 @@ public partial class OverlayWindow : Window, IOverlayOutputService
                     Opacity = 1.0;
             }
 
-            ScheduleNextPrune(nowUtc);
+            if (!_quickChatOpen)
+                ScheduleNextPrune(nowUtc);
         });
     }
 
     private void OnPruneTimerTick()
     {
-        if (_closed)
+        if (_closed || _quickChatOpen)
         {
             _pruneTimer.Stop();
             return;
@@ -432,6 +673,9 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         StatusTagText.StrongHalo = strongHalo;
         StatusTagText.Foreground = visual.TagForegroundBrush;
         StatusTagText.Text = visual.TagText;
+
+        VoicePillText.FontSize = 9.5 * _scale;
+        VoicePillText.StrongHalo = strongHalo;
 
         if (isCardStyle)
             OverlayWave.SetBarHeightScale(Math.Round(18.0 * _scale));
@@ -623,12 +867,12 @@ public partial class OverlayWindow : Window, IOverlayOutputService
 
     private void FadeOutAndHide()
     {
-        if (_closed || !IsVisible) return;
+        if (_closed || !IsVisible || _quickChatOpen) return;
         var anim = new DoubleAnimation(0.0, TimeSpan.FromMilliseconds(150));
         Timeline.SetDesiredFrameRate(anim, 24);
         anim.Completed += (_, _) =>
         {
-            if (!_closed && _feedBuffer.IsEmpty)
+            if (!_closed && !_quickChatOpen && _feedBuffer.IsEmpty)
             {
                 BeginAnimation(OpacityProperty, null);
                 Hide();
@@ -663,8 +907,6 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         _lastPosKey = posKey;
         _lastActualH = h;
 
-        // Query target monitor's exact DPI via shcore.dll and place using physical pixels via SetWindowPos
-        // so mixed-DPI multi-monitor setups position accurately without WPF cross-monitor DPI distortion!
         var (scaleX, scaleY) = GetTargetMonitorScale(waPx);
         double targetDpiScaleX = scaleX > 0 ? (1.0 / scaleX) : 1.0;
         double targetDpiScaleY = scaleY > 0 ? (1.0 / scaleY) : 1.0;

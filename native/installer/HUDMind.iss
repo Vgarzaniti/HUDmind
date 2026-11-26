@@ -48,3 +48,10 @@ Name: "{userdesktop}\HUDMind"; Filename: "{app}\HUDMind.Native.exe"; AppUserMode
 
 [Run]
 Filename: "{app}\HUDMind.Native.exe"; Description: "{cm:LaunchProgram,HUDMind}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\HUDMind.Native.exe"; Flags: nowait skipifdoesntexist; Check: WantsAutoRelaunch
+
+[Code]
+function WantsAutoRelaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
+end;

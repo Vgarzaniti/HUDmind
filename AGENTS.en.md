@@ -48,8 +48,8 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
 | `native/HUDMind.Windows/Audio/` | Pure WinMM / WinRT / WASAPI audio | `Win32AudioDevices`, `Win32StreamingMicCapture` (16kHz), `Win32StreamingPcmPlayer` (24kHz), `WasapiAudioSceneMonitor` (passive COM peak monitor), `WinRtNaturalVoiceService`, `Win32AudioCue`, `AudioDiagnosticsService` |
 | `native/HUDMind.App/` | WPF UI (`HUDMind.Native.exe`) | `App.xaml.cs` (SoftwareOnly + mutex + `RuntimeHardeningGuard` probe), `MainWindow.xaml/.cs` (`UpdateBanner`), `OverlayWindow.xaml/.cs`, `Controls/`, `Services/` (`CoachEngineCoordinator`), `Win32TrayIcon.cs` |
 | `native/HUDMind.Packer/` | Build tool (`net9.0`) | Seals `profiles/**/*` and `ProtectedAssets/` into `HUDMind.Vault.bin` (`IsPublishable=false`, zero NuGets) |
-| `native/HUDMind.Tests/` | `net9.0` test suite | 51 cross-platform unit/integration tests (`Program.cs`) |
-| `native/HUDMind.Windows.Tests/` | `net9.0-windows` test suite | 15 Windows-native tests for WinMM, WASAPI, GSI, TLS pinning, logs, capture, voice, hardening, and `KnownFolders` (`Program.cs`) |
+| `native/HUDMind.Tests/` | `net9.0` test suite | 52 cross-platform unit/integration tests (`Program.cs`) |
+| `native/HUDMind.Windows.Tests/` | `net9.0-windows` test suite | 16 Windows-native tests for WinMM, WASAPI, GSI, TLS pinning, DPAPI (`crypt32.dll`), HKCU startup, logs, capture, voice, hardening, and `KnownFolders` (`Program.cs`) |
 | `profiles/` | Game cartridges | 7 bundled profiles (`aoe2_de`, `cs2`, `dota2`, `league_of_legends`, `rob_run`, `rocket_league`, `valorant`) sealed inside `HUDMind.Vault.bin` |
 | `docs/` | Bilingual technical docs | All docs have `.es.md` & `.en.md` pairs (`architecture`, `srs`, `test_plan_ieee29119`, `game_profiles_guide`, `versioning_and_releases`, `pull_request_guide`) |
 | `.github/` | CI/CD & governance | `workflows/ci.yml`, `workflows/release.yml`, `PULL_REQUEST_TEMPLATE.md`, `ISSUE_TEMPLATE/*`, `dependabot.yml` |
@@ -73,7 +73,7 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
 # 1. Build entire solution (must pass with 0 warnings / 0 errors)
 dotnet build native/HUDMind.sln -c Release
 
-# 2. Run cross-platform Core suite (51 tests) & Windows native suite (15 tests)
+# 2. Run cross-platform Core suite (52 tests) & Windows native suite (16 tests)
 dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
 

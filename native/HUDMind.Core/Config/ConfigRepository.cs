@@ -263,6 +263,7 @@ public sealed partial class ConfigRepository
 {
     public const int MaxCustomRulesChars = 600;
     public const int MaxMarkdownProfileChars = 700;
+    public const string ProtectedSecretPrefix = "dpapi:";
     private const long MaxConfigFileBytes = 64 * 1024;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -286,13 +287,18 @@ public sealed partial class ConfigRepository
     public string CoachSoulPath => Path.Combine(ConfigDir, "coach_soul.md");
     public string PlayerProfilePath => Path.Combine(ConfigDir, "player_profile.md");
     private readonly AI.ICoachSafetyPipeline _safety;
+    private readonly Security.ISecretProtector _secretProtector;
 
     public string? LastLoadWarning { get; private set; }
 
-    public ConfigRepository(string? workspaceRoot = null, AI.ICoachSafetyPipeline? safetyPipeline = null)
+    public ConfigRepository(
+        string? workspaceRoot = null,
+        AI.ICoachSafetyPipeline? safetyPipeline = null,
+        Security.ISecretProtector? secretProtector = null)
     {
         WorkspaceRoot = workspaceRoot ?? DiscoverWorkspaceRoot();
         _safety = safetyPipeline ?? AI.CoachContentGuard.DefaultPipeline;
+        _secretProtector = secretProtector ?? Security.PlaintextSecretProtector.Instance;
     }
 
     public static string DiscoverWorkspaceRoot()
@@ -445,7 +451,41 @@ public sealed partial class ConfigRepository
                     var rawList = JsonSerializer.Deserialize<List<ProviderAccount?>>(json, JsonOpts);
                     var list = rawList?.Where(a => a is not null).Cast<ProviderAccount>().ToList();
                     if (list is { Count: > 0 })
-                        return [.. list.OrderBy(a => a.Priority)];
+                    {
+                        bool needsMigration = false;
+                        foreach (var acc in list)
+                        {
+                            if (string.IsNullOrWhiteSpace(acc.ApiKey))
+                                continue;
+
+                            if (acc.ApiKey.StartsWith(ProtectedSecretPrefix, StringComparison.Ordinal))
+                            {
+                                if (_secretProtector.IsSupported)
+                                {
+                                    try
+                                    {
+                                        acc.ApiKey = _secretProtector.Unprotect(acc.ApiKey);
+                                    }
+                                    catch
+                                    {
+                                        acc.ApiKey = string.Empty;
+                                        LastLoadWarning = "Algunas API keys guardadas pertenecían a otro usuario/PC (DPAPI) y fueron limpiadas.";
+                                    }
+                                }
+                            }
+                            else if (_secretProtector.IsSupported)
+                            {
+                                needsMigration = true;
+                            }
+                        }
+
+                        var ordered = list.OrderBy(a => a.Priority).ToList();
+                        if (needsMigration)
+                        {
+                            try { SaveAccounts(ordered); } catch { }
+                        }
+                        return ordered;
+                    }
                 }
             }
         }
@@ -460,7 +500,31 @@ public sealed partial class ConfigRepository
     public void SaveAccounts(IEnumerable<ProviderAccount> accounts)
     {
         Directory.CreateDirectory(ConfigDir);
-        var ordered = accounts.OrderBy(a => a.Priority).ToList();
+        var ordered = accounts.OrderBy(a => a.Priority)
+            .Select(a =>
+            {
+                string rawKey = a.ApiKey ?? string.Empty;
+                string storedKey = _secretProtector.IsSupported &&
+                                   !string.IsNullOrWhiteSpace(rawKey) &&
+                                   !rawKey.StartsWith(ProtectedSecretPrefix, StringComparison.Ordinal)
+                    ? _secretProtector.Protect(rawKey)
+                    : rawKey;
+
+                return new ProviderAccount
+                {
+                    Id = a.Id,
+                    Label = a.Label,
+                    Provider = a.Provider,
+                    ApiKey = storedKey,
+                    Model = a.Model,
+                    BaseUrl = a.BaseUrl,
+                    Priority = a.Priority,
+                    Enabled = a.Enabled,
+                    SupportsVisionOverride = a.SupportsVisionOverride,
+                    ExtraFields = a.ExtraFields
+                };
+            })
+            .ToList();
         var json = JsonSerializer.Serialize(ordered, JsonOpts);
         AtomicWrite(AccountsPath, json);
     }

@@ -80,6 +80,12 @@ public static class HudVisualPalette
     public static readonly SolidColorBrush ShadowSoftDark = CreateFrozenBrush(0x02, 0x06, 0x0B, 0xD2);
     public static readonly SolidColorBrush ShadowStrongDark = CreateFrozenBrush(0x02, 0x06, 0x0B, 0xF0);
     public static readonly SolidColorBrush HaloRimDark = CreateFrozenBrush(0x02, 0x06, 0x0B, 0xC4);
+    public static readonly SolidColorBrush MicLiveFgBrush = CreateFrozenBrush(0x6E, 0xE7, 0xB7);
+    public static readonly SolidColorBrush MicLiveBgBrush = CreateFrozenBrush(0x05, 0x2E, 0x24, 0xDC);
+    public static readonly SolidColorBrush MicLiveBorderBrush = CreateFrozenBrush(0x10, 0xB9, 0x81, 0xD8);
+    public static readonly SolidColorBrush CoachVoiceFgBrush = CreateFrozenBrush(0x67, 0xE8, 0xF9);
+    public static readonly SolidColorBrush CoachVoiceBgBrush = CreateFrozenBrush(0x09, 0x28, 0x38, 0xDC);
+    public static readonly SolidColorBrush CoachVoiceBorderBrush = CreateFrozenBrush(0x22, 0xD3, 0xEE, 0xD8);
 
     private static readonly HudRunStateVisual IdleRunState = new(
         DotBrush: CreateFrozenBrush(0x64, 0x74, 0x8B),

@@ -10,6 +10,7 @@ using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 using HUDMind.Core.Pipeline;
+using HUDMind.Core.Security;
 using HUDMind.Core.Updates;
 
 int passed = 0;
@@ -2730,6 +2731,66 @@ await RunTest("51. OverlayFeedBuffer Discord mini-feed coalescing, Live->Final p
     return Task.CompletedTask;
 });
 
+await RunTest("52. DPAPI ISecretProtector encryption/migration/tamper recovery & opt-in LaunchWithWindows=false + HotkeyQuickChat defaults", () =>
+{
+    var defCfg = new UserConfig();
+    Assert(!defCfg.LaunchWithWindows && defCfg.HotkeyQuickChat == "F7",
+        "Fresh UserConfig must default LaunchWithWindows=false and HotkeyQuickChat=F7");
+
+    var root = Path.Combine(Path.GetTempPath(), $"hudmind_dpapi_test_{Guid.NewGuid():N}");
+    try
+    {
+        Directory.CreateDirectory(root);
+        var protector = new StubXorSecretProtector();
+        var repo = new ConfigRepository(root, secretProtector: protector);
+
+        var accounts = new List<ProviderAccount>
+        {
+            new() { Id = "g1", Label = "Groq", Provider = "groq", ApiKey = "gsk_super_secret_123456", Model = "llama-4-scout", Priority = 1 },
+            new() { Id = "f1", Label = "Free", Provider = "pollinations", ApiKey = "", Model = "openai-fast", Priority = 2 }
+        };
+        repo.SaveAccounts(accounts);
+        Assert(accounts[0].ApiKey == "gsk_super_secret_123456", "SaveAccounts must NOT mutate caller in-memory ApiKey");
+
+        var diskJson = File.ReadAllText(repo.AccountsPath);
+        Assert(!diskJson.Contains("gsk_super_secret_123456", StringComparison.Ordinal) &&
+               diskJson.Contains(ConfigRepository.ProtectedSecretPrefix, StringComparison.Ordinal),
+            "Disk accounts.json must store sealed DPAPI prefix without plaintext API key");
+
+        var loaded = repo.LoadAccounts();
+        Assert(loaded.Count == 2 && loaded[0].ApiKey == "gsk_super_secret_123456" && loaded[1].ApiKey == string.Empty,
+            "LoadAccounts must transparently decrypt protected keys and preserve empty keyless slots");
+
+        // Legacy plaintext accounts.json auto-migrates to DPAPI on first load
+        var plainRepo = new ConfigRepository(root);
+        plainRepo.SaveAccounts([new ProviderAccount { Id = "leg", Label = "Legacy", Provider = "gemini", ApiKey = "AIzaLegacyPlain123", Priority = 1 }]);
+        Assert(File.ReadAllText(repo.AccountsPath).Contains("AIzaLegacyPlain123", StringComparison.Ordinal), "Setup plaintext fixture");
+        var migrated = repo.LoadAccounts();
+        Assert(migrated.Count == 1 && migrated[0].ApiKey == "AIzaLegacyPlain123" &&
+               !File.ReadAllText(repo.AccountsPath).Contains("AIzaLegacyPlain123", StringComparison.Ordinal) &&
+               File.ReadAllText(repo.AccountsPath).Contains(ConfigRepository.ProtectedSecretPrefix, StringComparison.Ordinal),
+            "Legacy plaintext accounts.json must migrate to sealed storage automatically on LoadAccounts");
+
+        // Wrong-user / corrupted DPAPI payload clears key safely with warning instead of crashing
+        File.WriteAllText(repo.AccountsPath, "[{\"id\":\"bad\",\"provider\":\"groq\",\"api_key\":\"dpapi:INVALID_CORRUPT_BLOB\",\"priority\":1}]");
+        var recovered = repo.LoadAccounts();
+        Assert(recovered.Count == 1 && recovered[0].ApiKey == string.Empty && !string.IsNullOrWhiteSpace(repo.LastLoadWarning),
+            "Corrupt DPAPI entry must clear key cleanly and emit LastLoadWarning");
+
+        // Quick-chat & opt-in LaunchWithWindows round-trip cleanly
+        var cfg = new UserConfig { HotkeyQuickChat = "Alt+Q", LaunchWithWindows = false };
+        repo.SaveUserConfig(cfg);
+        var loadedCfg = repo.LoadUserConfig();
+        Assert(loadedCfg.HotkeyQuickChat == "Alt+Q" && !loadedCfg.LaunchWithWindows,
+            "HotkeyQuickChat and LaunchWithWindows must round-trip cleanly");
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch { }
+    }
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -3114,4 +3175,24 @@ sealed class ManualTimeProvider(DateTimeOffset startUtc) : TimeProvider
     private long _utcTicks = startUtc.UtcTicks;
     public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
     public void Advance(TimeSpan delta) => Interlocked.Add(ref _utcTicks, delta.Ticks);
+}
+
+sealed class StubXorSecretProtector : ISecretProtector
+{
+    public bool IsSupported => true;
+    public string Protect(string plainSecret)
+    {
+        var b = Encoding.UTF8.GetBytes(plainSecret);
+        for (int i = 0; i < b.Length; i++) b[i] ^= 0x5A;
+        return $"{ConfigRepository.ProtectedSecretPrefix}{Convert.ToBase64String(b)}";
+    }
+    public string Unprotect(string protectedSecret)
+    {
+        var b64 = protectedSecret[ConfigRepository.ProtectedSecretPrefix.Length..];
+        if (b64.StartsWith("INVALID", StringComparison.Ordinal))
+            throw new CryptographicException("Simulated wrong-user DPAPI failure.");
+        var b = Convert.FromBase64String(b64);
+        for (int i = 0; i < b.Length; i++) b[i] ^= 0x5A;
+        return Encoding.UTF8.GetString(b);
+    }
 }

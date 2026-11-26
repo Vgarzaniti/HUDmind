@@ -45,7 +45,7 @@
                           VerticalAlignment="Center" />
                 </Border>
 
-                <!-- Content Stack: Compact Header + Discord-Style Stacked Messages + Card Footer -->
+                <!-- Content Stack: Compact Header + Discord-Style Stacked Messages + Card Footer + Quick Chat -->
                 <StackPanel Grid.Column="1">
                     <DockPanel x:Name="HeaderDock" Margin="0,0,0,4">
                         <Border x:Name="StatusTagBorder"
@@ -56,9 +56,27 @@
                                 CornerRadius="4"
                                 Padding="6,1.5"
                                 VerticalAlignment="Center"
-                                Margin="8,0,0,0">
+                                Margin="6,0,0,0">
                             <controls:OverlayTextBlock x:Name="StatusTagText"
                                                        Text="ACTIVO"
+                                                       Foreground="#6EE7B7"
+                                                       FontFamily="Consolas"
+                                                       FontSize="9.5"
+                                                       FontWeight="Bold"
+                                                       TextWrapping="NoWrap" />
+                        </Border>
+                        <Border x:Name="VoicePillBorder"
+                                DockPanel.Dock="Right"
+                                Background="#052E24"
+                                BorderBrush="#10B981"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="6,1.5"
+                                VerticalAlignment="Center"
+                                Margin="6,0,0,0"
+                                Visibility="Collapsed">
+                            <controls:OverlayTextBlock x:Name="VoicePillText"
+                                                       Text="🎤 PTT"
                                                        Foreground="#6EE7B7"
                                                        FontFamily="Consolas"
                                                        FontSize="9.5"
@@ -131,6 +149,58 @@
 
                         <controls:AudioWaveformControl x:Name="OverlayWave" ShowFrame="False" VerticalAlignment="Center" />
                     </DockPanel>
+
+                    <!-- Quick-Chat In-Game Input Dock (collapsed & click-through until F7 hotkey pressed) -->
+                    <Border x:Name="QuickChatDock"
+                            Visibility="Collapsed"
+                            Background="#DD07101B"
+                            BorderBrush="#22D3EE"
+                            BorderThickness="1"
+                            CornerRadius="7"
+                            Padding="7,5"
+                            Margin="0,8,0,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Grid Grid.Column="0" VerticalAlignment="Center" Margin="0,0,6,0">
+                                <TextBox x:Name="TxtQuickChat"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Foreground="#F8FAFC"
+                                         CaretBrush="#22D3EE"
+                                         FontSize="12.5"
+                                         Padding="2,2"
+                                         MaxLength="320"
+                                         PreviewKeyDown="TxtQuickChat_PreviewKeyDown"
+                                         TextChanged="TxtQuickChat_TextChanged" />
+                                <TextBlock x:Name="TxtQuickChatPlaceholder"
+                                           Text="Preguntale al coach... (Enter = enviar · Esc = volver)"
+                                           Foreground="#7A93AC"
+                                           FontSize="11.5"
+                                           Margin="4,0,0,0"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False" />
+                            </Grid>
+                            <Button x:Name="BtnQuickChatSend"
+                                    Grid.Column="1"
+                                    Content="↵"
+                                    Background="#086F83"
+                                    BorderBrush="#22D3EE"
+                                    Padding="9,3"
+                                    FontSize="11.5"
+                                    Margin="0,0,4,0"
+                                    Click="BtnQuickChatSend_Click" />
+                            <Button x:Name="BtnQuickChatClose"
+                                    Grid.Column="2"
+                                    Content="✕"
+                                    Padding="7,3"
+                                    FontSize="11"
+                                    Click="BtnQuickChatClose_Click" />
+                        </Grid>
+                    </Border>
                 </StackPanel>
             </Grid>
         </Border>

@@ -168,6 +168,12 @@ public sealed class UserConfig
     [JsonPropertyName("hotkey_toggle_mic")]
     public string HotkeyToggleMic { get; set; } = "F8";
 
+    [JsonPropertyName("hotkey_quick_chat")]
+    public string HotkeyQuickChat { get; set; } = "F7";
+
+    [JsonPropertyName("launch_with_windows")]
+    public bool LaunchWithWindows { get; set; }
+
     [JsonPropertyName("tts_engine")]
     public string TtsEngine { get; set; } = "pyttsx3";
 
@@ -386,6 +392,8 @@ public sealed class UserConfig
         TokenEfficiencyMode = source.TokenEfficiencyMode;
         EnableAudioCues = source.EnableAudioCues;
         CheckUpdatesOnStartup = source.CheckUpdatesOnStartup;
+        HotkeyQuickChat = source.HotkeyQuickChat;
+        LaunchWithWindows = source.LaunchWithWindows;
         MemoryMatchWindow = Math.Clamp(source.MemoryMatchWindow, 3, 30);
         PreviousMatchFocus = source.PreviousMatchFocus;
         CoachSoulSummary = source.CoachSoulSummary;
