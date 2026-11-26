@@ -136,6 +136,19 @@ public sealed partial class GitHubReleaseUpdateService
         return !runtimeDir.Contains("Microsoft.NETCore.App", StringComparison.OrdinalIgnoreCase);
     }
 
+    public static bool IsInstalledSetupDirectory(string? baseDirectory = null)
+    {
+        try
+        {
+            var dir = string.IsNullOrWhiteSpace(baseDirectory) ? AppContext.BaseDirectory : baseDirectory;
+            return !string.IsNullOrWhiteSpace(dir) && File.Exists(Path.Combine(dir, "unins000.exe"));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public static Version NormalizeVersion(Version v) =>
         new(Math.Max(0, v.Major), Math.Max(0, v.Minor), Math.Max(0, v.Build), Math.Max(0, v.Revision));
 
@@ -220,7 +233,8 @@ public sealed partial class GitHubReleaseUpdateService
 
     public static (ReleaseAssetInfo? PreferredAsset, ReleaseAssetInfo? ChecksumAsset) SelectPreferredAssets(
         IReadOnlyList<ReleaseAssetInfo> assets,
-        bool preferSelfContained)
+        bool preferSelfContained,
+        bool preferInstaller = false)
     {
         var trusted = assets.Where(a => !string.IsNullOrWhiteSpace(a.Name) && IsTrustedGitHubUrl(a.DownloadUrl)).ToList();
         var exes = trusted.Where(a => a.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)).ToList();
@@ -232,12 +246,22 @@ public sealed partial class GitHubReleaseUpdateService
                 n.Contains("standalone", StringComparison.OrdinalIgnoreCase) ||
                 n.Contains("self-contained", StringComparison.OrdinalIgnoreCase);
 
-            preferred = preferSelfContained
-                ? exes.FirstOrDefault(a => IsStandaloneName(a.Name))
-                  ?? exes.FirstOrDefault(a => a.Name.Contains("win-x64", StringComparison.OrdinalIgnoreCase))
+            static bool IsSetupName(string n) =>
+                n.Contains("setup", StringComparison.OrdinalIgnoreCase) ||
+                n.Contains("installer", StringComparison.OrdinalIgnoreCase);
+
+            if (preferInstaller)
+            {
+                preferred = exes.FirstOrDefault(a => IsSetupName(a.Name) && a.Name.Contains("win-x64", StringComparison.OrdinalIgnoreCase))
+                  ?? exes.FirstOrDefault(a => IsSetupName(a.Name));
+            }
+
+            preferred ??= preferSelfContained
+                ? exes.FirstOrDefault(a => IsStandaloneName(a.Name) && !IsSetupName(a.Name))
+                  ?? exes.FirstOrDefault(a => !IsSetupName(a.Name) && a.Name.Contains("win-x64", StringComparison.OrdinalIgnoreCase))
                   ?? exes[0]
-                : exes.FirstOrDefault(a => !IsStandaloneName(a.Name) && a.Name.Contains("win-x64", StringComparison.OrdinalIgnoreCase))
-                  ?? exes.FirstOrDefault(a => !IsStandaloneName(a.Name))
+                : exes.FirstOrDefault(a => !IsStandaloneName(a.Name) && !IsSetupName(a.Name) && a.Name.Contains("win-x64", StringComparison.OrdinalIgnoreCase))
+                  ?? exes.FirstOrDefault(a => !IsStandaloneName(a.Name) && !IsSetupName(a.Name))
                   ?? exes[0];
         }
 
@@ -307,6 +331,7 @@ public sealed partial class GitHubReleaseUpdateService
 
             if (clean.Length == 0 ||
                 clean.StartsWith("Descargas Windows", StringComparison.OrdinalIgnoreCase) ||
+                clean.StartsWith("HUDMind-Setup", StringComparison.OrdinalIgnoreCase) ||
                 clean.StartsWith("HUDMind.Native", StringComparison.OrdinalIgnoreCase) ||
                 clean.StartsWith("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase) ||
                 clean.StartsWith("Full Changelog:", StringComparison.OrdinalIgnoreCase) ||
@@ -328,7 +353,8 @@ public sealed partial class GitHubReleaseUpdateService
         string json,
         Version currentVersion,
         bool currentIsPrerelease = false,
-        bool preferSelfContained = false)
+        bool preferSelfContained = false,
+        bool preferInstaller = false)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -376,7 +402,7 @@ public sealed partial class GitHubReleaseUpdateService
             }
         }
 
-        var (preferred, checksum) = SelectPreferredAssets(assets, preferSelfContained);
+        var (preferred, checksum) = SelectPreferredAssets(assets, preferSelfContained, preferInstaller);
         var info = new AppUpdateInfo(
             CurrentVersion: NormalizeVersion(currentVersion),
             LatestVersion: latestVer,
@@ -395,12 +421,14 @@ public sealed partial class GitHubReleaseUpdateService
         Version? currentVersion = null,
         bool? currentIsPrerelease = null,
         bool? preferSelfContained = null,
+        bool? preferInstaller = null,
         CancellationToken ct = default)
     {
         var (curVer, curPre) = currentVersion is null
             ? GetCurrentAppVersion()
             : (NormalizeVersion(currentVersion), currentIsPrerelease ?? false);
         bool selfContained = preferSelfContained ?? IsRunningSelfContained();
+        bool useInstaller = preferInstaller ?? IsInstalledSetupDirectory();
 
         var url = $"https://api.github.com/repos/{_owner}/{_repo}/releases/latest";
         using var req = CreateGitHubRequest(url, acceptJson: true);
@@ -418,7 +446,7 @@ public sealed partial class GitHubReleaseUpdateService
             return new UpdateCheckResult(false, null, $"No se pudo consultar actualizaciones (HTTP {(int)resp.StatusCode}).");
 
         var json = await ReadBoundedStringAsync(resp, MaxApiBytes, timeoutCts.Token);
-        return ParseLatestReleaseJson(json, curVer, curPre, selfContained);
+        return ParseLatestReleaseJson(json, curVer, curPre, selfContained, useInstaller);
     }
 
     public async Task<UpdateDownloadResult> DownloadAssetAsync(
@@ -573,7 +601,7 @@ public sealed partial class GitHubReleaseUpdateService
             req.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
         }
         if (_http.DefaultRequestHeaders.UserAgent.Count == 0)
-            req.Headers.UserAgent.ParseAdd("HUDMind-Native/1.2.1");
+            req.Headers.UserAgent.ParseAdd("HUDMind-Native/1.2.2");
         return req;
     }
 

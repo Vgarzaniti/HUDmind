@@ -46,8 +46,8 @@
 
 ## Descarga Rápida (Releases)
 
-1. Descargá **`HUDMind.Native-Standalone-win-x64.exe`** desde **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** (no requiere instalar .NET 9 aparte), o **`HUDMind.Native-win-x64.exe`** (~26 MB) si ya tenés .NET 9 Desktop Runtime.
-2. Ejecutá el `.exe` y pegá una API Key gratuita de **Groq** o **Gemini** en **🤖 Proveedores IA**.
+1. Descargá el instalador **`HUDMind-Setup-win-x64.exe`** desde **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** *(recomendado: instala en tu usuario sin Admin y agrega acceso directo con ícono en el Menú Inicio)* — o usá el portable **`HUDMind.Native-Standalone-win-x64.exe`** / **`HUDMind.Native-win-x64.exe`** (~26 MB con .NET 9 Desktop Runtime).
+2. Abrí **HUDMind** y pegá una API Key gratuita de **Groq** o **Gemini** en **🤖 Proveedores IA**.
 
 ---
 

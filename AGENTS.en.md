@@ -8,7 +8,7 @@ Read this document first before modifying code, tests, docs, workflows, or PRs i
 
 ## 1. What HUDMind Is (30-Second Mental Model)
 
-**HUDMind** is a real-time tactical eSports AI coach for **Windows 10/11 (x64)** built on **.NET 9 + WPF + pure Win32**, distributed as single-file Windows executables (`HUDMind.Native-Standalone-win-x64.exe` and `HUDMind.Native-win-x64.exe`) via GitHub Releases (`Vgarzaniti/HUDmind`).
+**HUDMind** is a real-time tactical eSports AI coach for **Windows 10/11 (x64)** built on **.NET 9 + WPF + pure Win32**, distributed via GitHub Releases (`Vgarzaniti/HUDmind`) as a Windows installer (`HUDMind-Setup-win-x64.exe`) and single-file executables (`HUDMind.Native-Standalone-win-x64.exe` and `HUDMind.Native-win-x64.exe`).
 
 ### Non-Negotiable Architectural & Safety Invariants
 1. **0% GPU for HUDMind:** `App.xaml.cs` enforces `RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly`. Never add WPF GPU shader effects (e.g. `DropShadowEffect`) or DXGI/GPU hooks.

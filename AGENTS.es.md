@@ -8,7 +8,7 @@ Leé este documento primero antes de modificar código, pruebas, documentación,
 
 ## 1. Qué es HUDMind (Modelo Mental en 30 Segundos)
 
-**HUDMind** es un copiloto y coach táctico de videojuegos en tiempo real para **Windows 10/11 (x64)** construido sobre **.NET 9 + WPF + Win32 puro**, distribuido como ejecutables single-file (`HUDMind.Native-Standalone-win-x64.exe` y `HUDMind.Native-win-x64.exe`) vía GitHub Releases (`Vgarzaniti/HUDmind`).
+**HUDMind** es un copiloto y coach táctico de videojuegos en tiempo real para **Windows 10/11 (x64)** construido sobre **.NET 9 + WPF + Win32 puro**, distribuido como instalador Windows (`HUDMind-Setup-win-x64.exe`) y ejecutables single-file (`HUDMind.Native-Standalone-win-x64.exe` y `HUDMind.Native-win-x64.exe`) vía GitHub Releases (`Vgarzaniti/HUDmind`).
 
 ### Invariantes Arquitectónicos y de Seguridad (NO Violar Nunca)
 1. **0% GPU para HUDMind:** `App.xaml.cs` fuerza `RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly`. Nunca agregues shaders GPU en WPF (ej. `DropShadowEffect`) ni hooks DXGI/GPU.

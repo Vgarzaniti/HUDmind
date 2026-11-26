@@ -70,6 +70,7 @@ To validate risky changes before pushing them to all users, append a hyphenated 
    ```
    *(Alternatively, run **Actions → Release — HUDMind Native (Windows x64) → Run workflow** on GitHub with `v1.1.1`).*
 3. **Artifacts automatically produced by CI:**
-   - `HUDMind.Native-Standalone-win-x64.exe` (self-contained, zero prerequisites)
+   - `HUDMind-Setup-win-x64.exe` (Windows per-user installer with Start Menu icon, zero Admin or .NET 9 required)
+   - `HUDMind.Native-Standalone-win-x64.exe` (portable self-contained, zero prerequisites)
    - `HUDMind.Native-win-x64.exe` (framework-dependent for PCs with .NET 9 Desktop Runtime)
    - `SHA256SUMS.txt` (integrity checksums automatically verified by the in-app downloader)

@@ -70,6 +70,7 @@ Para probar cambios riesgosos antes de liberarlos a todos los usuarios se usa su
    ```
    *(Alternativamente, desde GitHub → **Actions → Release — HUDMind Native (Windows x64) → Run workflow** ingresando `v1.1.1`).*
 3. **Artefactos generados automáticamente por CI:**
-   - `HUDMind.Native-Standalone-win-x64.exe` (self-contained, sin prerrequisitos)
+   - `HUDMind-Setup-win-x64.exe` (instalador para Windows con ícono en Menú Inicio, sin permisos de Admin ni .NET 9)
+   - `HUDMind.Native-Standalone-win-x64.exe` (portable self-contained, sin prerrequisitos)
    - `HUDMind.Native-win-x64.exe` (framework-dependent para PCs con .NET 9 Desktop Runtime)
    - `SHA256SUMS.txt` (firmas de integridad verificadas automáticamente al descargar desde la app)

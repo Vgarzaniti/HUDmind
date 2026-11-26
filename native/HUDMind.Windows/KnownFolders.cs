@@ -16,6 +16,22 @@ public static class KnownFolders
         IntPtr hToken,
         out IntPtr ppszPath);
 
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+
+    public static void TrySetAppUserModelId(string appId = "HUDMind.Native.Desktop")
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(appId))
+                _ = SetCurrentProcessExplicitAppUserModelID(appId);
+        }
+        catch
+        {
+            // Non-fatal in headless or restricted environments
+        }
+    }
+
     public static string GetDownloadsDirectory()
     {
         IntPtr pPath = IntPtr.Zero;

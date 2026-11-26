@@ -15,7 +15,8 @@
 
 ## Quick Download / Descarga Rápida
 
-- **Download / Descargar:** [`HUDMind.Native-Standalone-win-x64.exe`](https://github.com/Vgarzaniti/HUDmind/releases/latest) *(no .NET 9 installation required / sin instalar .NET 9)*
+- **Windows Installer (Recommended / Recomendado):** [`HUDMind-Setup-win-x64.exe`](https://github.com/Vgarzaniti/HUDmind/releases/latest) *(Start Menu icon & clean uninstall / ícono en Menú Inicio, sin permisos de Admin ni .NET 9)*
+- **Portable Single-File:** [`HUDMind.Native-Standalone-win-x64.exe`](https://github.com/Vgarzaniti/HUDmind/releases/latest) *(no installation needed / sin instalar .NET 9)*
 - Includes automatic **in-app GitHub Releases update banner** with **SHA-256** verification.
 
 ---

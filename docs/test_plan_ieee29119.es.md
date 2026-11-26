@@ -2,7 +2,7 @@
 
 # Plan y Reporte de Pruebas de Software — ISO/IEC/IEEE 29119
 
-**Proyecto:** HUDMind Native v1.2.1 (`.NET 9`)  
+**Proyecto:** HUDMind Native v1.2.2 (`.NET 9`)  
 **Suites Automatizadas:** `native/HUDMind.Tests` (50 casos `net9.0` multiplataforma) + `native/HUDMind.Windows.Tests` (15 casos `net9.0-windows10.0.19041.0`) + smoke WPF (`--smoke-startup`)  
 **Integración Continua:** [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) (`native-dotnet9-tests` en `ubuntu-latest` + `native-windows-build` en `windows-latest`)
 

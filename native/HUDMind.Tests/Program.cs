@@ -1128,6 +1128,7 @@ await RunTest("35. GitHubReleaseUpdateService parses semver tags, skips drafts/p
       "draft": false,
       "prerelease": false,
       "assets": [
+        { "name": "HUDMind-Setup-win-x64.exe", "browser_download_url": "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/HUDMind-Setup-win-x64.exe", "size": 95500000, "content_type": "application/octet-stream" },
         { "name": "HUDMind.Native-Standalone-win-x64.exe", "browser_download_url": "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/HUDMind.Native-Standalone-win-x64.exe", "size": 95000000, "content_type": "application/octet-stream" },
         { "name": "HUDMind.Native-win-x64.exe", "browser_download_url": "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/HUDMind.Native-win-x64.exe", "size": 26000000, "content_type": "application/octet-stream" },
         { "name": "SHA256SUMS.txt", "browser_download_url": "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.2.0/SHA256SUMS.txt", "size": 256, "content_type": "text/plain" }
@@ -1135,13 +1136,29 @@ await RunTest("35. GitHubReleaseUpdateService parses semver tags, skips drafts/p
     }
     """;
 
-    var standaloneRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: true);
+    var standaloneRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: true, preferInstaller: false);
     Assert(standaloneRes.IsUpdateAvailable && standaloneRes.Update is not null, "Update should be detected");
     Assert(standaloneRes.Update!.PreferredAsset?.Name == "HUDMind.Native-Standalone-win-x64.exe", "Self-contained should prefer Standalone asset");
     Assert(standaloneRes.Update.ChecksumAsset?.Name == "SHA256SUMS.txt", "SHA256SUMS.txt selected");
 
-    var compactRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: false);
-    Assert(compactRes.Update!.PreferredAsset?.Name == "HUDMind.Native-win-x64.exe", "Framework-dependent should prefer compact asset");
+    var compactRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: false, preferInstaller: false);
+    Assert(compactRes.Update!.PreferredAsset?.Name == "HUDMind.Native-win-x64.exe", "Framework-dependent should prefer compact asset over Setup");
+
+    var setupRes = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 1, 0), preferSelfContained: true, preferInstaller: true);
+    Assert(setupRes.Update!.PreferredAsset?.Name == "HUDMind-Setup-win-x64.exe", "Installed Setup directory must prefer Setup installer");
+
+    var probeDir = Path.Combine(Path.GetTempPath(), $"hudmind_setup_probe_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(probeDir);
+    try
+    {
+        Assert(!GitHubReleaseUpdateService.IsInstalledSetupDirectory(probeDir), "Empty folder is not a Setup install");
+        File.WriteAllBytes(Path.Combine(probeDir, "unins000.exe"), [0x4D, 0x5A]);
+        Assert(GitHubReleaseUpdateService.IsInstalledSetupDirectory(probeDir), "Folder containing unins000.exe is detected as Setup install");
+    }
+    finally
+    {
+        try { Directory.Delete(probeDir, true); } catch { }
+    }
 
     var upToDate = svc.ParseLatestReleaseJson(releaseJson, new Version(1, 2, 0), preferSelfContained: false);
     Assert(!upToDate.IsUpdateAvailable, "Same version should report up to date");

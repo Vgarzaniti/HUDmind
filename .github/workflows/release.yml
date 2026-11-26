@@ -84,6 +84,26 @@ jobs:
           if ($p2.ExitCode -ne 0) { throw "Compact exe --smoke-startup failed ($($p2.ExitCode))" }
           Copy-Item "release-out/compact/HUDMind.Native.exe" "release-assets/HUDMind.Native-win-x64.exe" -Force
 
+          $isccCandidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) {
+            $cmdIscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
+            if ($cmdIscc) { $iscc = $cmdIscc.Source }
+          }
+          if (-not $iscc) { throw "Inno Setup 6 ISCC.exe not found." }
+          $standaloneAbs = (Resolve-Path "release-out/standalone/HUDMind.Native.exe").Path
+          $assetsAbs = (Resolve-Path "release-assets").Path
+          & $iscc "/DMyAppVersion=$env:APP_VERSION" "/DInputExe=$standaloneAbs" "/O$assetsAbs" "native/installer/HUDMind.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+
           $hashLines = @()
           foreach ($file in Get-ChildItem "release-assets/*.exe" | Sort-Object Name) {
             $h = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -100,7 +120,8 @@ jobs:
         run: |
           $notes = @'
           ### Descargas Windows 10/11 (x64)
-          - **`HUDMind.Native-Standalone-win-x64.exe`** *(Recomendado)*: ejecutable 100% portable sin instalar .NET 9 Runtime.
+          - **`HUDMind-Setup-win-x64.exe`** *(Recomendado)*: instalador para Windows (crea acceso directo con ícono en Menú Inicio, sin permisos de administrador ni instalar .NET 9).
+          - **`HUDMind.Native-Standalone-win-x64.exe`**: ejecutable 100% portable sin instalación previa ni .NET 9 Runtime.
           - **`HUDMind.Native-win-x64.exe`**: versión liviana (~26 MB) si ya tenés instalado [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0).
           - **`SHA256SUMS.txt`**: firmas de integridad verificadas automáticamente por el actualizador integrado de HUDMind.
 
@@ -109,6 +130,7 @@ jobs:
 
           $argsList = @(
             "release", "create", $env:RELEASE_TAG,
+            "release-assets/HUDMind-Setup-win-x64.exe",
             "release-assets/HUDMind.Native-Standalone-win-x64.exe",
             "release-assets/HUDMind.Native-win-x64.exe",
             "release-assets/SHA256SUMS.txt",

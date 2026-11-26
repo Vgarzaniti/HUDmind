@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <PathMap>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))=/hudmind/</PathMap>
+    <DebugSymbols>false</DebugSymbols>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+</Project>

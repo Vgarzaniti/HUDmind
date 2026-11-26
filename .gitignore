@@ -21,6 +21,9 @@ build/
 .eggs/
 HUDMind.exe
 HUDMind-Native.exe
+HUDMind-Setup-*.exe
+native/dist/
+native/installer/Output/
 native/**/bin/
 native/**/obj/
 
