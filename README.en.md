@@ -44,10 +44,43 @@
 
 ---
 
-## Quick Download (Releases)
+## Download & Installation (Windows 10/11 x64)
 
-1. Download the **`HUDMind-Setup-win-x64.exe`** installer from **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** *(recommended: per-user install without Admin, adds Start Menu shortcut & icon)* — or grab portable **`HUDMind.Native-Standalone-win-x64.exe`** / **`HUDMind.Native-win-x64.exe`** (~26 MB with .NET 9 Desktop Runtime).
-2. Launch **HUDMind** and paste a free **Groq** or **Gemini** API key in **🤖 Proveedores IA**.
+### 1. Which file should I download from Releases? *(You only need one)*
+
+On the **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** page you will see 4 assets. **You do not need to download all of them** — pick **one `.exe`** based on how you want to run HUDMind:
+
+| File | Best for / When to choose | Needs .NET 9 Runtime? |
+| :--- | :--- | :--- |
+| **`HUDMind-Setup-win-x64.exe`** ⭐ *(Recommended)* | **Standard Windows installer:** installs per-user (no Admin needed), creates Start Menu shortcut, clean Windows uninstall entry, and enables silent 1-click updates. | ❌ **No** *(bundled)* |
+| **`HUDMind.Native-Standalone-win-x64.exe`** | **100% Portable zero-install `.exe`:** double-click and run immediately without shortcuts or Windows install entries. Great for testing or USB drives. | ❌ **No** *(bundled)* |
+| **`HUDMind.Native-win-x64.exe`** | **Lightweight build (~26 MB):** same app, intended only for PCs that **already** have [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0) installed. | ✅ **Yes** *(.NET 9 required)* |
+| **`SHA256SUMS.txt`** | `SHA-256` checksum manifest read automatically by the built-in updater. **You do not need to download or run this manually.** | — |
+
+### 2. Step-by-step install & first launch
+
+1. Download **`HUDMind-Setup-win-x64.exe`** from **[Latest Release](https://github.com/Vgarzaniti/HUDmind/releases/latest)** and double-click it.
+2. *(Optional — Windows SmartScreen):* because this is an open-source build without a paid code-signing certificate, if Windows shows *"Windows protected your PC"*, click **More info → Run anyway**.
+3. Pick the setup language (**English** or **Español**), confirm the destination folder, and choose whether to add an optional Desktop icon. When finished, **HUDMind** launches automatically.
+4. Open **🤖 Proveedores IA**, paste a free **Groq** or **Gemini** API key (or configure local **Ollama**), select your microphone/output device, and you're ready to go.
+
+### 3. What exactly does it install on your PC (and what does it NOT)?
+
+- **App binary & uninstaller:** `%LOCALAPPDATA%\Programs\HUDMind\HUDMind.Native.exe` and `unins000.exe` (per-user install via `PrivilegesRequired=lowest`, leaving system-wide `Program Files` untouched by default).
+- **Shortcuts & Apps list:** **Start Menu** shortcut (`HUDMind` with `AppUserModelID = HUDMind.Native.Desktop`), optional **Desktop** icon, and a clean **Windows Apps & Features** uninstall entry.
+- **Local data, config & reviews (`%LOCALAPPDATA%\HUDMind\`):**
+  - `config\accounts.json` *(API keys encrypted per Windows user via **DPAPI** / `crypt32.dll`)*
+  - `config\user_config.json` and `config\telemetry.json`
+  - `profiles\` *(7 built-in profiles seeded from the sealed vault + your custom rules/profiles)* and `logs\reviews\` *(secret-redacted logs and Markdown post-match reviews)*
+  - *(If launching a portable build next to an existing `profiles\` folder or with `HUDMIND_HOME` set, data lives in that folder instead).*
+- **What it does NOT install or touch:**
+  - **Zero** kernel drivers, **zero** background services, **zero** DLL injection or game memory access, and **zero** edits to game installation folders.
+  - **Windows Startup disabled by default:** `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\HUDMind` (`--minimized`) is written only if you explicitly enable the startup checkbox inside the app.
+
+### 4. Updating & uninstalling
+
+- **1-click updates:** HUDMind checks GitHub Releases on launch (and every 60 min while idle), downloads to your chosen folder *(defaulting to Downloads)*, verifies hashes against **`SHA256SUMS.txt`**, and—when installed via Setup (`unins000.exe`)—runs a silent upgrade and relaunches automatically (`⚡ Instalar y Reiniciar`).
+- **Clean uninstall:** use **Windows Settings → Apps → HUDMind → Uninstall** (or run `%LOCALAPPDATA%\Programs\HUDMind\unins000.exe`). To also wipe saved configs and match reviews, remove `%LOCALAPPDATA%\HUDMind\`.
 
 ---
 

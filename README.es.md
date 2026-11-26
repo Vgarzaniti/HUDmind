@@ -44,10 +44,43 @@
 
 ---
 
-## Descarga Rápida (Releases)
+## Descarga e Instalación (Windows 10/11 x64)
 
-1. Descargá el instalador **`HUDMind-Setup-win-x64.exe`** desde **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** *(recomendado: instala en tu usuario sin Admin y agrega acceso directo con ícono en el Menú Inicio)* — o usá el portable **`HUDMind.Native-Standalone-win-x64.exe`** / **`HUDMind.Native-win-x64.exe`** (~26 MB con .NET 9 Desktop Runtime).
-2. Abrí **HUDMind** y pegá una API Key gratuita de **Groq** o **Gemini** en **🤖 Proveedores IA**.
+### 1. ¿Qué archivo descargar de Releases? *(Solo necesitás uno)*
+
+En la página de **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** vas a ver 4 archivos. **No hace falta bajar todos**: elegí **un solo `.exe`** según cómo quieras usarlo:
+
+| Archivo | Para quién es / Cuándo elegirlo | ¿Necesita instalar .NET 9? |
+| :--- | :--- | :--- |
+| **`HUDMind-Setup-win-x64.exe`** ⭐ *(Recomendado)* | **Instalador clásico de Windows:** se instala para tu usuario (sin permisos de Admin), crea acceso directo en Menú Inicio, desinstalador limpio y permite actualizar en 1 clic desde la app. | ❌ **No** *(ya viene incluido)* |
+| **`HUDMind.Native-Standalone-win-x64.exe`** | **Portable 100% sin instalación:** doble clic y abre directo sin crear accesos directos ni registro en Windows. Ideal para probar o llevar en pendrive. | ❌ **No** *(ya viene incluido)* |
+| **`HUDMind.Native-win-x64.exe`** | **Versión liviana (~26 MB):** mismo programa, pero pensada solo para PCs que **ya** tengan instalado [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0). | ✅ **Sí** *(requiere .NET 9)* |
+| **`SHA256SUMS.txt`** | Archivo de verificación de firmas `SHA-256` que lee automáticamente el actualizador interno. **No hace falta descargarlo ni abrirlo manualmente.** | — |
+
+### 2. Paso a paso para instalar y arrancar
+
+1. Descargá **`HUDMind-Setup-win-x64.exe`** desde **[Latest Release](https://github.com/Vgarzaniti/HUDmind/releases/latest)** y hacé doble clic.
+2. *(Opcional — Windows SmartScreen):* como es un proyecto open-source sin certificado comercial pago, si Windows muestra *"Windows protegió su PC"*, tocá **Más información → Ejecutar de todas formas**.
+3. Elegí el idioma del instalador (**Español** o **English**), confirmá la carpeta y tildá si querés un ícono extra en el Escritorio. Al finalizar se abre **HUDMind**.
+4. En la app, abrí **🤖 Proveedores IA** y pegá una API Key gratuita de **Groq** o **Gemini** (o configurá **Ollama** local), elegí tu micrófono/audio y listo.
+
+### 3. ¿Qué instala exactamente en tu PC (y qué NO)?
+
+- **Programa y desinstalador:** `%LOCALAPPDATA%\Programs\HUDMind\HUDMind.Native.exe` y `unins000.exe` (instalación por usuario vía `PrivilegesRequired=lowest`, sin tocar `Program Files` salvo que elijas modo Admin manualmente).
+- **Accesos directos y desinstalación:** acceso directo en el **Menú Inicio** (`HUDMind` con `AppUserModelID = HUDMind.Native.Desktop`), acceso directo opcional en el **Escritorio** y entrada estándar en *Configuración → Aplicaciones* de Windows.
+- **Datos, configuración y reseñas locales (`%LOCALAPPDATA%\HUDMind\`):**
+  - `config\accounts.json` *(API keys cifradas por usuario con **Windows DPAPI** / `crypt32.dll`)*
+  - `config\user_config.json` y `config\telemetry.json`
+  - `profiles\` *(7 perfiles base extraídos del vault sellado + tus reglas/perfiles propios)* y `logs\reviews\` *(logs redactados y resúmenes Markdown post-partida)*
+  - *(Si ejecutás una versión portable junto a una carpeta `profiles\` propia o definís `HUDMIND_HOME`, los datos se leen/guardan en esa carpeta).*
+- **Qué NO instala ni modifica:**
+  - **Cero** drivers de kernel, **cero** servicios en segundo plano, **cero** inyección DLL o lectura de memoria en juegos, y **cero** modificación en carpetas de tus videojuegos.
+  - **Inicio automático con Windows desactivado por defecto:** solo se registra bajo `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\HUDMind` (`--minimized`) si activás explícitamente el checkbox en la app.
+
+### 4. Cómo actualizar y desinstalar
+
+- **Actualizar en 1 clic:** HUDMind verifica GitHub Releases al abrir (y cada 60 min en reposo), descarga la nueva versión en la carpeta que elijas *(por defecto tu carpeta de Descargas)*, valida el hash contra **`SHA256SUMS.txt`** y, si usás la versión instalada con Setup (`unins000.exe`), aplica la actualización silenciosa y reabre la app automáticamente (`⚡ Instalar y Reiniciar`).
+- **Desinstalar:** desde **Configuración de Windows → Aplicaciones → HUDMind → Desinstalar** (o ejecutando `%LOCALAPPDATA%\Programs\HUDMind\unins000.exe`). Para borrar también tu configuración guardada y reseñas, eliminá `%LOCALAPPDATA%\HUDMind\`.
 
 ---
 

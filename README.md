@@ -15,9 +15,16 @@
 
 ## Quick Download / Descarga Rápida
 
-- **Windows Installer (Recommended / Recomendado):** [`HUDMind-Setup-win-x64.exe`](https://github.com/Vgarzaniti/HUDmind/releases/latest) *(Start Menu icon & clean uninstall / ícono en Menú Inicio, sin permisos de Admin ni .NET 9)*
-- **Portable Single-File:** [`HUDMind.Native-Standalone-win-x64.exe`](https://github.com/Vgarzaniti/HUDmind/releases/latest) *(no installation needed / sin instalar .NET 9)*
-- Includes automatic **in-app GitHub Releases update banner** with **SHA-256** verification.
+You only need **one** `.exe` from **[Latest Release](https://github.com/Vgarzaniti/HUDmind/releases/latest)** (do **not** download `SHA256SUMS.txt` manually — HUDMind uses it automatically for in-app update verification):
+
+| File / Archivo | Choose this when... / Cuándo elegirlo | Size / Tamaño | Needs .NET 9? / ¿Pide .NET 9? |
+| :--- | :--- | :--- | :--- |
+| **`HUDMind-Setup-win-x64.exe`** ⭐ **Recommended / Recomendado** | Standard Windows installer: per-user install (no Admin needed), Start Menu icon, clean Uninstall, and silent 1-click in-app updates. | ~87 MB | ❌ Included / Incluido |
+| **`HUDMind.Native-Standalone-win-x64.exe`** *(Portable)* | Zero-install portable `.exe`: double-click and run anywhere (no shortcuts or registry uninstall entry). | ~94 MB | ❌ Included / Incluido |
+| **`HUDMind.Native-win-x64.exe`** *(Lightweight)* | Smallest download if you **already** have [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0) installed. | ~26 MB | ✅ Required / Requerido |
+| **`SHA256SUMS.txt`** *(Checksums)* | Integrity manifest used automatically by HUDMind's updater (`GitHubReleaseUpdateService`). No manual download needed. | < 1 KB | — |
+
+👉 Full **step-by-step install guide & exact breakdown of what Setup installs on your PC**: **[README.es.md#descarga-e-instalación-windows-1011-x64](README.es.md#descarga-e-instalación-windows-1011-x64)** | **[README.en.md#download--installation-windows-1011-x64](README.en.md#download--installation-windows-1011-x64)**
 
 ---
 
