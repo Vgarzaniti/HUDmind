@@ -350,7 +350,7 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(_repo.LastLoadWarning))
             AppendLog($"⚠ AVISO: {_repo.LastLoadWarning}");
 
-        AppendLog($"HUDMind Native (.NET 9 · 0% GPU) listo | Perfil: {_activeUserProfile.DisplayName} | Workspace: {_repo.WorkspaceRoot}");
+        AppendLog($"HUDMind Native (.NET 9 · 0% GPU) listo | Perfil: {_activeUserProfile.DisplayName} [{_activeUserProfile.UniqueUserId}] | Workspace: {_repo.WorkspaceRoot}");
         AppendLog($"Perfiles cargados: {_profiles.Count} | Cuentas IA listas: {_accounts.Count(a => a.IsReady())}");
     }
 
@@ -1612,6 +1612,19 @@ public partial class MainWindow : Window
         BindInitialUi();
     }
 
+    private void BtnCopyUserId_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_activeUserProfile.UniqueUserId))
+            {
+                Clipboard.SetText(_activeUserProfile.UniqueUserId);
+                AppendLog($"🆔 Identificador único copiado al portapapeles: {_activeUserProfile.UniqueUserId}");
+            }
+        }
+        catch { }
+    }
+
     private void RefreshPersonalProfileCardUi()
     {
         if (TxtActiveUserAvatar is null || TxtActiveUserName is null || TxtActiveUserSub is null)
@@ -1620,6 +1633,8 @@ public partial class MainWindow : Window
         TxtActiveUserAvatar.Text = _activeUserProfile.AvatarBadge;
         TxtActiveUserName.Text = _activeUserProfile.DisplayName;
         TxtActiveUserName.Foreground = PersonalAccountDialogs.ParseHexBrush(_activeUserProfile.AccentHex);
+        if (TxtActiveUserUniqueId is not null)
+            TxtActiveUserUniqueId.Text = $"ID: {_activeUserProfile.UniqueUserId}";
 
         string lockBadge = _activeUserProfile.HasPin ? "🔒 PIN" : "Libre";
         string providerBadge = string.IsNullOrWhiteSpace(_activeUserProfile.LinkedAccountBadge)

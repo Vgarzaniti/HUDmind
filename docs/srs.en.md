@@ -3,7 +3,7 @@
 # Software Requirements Specification (SRS) — ISO/IEC/IEEE 29148
 
 **Project:** HUDMind Native (.NET 9) — Real-Time Tactical Video Game Coach  
-**Version:** 1.5.0 (`HUDMind.Native`)  
+**Version:** 1.5.1 (`HUDMind.Native`)  
 **Reference Standards:** ISO/IEC/IEEE 29148 (Requirements Engineering), ISO/IEC 25010 (Software Product Quality), ISO/IEC 27001 (Information Security), ISO/IEC/IEEE 42010 (Architecture Description), ISO/IEC/IEEE 29119 (Software Testing).
 
 ---
@@ -38,7 +38,7 @@
 | **REQ-FUNC-11** | Anti-repetition memory & cross-session continuity. | `InterventionMemory` blocks repeated callouts within TTL while isolating chat history; `SavePostMatchReview` writes redacted `.md` files to `logs/reviews/` and `LoadLatestPostMatchFocus` injects the last drill into the next match. | `native/HUDMind.Core/Pipeline/InterventionMemory.cs`, `native/HUDMind.Core/Config/ConfigRepository.cs` |
 | **REQ-FUNC-12** | Native WPF graphical control center. | 4-tab UI with in-place account creation/editing (`BaseUrl`, `Vision Mode`), profile/`manifest.json` CRUD, Markdown review launcher, and `--smoke-startup` verification. | `native/HUDMind.App/MainWindow.xaml`, `native/HUDMind.App/MainWindow.xaml.cs` |
 | **REQ-FUNC-13** | In-app GitHub Releases updater & assisted download. | Queries GitHub Releases on startup and every 60 min while idle (`!IsRunning`), ignores drafts/pre-releases, shows top `UpdateBanner` with **⬇ Descargar actualización**, matches `Standalone` vs compact `.exe`, saves to Downloads (`KnownFolders`), and cleanly launches the new `.exe`. | `native/HUDMind.Core/Updates/GitHubReleaseUpdateService.cs`, `native/HUDMind.Windows/KnownFolders.cs`, `native/HUDMind.App/MainWindow.xaml.cs` |
-| **REQ-FUNC-14** | Personal local accounts ($0 server), PIN lock, `.hudmind` backup & easy AI login. | `UserProfileStore` isolates per-player settings, memory, leaks & DPAPI-sealed `accounts.json` under `users/` (with optional PBKDF2-SHA256 PIN lock); `ProfileArchiveCodec` exports/imports AES-256-GCM `.hudmind` archives; `OpenRouterOAuthPkceClient` enables 1-click PKCE login and `PersonalAccountDialogs` provides a 2-click Gemini Live key assistant. | `native/HUDMind.Core/Config/UserProfileStore.cs`, `native/HUDMind.Core/Security/ProfileArchiveCodec.cs`, `native/HUDMind.Core/Security/OpenRouterOAuthPkceClient.cs`, `native/HUDMind.App/Controls/PersonalAccountDialogs.cs` |
+| **REQ-FUNC-14** | Personal local accounts ($0 server), unique ID, PIN lock, `.hudmind` backup & easy AI login. | `UserProfileStore` assigns each account a non-repeating alphanumeric `UniqueUserId` (`HM-XXXX-XXXX-XXXX` combining digits and letters, tracking retired IDs in `IssuedUniqueIds`), isolates per-player settings, memory, leaks & DPAPI-sealed `accounts.json` under `users/` (with optional PBKDF2-SHA256 PIN lock); `ProfileArchiveCodec` exports/imports AES-256-GCM `.hudmind` archives; `OpenRouterOAuthPkceClient` enables 1-click PKCE login and `PersonalAccountDialogs` provides a 2-click Gemini Live key assistant. | `native/HUDMind.Core/Config/UserProfileStore.cs`, `native/HUDMind.Core/Security/ProfileArchiveCodec.cs`, `native/HUDMind.Core/Security/OpenRouterOAuthPkceClient.cs`, `native/HUDMind.App/Controls/PersonalAccountDialogs.cs` |
 
 ---
 

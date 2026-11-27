@@ -3197,10 +3197,22 @@ await RunTest("59. UserProfileStore isolation/PBKDF2 PIN + ProfileArchiveCodec A
         var store = new UserProfileStore(tmpRoot);
         var idx = store.LoadOrInitialize();
         Assert(idx.ActiveProfileId == "default" && idx.Profiles.Count == 1, "Initial store must seed default profile");
+        string defaultUid = idx.Profiles[0].UniqueUserId;
+        Assert(UserProfileStore.IsValidUniqueUserId(defaultUid) &&
+               store.LoadOrInitialize().Profiles[0].UniqueUserId == defaultUid &&
+               !UserProfileStore.IsValidUniqueUserId("HM-AAAA-BBBB-CCCC") &&
+               !UserProfileStore.IsValidUniqueUserId("HM-2345-6789-2345"),
+            $"Default profile must persist a valid alphanumeric UniqueUserId containing digits & letters: '{defaultUid}'");
         Assert(store.ResolveWorkspaceRoot("default") == Path.GetFullPath(tmpRoot), "Default profile must preserve root workspace compatibility");
         Assert(!UserProfileStore.IsValidProfileId("../etc") && !store.DeleteProfile("default"), "CWE-22 ID check & default delete guard failed");
 
         var mati = store.CreateProfile("Mati Pro", "🦊", "#A78BFA", "rocket_league", pin: "2026");
+        Assert(UserProfileStore.IsValidUniqueUserId(mati.UniqueUserId) &&
+               !string.Equals(mati.UniqueUserId, defaultUid, StringComparison.OrdinalIgnoreCase),
+            $"New profile must receive a unique alphanumeric ID distinct from default: '{mati.UniqueUserId}'");
+        store.UpdateProfileMetadata(mati.ProfileId, displayName: "Mati Updated");
+        Assert(store.LoadOrInitialize().Profiles.First(p => p.ProfileId == mati.ProfileId).UniqueUserId == mati.UniqueUserId,
+            "Renaming display name must keep UniqueUserId permanent");
         Assert(mati.HasPin && UserProfileStore.VerifyPin(mati.PinHash, "2026") && !UserProfileStore.VerifyPin(mati.PinHash, "9999"),
             "PBKDF2-SHA256 PIN verification mismatch");
 
@@ -3244,6 +3256,19 @@ await RunTest("59. UserProfileStore isolation/PBKDF2 PIN + ProfileArchiveCodec A
 
         Assert(store.DeleteProfile(mati.ProfileId), "Non-default profile delete must succeed");
         Assert(!Directory.Exists(repoMati.WorkspaceRoot), "Deleted profile workspace must be cleaned");
+
+        // Deleted UniqueUserId stays retired in IssuedUniqueIds & never collides across rapid multi-profile creation
+        var afterDeleteIdx = store.LoadOrInitialize();
+        Assert(afterDeleteIdx.IssuedUniqueIds.Contains(mati.UniqueUserId, StringComparer.OrdinalIgnoreCase),
+            "Deleted user's UniqueUserId must remain retired in IssuedUniqueIds");
+
+        var seenUids = new HashSet<string>(afterDeleteIdx.IssuedUniqueIds, StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < 40; i++)
+        {
+            var extra = store.CreateProfile("Mati", "🎮", "#22D3EE", "");
+            Assert(UserProfileStore.IsValidUniqueUserId(extra.UniqueUserId) && seenUids.Add(extra.UniqueUserId),
+                $"Generated UniqueUserId repeated or invalid: '{extra.UniqueUserId}'");
+        }
     }
     finally
     {
