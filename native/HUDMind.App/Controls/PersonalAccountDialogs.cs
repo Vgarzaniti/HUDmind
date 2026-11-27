@@ -70,7 +70,7 @@ public static class PersonalAccountDialogs
             owner,
             $"HUDMind · Desbloquear perfil ({profile.DisplayName})",
             width: 410,
-            height: 270);
+            height: 290);
 
         var root = new StackPanel { Margin = new Thickness(18) };
         root.Children.Add(new TextBlock
@@ -79,6 +79,14 @@ public static class PersonalAccountDialogs
             FontSize = 18,
             FontWeight = FontWeights.Bold,
             Foreground = ParseHexBrush(profile.AccentHex)
+        });
+        root.Children.Add(new TextBlock
+        {
+            Text = $"ID único: {profile.UniqueUserId}",
+            FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+            FontSize = 11.5,
+            Foreground = FreezeBrush("#67E8F9"),
+            Margin = new Thickness(0, 2, 0, 0)
         });
         root.Children.Add(new TextBlock
         {
@@ -177,7 +185,7 @@ public static class PersonalAccountDialogs
         IReadOnlyList<GameProfile> games)
     {
         var result = new PersonalProfileDialogResult(PersonalProfileDialogOutcome.None);
-        var win = CreateModalWindow(owner, "HUDMind · Mi Cuenta y Perfiles Locales ($0 Privado)", width: 690, height: 560);
+        var win = CreateModalWindow(owner, "HUDMind · Mi Cuenta y Perfiles Locales ($0 Privado)", width: 730, height: 600);
 
         var mainGrid = new Grid { Margin = new Thickness(16) };
         mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -247,7 +255,7 @@ public static class PersonalAccountDialogs
                 var item = new ListBoxItem
                 {
                     Tag = p,
-                    Content = $"{p.AvatarBadge}  {p.DisplayName}{pinTag}{fav}{activeTag}",
+                    Content = $"{p.AvatarBadge}  {p.DisplayName}{pinTag}{fav}{activeTag}  ·  [{p.UniqueUserId}]",
                     Foreground = isCurrent ? ParseHexBrush(p.AccentHex) : TextPrimary,
                     FontWeight = isCurrent ? FontWeights.Bold : FontWeights.Normal,
                     Padding = new Thickness(6, 5, 6, 5)
@@ -288,6 +296,31 @@ public static class PersonalAccountDialogs
             Margin = new Thickness(0, 0, 0, 8)
         };
         rightStack.Children.Add(rightTitle);
+
+        rightStack.Children.Add(CreateFieldLabel("Identificador único permanente (irrepetible):"));
+        var idRow = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+        idRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        idRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
+        idRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var txtUniqueId = CreateTextBox(activeProfile.UniqueUserId);
+        txtUniqueId.IsReadOnly = true;
+        txtUniqueId.FontFamily = new System.Windows.Media.FontFamily("Consolas");
+        txtUniqueId.Foreground = FreezeBrush("#67E8F9");
+        var btnCopyId = CreateButton("📋 Copiar", BtnNeutralBg, BorderSubtle, new Thickness(0));
+        btnCopyId.Click += (_, _) =>
+        {
+            try
+            {
+                Clipboard.SetText(activeProfile.UniqueUserId);
+                btnCopyId.Content = "✅ Copiado";
+            }
+            catch { }
+        };
+        Grid.SetColumn(txtUniqueId, 0);
+        Grid.SetColumn(btnCopyId, 2);
+        idRow.Children.Add(txtUniqueId);
+        idRow.Children.Add(btnCopyId);
+        rightStack.Children.Add(idRow);
 
         rightStack.Children.Add(CreateFieldLabel("Nombre / Nickname:"));
         var txtName = CreateTextBox(activeProfile.DisplayName);

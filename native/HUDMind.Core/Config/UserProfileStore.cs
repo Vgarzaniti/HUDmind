@@ -11,6 +11,9 @@ public sealed class UserProfileRecord
     [JsonPropertyName("profile_id")]
     public string ProfileId { get; set; } = "default";
 
+    [JsonPropertyName("unique_user_id")]
+    public string UniqueUserId { get; set; } = string.Empty;
+
     [JsonPropertyName("display_name")]
     public string DisplayName { get; set; } = "Jugador Principal";
 
@@ -46,6 +49,9 @@ public sealed class UserProfileIndex
 
     [JsonPropertyName("profiles")]
     public List<UserProfileRecord> Profiles { get; set; } = [];
+
+    [JsonPropertyName("issued_unique_ids")]
+    public List<string> IssuedUniqueIds { get; set; } = [];
 }
 
 /// <summary>
@@ -69,6 +75,14 @@ public sealed partial class UserProfileStore
     [GeneratedRegex(@"^#[0-9A-Fa-f]{6}$", RegexOptions.Compiled)]
     private static partial Regex SafeHexColorRegex();
 
+    // Unambiguous uppercase alphanumeric Crockford-like 32-char set (digits + letters; excludes 0/O/1/I/L).
+    private const string UniqueIdDigits = "23456789";
+    private const string UniqueIdLetters = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+    private const string UniqueIdAlphabet = UniqueIdDigits + UniqueIdLetters; // 32 chars exact
+
+    [GeneratedRegex(@"^HM-[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}$", RegexOptions.Compiled)]
+    private static partial Regex SafeUniqueUserIdRegex();
+
     public string BaseWorkspaceRoot { get; }
     public string UsersRootDir => Path.Combine(BaseWorkspaceRoot, "users");
     public string IndexPath => Path.Combine(UsersRootDir, "users.json");
@@ -80,6 +94,56 @@ public sealed partial class UserProfileStore
 
     public static bool IsValidProfileId(string? id) =>
         !string.IsNullOrWhiteSpace(id) && SafeProfileIdRegex().IsMatch(id.Trim().ToLowerInvariant());
+
+    public static bool IsValidUniqueUserId(string? uniqueId)
+    {
+        if (string.IsNullOrWhiteSpace(uniqueId))
+            return false;
+        var norm = uniqueId.Trim().ToUpperInvariant();
+        if (!SafeUniqueUserIdRegex().IsMatch(norm))
+            return false;
+        var body = norm.AsSpan(3); // after "HM-"
+        bool hasDigit = false;
+        bool hasLetter = false;
+        foreach (char c in body)
+        {
+            if (char.IsAsciiDigit(c)) hasDigit = true;
+            else if (char.IsAsciiLetterUpper(c)) hasLetter = true;
+        }
+        return hasDigit && hasLetter;
+    }
+
+    public static string GenerateUniqueUserId(ISet<string>? reservedIds = null)
+    {
+        Span<char> chars = stackalloc char[12];
+        while (true)
+        {
+            bool hasDigit = false;
+            bool hasLetter = false;
+            for (int i = 0; i < 12; i++)
+            {
+                char ch = UniqueIdAlphabet[RandomNumberGenerator.GetInt32(UniqueIdAlphabet.Length)];
+                chars[i] = ch;
+                if (ch is >= '2' and <= '9') hasDigit = true;
+                else hasLetter = true;
+            }
+
+            if (!hasDigit)
+            {
+                int slot = RandomNumberGenerator.GetInt32(12);
+                chars[slot] = UniqueIdDigits[RandomNumberGenerator.GetInt32(UniqueIdDigits.Length)];
+            }
+            else if (!hasLetter)
+            {
+                int slot = RandomNumberGenerator.GetInt32(12);
+                chars[slot] = UniqueIdLetters[RandomNumberGenerator.GetInt32(UniqueIdLetters.Length)];
+            }
+
+            string candidate = $"HM-{chars[..4]}-{chars.Slice(4, 4)}-{chars.Slice(8, 4)}";
+            if (reservedIds is null || !reservedIds.Contains(candidate))
+                return candidate;
+        }
+    }
 
     public static string SanitizeDisplayName(string? name, string fallback = "Jugador")
     {
@@ -150,7 +214,56 @@ public sealed partial class UserProfileStore
         else
             index.ActiveProfileId = normActive;
 
+        index.IssuedUniqueIds ??= [];
+        var reserved = new HashSet<string>(
+            index.IssuedUniqueIds.Select(x => (x ?? string.Empty).Trim().ToUpperInvariant()).Where(IsValidUniqueUserId),
+            StringComparer.OrdinalIgnoreCase);
+        var activeIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool needsSave = !File.Exists(IndexPath);
+
+        foreach (var item in index.Profiles)
+        {
+            var normUid = (item.UniqueUserId ?? string.Empty).Trim().ToUpperInvariant();
+            if (!IsValidUniqueUserId(normUid) || !activeIds.Add(normUid))
+            {
+                normUid = GenerateUniqueUserId(reserved);
+                item.UniqueUserId = normUid;
+                activeIds.Add(normUid);
+                needsSave = true;
+            }
+            else
+            {
+                item.UniqueUserId = normUid;
+            }
+            reserved.Add(normUid);
+        }
+
+        if (needsSave)
+        {
+            index.IssuedUniqueIds = MergeIssuedUniqueIds(activeIds, reserved);
+            if (!HasUsersReparsePoint())
+            {
+                try { Save(index); } catch { }
+            }
+        }
+
         return index;
+    }
+
+    private static List<string> MergeIssuedUniqueIds(IEnumerable<string> activeIds, IEnumerable<string> allReservedIds)
+    {
+        var merged = new List<string>(512);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in activeIds.Concat(allReservedIds))
+        {
+            if (IsValidUniqueUserId(id) && seen.Add(id))
+            {
+                merged.Add(id);
+                if (merged.Count >= 512)
+                    break;
+            }
+        }
+        return merged;
     }
 
     public void Save(UserProfileIndex index)
@@ -183,9 +296,18 @@ public sealed partial class UserProfileStore
             suffix++;
         }
 
+        var reserved = new HashSet<string>(
+            index.IssuedUniqueIds.Concat(index.Profiles.Select(p => p.UniqueUserId))
+                .Select(x => (x ?? string.Empty).Trim().ToUpperInvariant())
+                .Where(IsValidUniqueUserId),
+            StringComparer.OrdinalIgnoreCase);
+        string uniqueUserId = GenerateUniqueUserId(reserved);
+        reserved.Add(uniqueUserId);
+
         var record = new UserProfileRecord
         {
             ProfileId = id,
+            UniqueUserId = uniqueUserId,
             DisplayName = cleanName,
             AvatarBadge = NormalizeAvatarBadge(avatarBadge),
             AccentHex = NormalizeAccentHex(accentHex),
@@ -198,6 +320,7 @@ public sealed partial class UserProfileStore
         Directory.CreateDirectory(ResolveWorkspaceRoot(id));
         index.Profiles.Add(record);
         index.ActiveProfileId = id;
+        index.IssuedUniqueIds = MergeIssuedUniqueIds(index.Profiles.Select(p => p.UniqueUserId), reserved);
         Save(index);
         return record;
     }
@@ -260,13 +383,20 @@ public sealed partial class UserProfileStore
             return false;
 
         var index = LoadOrInitialize();
+        var targetRecord = index.Profiles.FirstOrDefault(p => p.ProfileId == norm);
+        if (targetRecord is null)
+            return false;
+
+        if (IsValidUniqueUserId(targetRecord.UniqueUserId) &&
+            !index.IssuedUniqueIds.Contains(targetRecord.UniqueUserId, StringComparer.OrdinalIgnoreCase))
+        {
+            index.IssuedUniqueIds.Add(targetRecord.UniqueUserId);
+        }
+
         if (string.Equals(index.ActiveProfileId, norm, StringComparison.OrdinalIgnoreCase))
             index.ActiveProfileId = "default";
 
-        int removed = index.Profiles.RemoveAll(p => p.ProfileId == norm);
-        if (removed == 0)
-            return false;
-
+        index.Profiles.RemoveAll(p => p.ProfileId == norm);
         Save(index);
 
         var dir = Path.GetFullPath(Path.Combine(UsersRootDir, norm));

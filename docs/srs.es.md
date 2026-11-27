@@ -3,7 +3,7 @@
 # Especificación de Requisitos de Software (SRS) — ISO/IEC/IEEE 29148
 
 **Proyecto:** HUDMind Native (.NET 9) — Coach Táctico de Videojuegos en Tiempo Real  
-**Versión:** 1.5.0 (`HUDMind.Native`)  
+**Versión:** 1.5.1 (`HUDMind.Native`)  
 **Estándares de Referencia:** ISO/IEC/IEEE 29148 (Ingeniería de Requisitos), ISO/IEC 25010 (Calidad de Producto de Software), ISO/IEC 27001 (Seguridad de la Información), ISO/IEC/IEEE 42010 (Descripción de Arquitectura), ISO/IEC/IEEE 29119 (Pruebas de Software).
 
 ---
@@ -38,7 +38,7 @@
 | **REQ-FUNC-11** | Memoria anti-repetición y continuidad entre partidas. | `InterventionMemory` evita consejos repetidos dentro de ventana/TTL manteniendo aislamiento del chat; `SavePostMatchReview` guarda `.md` redactados en `logs/reviews/` y `LoadLatestPostMatchFocus` inyecta el último drill en la siguiente partida. | `native/HUDMind.Core/Pipeline/InterventionMemory.cs`, `native/HUDMind.Core/Config/ConfigRepository.cs` |
 | **REQ-FUNC-12** | Centro de control gráfico nativo (WPF). | UI de 4 pestañas con creación/edición in-situ de cuentas (`BaseUrl`, `Modo Visión`), creación/edición/eliminación de perfiles y `manifest.json`, resúmenes Markdown y prueba `--smoke-startup`. | `native/HUDMind.App/MainWindow.xaml`, `native/HUDMind.App/MainWindow.xaml.cs` |
 | **REQ-FUNC-13** | Verificador in-app de actualizaciones y descarga asistida. | Consulta GitHub Releases al iniciar y cada 60 min en reposo (`!IsRunning`), ignora drafts/pre-releases, muestra cartel superior con botón **⬇ Descargar actualización**, elige `Standalone` vs compacto, guarda en Descargas (`KnownFolders`) y lanza limpiamente el nuevo `.exe`. | `native/HUDMind.Core/Updates/GitHubReleaseUpdateService.cs`, `native/HUDMind.Windows/KnownFolders.cs`, `native/HUDMind.App/MainWindow.xaml.cs` |
-| **REQ-FUNC-14** | Cuentas personales locales ($0 servidor), PIN, backup `.hudmind` y login IA asistido. | `UserProfileStore` aísla configuraciones, memoria, fugas y `accounts.json` DPAPI por persona en `users/` (con PIN PBKDF2-SHA256 opcional); `ProfileArchiveCodec` exporta/importa `.hudmind` AES-256-GCM; `OpenRouterOAuthPkceClient` permite login PKCE en 1 clic y `PersonalAccountDialogs` ofrece asistente Gemini Live en 2 clics. | `native/HUDMind.Core/Config/UserProfileStore.cs`, `native/HUDMind.Core/Security/ProfileArchiveCodec.cs`, `native/HUDMind.Core/Security/OpenRouterOAuthPkceClient.cs`, `native/HUDMind.App/Controls/PersonalAccountDialogs.cs` |
+| **REQ-FUNC-14** | Cuentas personales locales ($0 servidor), ID único, PIN, backup `.hudmind` y login IA asistido. | `UserProfileStore` asigna a cada cuenta un `UniqueUserId` alfanumérico irrepetible (`HM-XXXX-XXXX-XXXX` con dígitos y letras, conservando IDs retirados en `IssuedUniqueIds`), aísla configuraciones, memoria, fugas y `accounts.json` DPAPI en `users/` (con PIN PBKDF2-SHA256 opcional); `ProfileArchiveCodec` exporta/importa `.hudmind` AES-256-GCM; `OpenRouterOAuthPkceClient` permite login PKCE en 1 clic y `PersonalAccountDialogs` ofrece asistente Gemini Live en 2 clics. | `native/HUDMind.Core/Config/UserProfileStore.cs`, `native/HUDMind.Core/Security/ProfileArchiveCodec.cs`, `native/HUDMind.Core/Security/OpenRouterOAuthPkceClient.cs`, `native/HUDMind.App/Controls/PersonalAccountDialogs.cs` |
 
 ---
 
