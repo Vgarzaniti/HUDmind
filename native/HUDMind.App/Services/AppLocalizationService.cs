@@ -4,8 +4,8 @@ using MediaApplication = System.Windows.Application;
 namespace HUDMind.App.Services;
 
 /// <summary>
-/// Runtime ES/EN ResourceDictionary switcher with zero third-party dependencies.
-/// Swaps MergedDictionaries dynamically cleanly so DynamicResource bindings update live.
+/// Runtime ES/EN ResourceDictionary switcher and concise imperative text localizer
+/// with zero third-party dependencies.
 /// </summary>
 public static class AppLocalizationService
 {
@@ -13,6 +13,9 @@ public static class AppLocalizationService
     private const string EnUri = "Resources/Strings.en.xaml";
 
     public static bool IsEnglish { get; private set; }
+    public static event Action<bool>? LanguageChanged;
+
+    public static string T(string es, string en) => IsEnglish ? en : es;
 
     public static void ApplyLanguage(string? languageCode)
     {
@@ -20,30 +23,32 @@ public static class AppLocalizationService
         IsEnglish = useEn;
 
         var app = MediaApplication.Current;
-        if (app is null)
-            return;
-
-        string targetRelative = useEn ? EnUri : EsUri;
-        try
+        if (app is not null)
         {
-            var nextDict = new ResourceDictionary
+            string targetRelative = useEn ? EnUri : EsUri;
+            try
             {
-                Source = new Uri(targetRelative, UriKind.Relative)
-            };
+                var nextDict = new ResourceDictionary
+                {
+                    Source = new Uri(targetRelative, UriKind.Relative)
+                };
 
-            var merged = app.Resources.MergedDictionaries;
-            for (int i = merged.Count - 1; i >= 0; i--)
-            {
-                var src = merged[i].Source?.OriginalString ?? string.Empty;
-                if (src.Contains("Resources/Strings.", StringComparison.OrdinalIgnoreCase))
-                    merged.RemoveAt(i);
+                var merged = app.Resources.MergedDictionaries;
+                for (int i = merged.Count - 1; i >= 0; i--)
+                {
+                    var src = merged[i].Source?.OriginalString ?? string.Empty;
+                    if (src.Contains("Resources/Strings.", StringComparison.OrdinalIgnoreCase))
+                        merged.RemoveAt(i);
+                }
+                merged.Add(nextDict);
             }
-            merged.Add(nextDict);
+            catch
+            {
+                // Keep UI functional on fallback dictionary
+            }
         }
-        catch
-        {
-            // Keep UI functional on existing fallback dictionary if resource lookup fails
-        }
+
+        LanguageChanged?.Invoke(useEn);
     }
 
     public static string Get(string key, string fallback = "")

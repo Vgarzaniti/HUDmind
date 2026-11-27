@@ -12,7 +12,6 @@ using HUDMind.Core.Pipeline;
 using HUDMind.Core.Security;
 using HUDMind.Core.Updates;
 using HUDMind.Windows;
-using MediaBrushes = System.Windows.Media.Brushes;
 using MediaColor = System.Windows.Media.Color;
 using MediaColorConverter = System.Windows.Media.ColorConverter;
 using ProgressBar = System.Windows.Controls.ProgressBar;
@@ -21,6 +20,24 @@ namespace HUDMind.App;
 
 public partial class MainWindow
 {
+    public void HandlePipeCommand(string? command)
+    {
+        if (_shutdownComplete || _smokeMode || string.IsNullOrWhiteSpace(command))
+            return;
+
+        string trimmed = command.Trim();
+        if (trimmed.StartsWith("IMPORT:", StringComparison.OrdinalIgnoreCase))
+        {
+            BringToFrontFromPipe();
+            string archivePath = trimmed["IMPORT:".Length..].Trim();
+            ImportPersonalArchiveFromPath(archivePath);
+            return;
+        }
+
+        if (string.Equals(trimmed, "SHOW", StringComparison.OrdinalIgnoreCase))
+            BringToFrontFromPipe();
+    }
+
     public void BringToFrontFromPipe()
     {
         if (_shutdownComplete || _smokeMode)
@@ -31,7 +48,7 @@ public partial class MainWindow
         Topmost = true;
         Activate();
         Topmost = prevTopmost;
-        ShowToast("👋 HUDMind traído al frente.");
+        ShowToast(AppLocalizationService.T("👋 HUDMind traído al frente.", "👋 HUDMind brought to front."));
     }
 
     private void WireDesktopFeatureHandlers()
@@ -39,11 +56,121 @@ public partial class MainWindow
         _overlay.CustomPositionCommitted += OnOverlayCustomPositionCommitted;
         NavHistory.Checked += (_, _) => RefreshHistoryDashboardUi();
 
-        HotkeyRecorderHelper.AttachStandardHotkey(TxtPauseKey, k => ShowToast($"⌨ Tecla Pausar: {k}"));
-        HotkeyRecorderHelper.AttachStandardHotkey(TxtAnalyzeKey, k => ShowToast($"⌨ Tecla Analizar: {k}"));
-        HotkeyRecorderHelper.AttachStandardHotkey(TxtMicKey, k => ShowToast($"⌨ Tecla Micrófono: {k}"));
-        HotkeyRecorderHelper.AttachStandardHotkey(TxtQuickChatKey, k => ShowToast($"⌨ Tecla Chat Rápido: {k}"));
-        HotkeyRecorderHelper.AttachPushToTalkRecorder(TxtPttKey, k => ShowToast($"🎙 Push-to-Talk asignado a: {k}"));
+        HotkeyRecorderHelper.AttachStandardHotkey(TxtPauseKey, k => ShowToast(AppLocalizationService.T($"⌨ Tecla Pausar: {k}", $"⌨ Pause Key: {k}")));
+        HotkeyRecorderHelper.AttachStandardHotkey(TxtAnalyzeKey, k => ShowToast(AppLocalizationService.T($"⌨ Tecla Analizar: {k}", $"⌨ Analyze Key: {k}")));
+        HotkeyRecorderHelper.AttachStandardHotkey(TxtMicKey, k => ShowToast(AppLocalizationService.T($"⌨ Tecla Micrófono: {k}", $"⌨ Mic Mute Key: {k}")));
+        HotkeyRecorderHelper.AttachStandardHotkey(TxtQuickChatKey, k => ShowToast(AppLocalizationService.T($"⌨ Tecla Chat Rápido: {k}", $"⌨ Quick Chat Key: {k}")));
+        HotkeyRecorderHelper.AttachPushToTalkRecorder(TxtPttKey, k => ShowToast(AppLocalizationService.T($"🎙 Push-to-Talk asignado a: {k}", $"🎙 Push-to-Talk bound to: {k}")));
+    }
+
+    private void MainWindow_DragOver(object sender, System.Windows.DragEventArgs e)
+    {
+        if (TryGetSingleDraggedArchivePath(e.Data, out _))
+            e.Effects = System.Windows.DragDropEffects.Copy;
+        else
+            e.Effects = System.Windows.DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void MainWindow_Drop(object sender, System.Windows.DragEventArgs e)
+    {
+        if (TryGetSingleDraggedArchivePath(e.Data, out var path) && path is not null)
+        {
+            e.Handled = true;
+            ImportPersonalArchiveFromPath(path);
+        }
+    }
+
+    private static bool TryGetSingleDraggedArchivePath(System.Windows.IDataObject? data, out string? path)
+    {
+        path = null;
+        if (data is null || !data.GetDataPresent(System.Windows.DataFormats.FileDrop))
+            return false;
+        if (data.GetData(System.Windows.DataFormats.FileDrop) is not string[] files || files.Length != 1)
+            return false;
+        if (!AppReleaseHighlights.IsValidBackupArchivePath(files[0]))
+            return false;
+        path = files[0];
+        return true;
+    }
+
+    private void ImportPersonalArchiveFromPath(string rawFilePath)
+    {
+        if (_coordinator.IsRunning)
+        {
+            ShowToast(AppLocalizationService.T("Detené primero el Coach Live antes de restaurar un backup.", "Stop Live Coach first before restoring a backup."), isWarning: true);
+            return;
+        }
+
+        if (!AppReleaseHighlights.IsValidBackupArchivePath(rawFilePath))
+        {
+            ShowToast(AppLocalizationService.T("Archivo inválido: elegí un backup .hudmind local.", "Invalid archive: select a local .hudmind backup file."), isWarning: true);
+            return;
+        }
+
+        string fullPath;
+        try
+        {
+            fullPath = Path.GetFullPath(rawFilePath.Trim().Trim('"'));
+            if (!File.Exists(fullPath) || (File.GetAttributes(fullPath) & FileAttributes.ReparsePoint) != 0)
+            {
+                ShowToast(AppLocalizationService.T("No se pudo abrir el archivo .hudmind (no encontrado o enlace bloqueado).", "Unable to open .hudmind file (missing or symlink blocked)."), isWarning: true);
+                return;
+            }
+            var info = new FileInfo(fullPath);
+            if (info.Length <= 0 || info.Length > AppReleaseHighlights.MaxArchiveBytes)
+            {
+                ShowToast(AppLocalizationService.T("Tamaño de backup .hudmind inválido (máx. 10 MB).", "Invalid .hudmind backup size (max 10 MB)."), isWarning: true);
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"⚠ Error validando .hudmind: {SecretRedactor.Redact(ex.Message)}");
+            return;
+        }
+
+        var (ok, passphrase, importKeys) = PersonalAccountDialogs.ShowPassphraseDialog(this, isExport: false);
+        if (!ok)
+            return;
+
+        try
+        {
+            var bytes = File.ReadAllBytes(fullPath);
+            var importRes = ProfileArchiveCodec.ImportBundleDetailed(bytes, _repo, passphrase, importApiAccounts: importKeys);
+            if (importRes.Metadata is { } meta)
+            {
+                _userStore.UpdateProfileMetadata(
+                    _activeUserProfile.ProfileId,
+                    meta.DisplayName,
+                    meta.AvatarBadge,
+                    meta.AccentHex,
+                    meta.FavoriteGameId);
+                var refreshed = _userStore.LoadOrInitialize().Profiles
+                    .FirstOrDefault(p => p.ProfileId == _activeUserProfile.ProfileId);
+                if (refreshed is not null)
+                    _activeUserProfile = refreshed;
+            }
+
+            ReloadWorkspaceForActiveProfile(_activeUserProfile);
+            string keysNote = importRes.ImportedApiAccounts
+                ? AppLocalizationService.T("Incluyó cuentas IA cifradas.", "Included encrypted AI accounts.")
+                : AppLocalizationService.T("No incluyó claves IA (revisá Proveedores IA si necesitás conectar una).", "AI keys not included (check AI Providers if needed).");
+            AppendLog($"📥 Backup restaurado ({importRes.FilesWritten} archivos) en perfil '{_activeUserProfile.DisplayName}'. {keysNote}");
+            ShowToast(AppLocalizationService.T(
+                $"📥 Backup restaurado en '{_activeUserProfile.DisplayName}' ({importRes.FilesWritten} archivos).",
+                $"📥 Restored backup into '{_activeUserProfile.DisplayName}' ({importRes.FilesWritten} files)."));
+        }
+        catch (Exception ex)
+        {
+            var safe = SecretRedactor.Redact(ex.Message);
+            AppendLog($"⚠ Error importando .hudmind: {safe}");
+            System.Windows.MessageBox.Show(
+                AppLocalizationService.T("Contraseña incorrecta o archivo .hudmind inválido/dañado.", "Wrong passphrase or invalid/corrupted .hudmind file."),
+                AppLocalizationService.T("Error de Importación", "Import Error"),
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     private void ShowToast(string message, bool isWarning = false)
@@ -125,7 +252,7 @@ public partial class MainWindow
         }
         catch
         {
-            // Keep exit path resilient even if workspace is read-only
+            // Keep exit path resilient
         }
     }
 
@@ -138,7 +265,9 @@ public partial class MainWindow
         try { SelectByTag(CmbOverlayPos, "custom"); }
         finally { _syncingUi = false; }
         _repo.SaveUserConfig(_config);
-        ShowToast($"📌 Posición libre guardada ({_config.OverlayCustomLeft:F0}, {_config.OverlayCustomTop:F0}).");
+        ShowToast(AppLocalizationService.T(
+            $"📌 Posición libre guardada ({_config.OverlayCustomLeft:F0}, {_config.OverlayCustomTop:F0}).",
+            $"📌 Custom position saved ({_config.OverlayCustomLeft:F0}, {_config.OverlayCustomTop:F0})."));
     }
 
     private void BtnToggleOverlayDrag_Click(object sender, RoutedEventArgs e)
@@ -162,8 +291,8 @@ public partial class MainWindow
         }
 
         ShowToast(_overlayDragActive
-            ? "📌 Arrastrá el cartel al lugar exacto que quieras y volvé a tocar '🔒 Fijar posición'."
-            : "🔒 Posición del overlay bloqueada y transparente al mouse.");
+            ? AppLocalizationService.T("📌 Arrastrá el cartel al lugar exacto que quieras y volvé a tocar '🔒 Fijar posición'.", "📌 Drag the overlay anywhere you want, then click '🔒 Lock Position'.")
+            : AppLocalizationService.T("🔒 Posición del overlay bloqueada y transparente al mouse.", "🔒 Overlay position locked and click-through restored."));
     }
 
     private void CmbLanguage_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -175,14 +304,50 @@ public partial class MainWindow
         _config.TextLanguage = lang;
         _config.VoiceLanguage = lang;
         AppLocalizationService.ApplyLanguage(lang);
+        RefreshLocalizedUiElements();
+        ShowToast(lang == "en" ? "🇺🇸 Interface language switched to English." : "🇪🇸 Idioma de interfaz cambiado a Español.");
+    }
+
+    private void RefreshLocalizedUiElements()
+    {
+        string? curGame = CmbGameProfile?.SelectedValue?.ToString();
+        string? curRulesGame = CmbRulesGame?.SelectedValue?.ToString();
+        RefreshProfilePickers(selectMainId: curGame, selectRulesId: curRulesGame);
+
+        _syncingUi = true;
+        try
+        {
+            var curMic = GetSelectedTag(CmbMicDevice, _config.AudioInputDeviceName);
+            var curSpk = GetSelectedTag(CmbSpeakerDevice, _config.AudioOutputDeviceName);
+            RefreshMonitorsList();
+            RefreshAudioDevicesList();
+            SelectByTag(CmbMicDevice, curMic);
+            SelectByTag(CmbSpeakerDevice, curSpk);
+        }
+        finally
+        {
+            _syncingUi = false;
+        }
+
         if (BtnToggleOverlayDrag is not null)
         {
             BtnToggleOverlayDrag.Content = AppLocalizationService.Get(
                 _overlayDragActive ? "StrBtnLockOverlay" : "StrBtnMoveOverlay",
                 _overlayDragActive ? "🔒 Fijar posición" : "📌 Mover Overlay");
         }
+
+        if (!_coordinator.IsRunning && HeaderStatusText is not null)
+            HeaderStatusText.Text = AppLocalizationService.T("Listo para jugar", "Ready to play");
+
+        RefreshPersonalProfileCardUi();
+        RefreshPersonalWelcomeFeedItem();
+        RefreshAccountsList();
         RefreshHotkeyButtonLabels();
-        ShowToast(lang == "en" ? "🇺🇸 Interface language switched to English." : "🇪🇸 Idioma de interfaz cambiado a Español.");
+        ResetStatsCards();
+        RefreshRollingMemoryUi();
+        RefreshHistoryDashboardUi();
+        UpdateOverlaySliderLabels();
+        ConfigureOverlayFromCurrentConfig();
     }
 
     private void BtnDiagnostics_Click(object sender, RoutedEventArgs e)
@@ -205,24 +370,57 @@ public partial class MainWindow
     private void BtnRunWizard_Click(object sender, RoutedEventArgs e) =>
         RunFirstRunWizardInteractive();
 
+    private void BtnWhatsNew_Click(object sender, RoutedEventArgs e)
+    {
+        var (ver, _) = GitHubReleaseUpdateService.GetCurrentAppVersion();
+        var (title, body) = AppReleaseHighlights.GetReleaseNotes(ver, AppLocalizationService.IsEnglish);
+        PersonalAccountDialogs.ShowWhatsNewDialog(this, title, body);
+    }
+
     private void MaybeLaunchFirstRunWizardOnStartup()
     {
         if (_smokeMode || _startMinimized || _closingInProgress || _shutdownComplete)
             return;
 
-        if (_config.HasCompletedOnboarding)
-            return;
+        if (!string.IsNullOrWhiteSpace(_startupArchivePath))
+            ImportPersonalArchiveFromPath(_startupArchivePath);
 
-        bool hasReadyKey = HasAnyReadyUserApiKey();
-        if (hasReadyKey)
+        if (!_config.HasCompletedOnboarding)
         {
-            // Silently skip wizard for existing users upgrading from prior releases who already configured keys.
-            _config.HasCompletedOnboarding = true;
-            _repo.SaveUserConfig(_config);
-            return;
+            if (HasAnyReadyUserApiKey())
+            {
+                _config.HasCompletedOnboarding = true;
+                _repo.SaveUserConfig(_config);
+            }
+            else
+            {
+                RunFirstRunWizardInteractive();
+            }
         }
 
-        RunFirstRunWizardInteractive();
+        MaybeShowWhatsNewOnStartup();
+    }
+
+    private void MaybeShowWhatsNewOnStartup()
+    {
+        if (_smokeMode || _startMinimized || _closingInProgress || _shutdownComplete)
+            return;
+
+        var (currentVer, _) = GitHubReleaseUpdateService.GetCurrentAppVersion();
+        var formattedCurr = GitHubReleaseUpdateService.FormatVersion(currentVer);
+        bool upgraded = AppReleaseHighlights.ShouldShowWhatsNew(_config.LastSeenAppVersion, currentVer);
+
+        if (!string.Equals(_config.LastSeenAppVersion, formattedCurr, StringComparison.OrdinalIgnoreCase))
+        {
+            _config.LastSeenAppVersion = formattedCurr;
+            _repo.SaveUserConfig(_config);
+        }
+
+        if (upgraded && _config.HasCompletedOnboarding)
+        {
+            var (title, body) = AppReleaseHighlights.GetReleaseNotes(currentVer, AppLocalizationService.IsEnglish);
+            PersonalAccountDialogs.ShowWhatsNewDialog(this, title, body);
+        }
     }
 
     private bool HasAnyReadyUserApiKey()
@@ -235,7 +433,7 @@ public partial class MainWindow
     {
         if (_coordinator.IsRunning)
         {
-            ShowToast("Detené primero el Coach Live para ejecutar el asistente inicial.", isWarning: true);
+            ShowToast(AppLocalizationService.T("Detené primero el Coach Live para ejecutar el asistente inicial.", "Stop Live Coach first before running the Setup Wizard."), isWarning: true);
             return;
         }
 
@@ -255,7 +453,7 @@ public partial class MainWindow
 
                 var defaultModel = ProviderRegistry.FindPreset("openrouter")?.DefaultModel ?? "google/gemma-3-27b-it:free";
                 UpsertQuickAccount("openrouter", $"OpenRouter · {_activeUserProfile.DisplayName}", defaultModel, apiKey, "OpenRouter 1-clic");
-                return (true, $"OpenRouter conectado ({defaultModel}).");
+                return (true, $"OpenRouter OK ({defaultModel}).");
             },
             runGuidedGeminiAsync: ownerWin =>
             {
@@ -291,10 +489,12 @@ public partial class MainWindow
 
         if (result.Completed)
         {
+            var (ver, _) = GitHubReleaseUpdateService.GetCurrentAppVersion();
             _config.HasCompletedOnboarding = true;
+            _config.LastSeenAppVersion = GitHubReleaseUpdateService.FormatVersion(ver);
             _repo.SaveUserConfig(_config);
             RefreshOnboardingBanner();
-            ShowToast("✅ Configuración inicial completada. ¡Listo para tu partida!");
+            ShowToast(AppLocalizationService.T("✅ Configuración inicial completada. ¡Listo para tu partida!", "✅ Quick setup completed. Ready for your match!"));
         }
     }
 
@@ -302,13 +502,15 @@ public partial class MainWindow
     {
         if (_coordinator.IsRunning)
         {
-            ShowToast("Detené primero el Coach Live para restaurar ajustes.", isWarning: true);
+            ShowToast(AppLocalizationService.T("Detené primero el Coach Live para restaurar ajustes.", "Stop Live Coach before resetting settings."), isWarning: true);
             return;
         }
 
         var ans = System.Windows.MessageBox.Show(
-            "¿Restaurar voz, cartel overlay, idioma y teclas rápidas a valores de fábrica?\n\nTus API Keys, cuentas locales, reglas y memoria de partidas NO se borran.",
-            "HUDMind · Ajustes de fábrica",
+            AppLocalizationService.T(
+                "¿Restaurar voz, cartel overlay, idioma y teclas rápidas a valores de fábrica?\n\nTus API Keys, cuentas locales, reglas y memoria de partidas NO se borran.",
+                "Restore voice, overlay, language, and hotkeys back to factory defaults?\n\nYour API keys, local profiles, game rules, and match memory are preserved."),
+            AppLocalizationService.T("HUDMind · Ajustes de fábrica", "HUDMind · Factory Reset"),
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);
         if (ans != MessageBoxResult.Yes)
@@ -329,10 +531,11 @@ public partial class MainWindow
         _sharedVoice.SetSpeechRate(_config.TtsRate);
         _sharedVoice.UpdateSettings(_config.VoiceLanguage, _config.TtsVolume, _config.VoiceGender, _config.VoiceStyle);
         BindInitialUi();
+        RefreshLocalizedUiElements();
         _coordinator.ApplyLiveSettings(_config);
         _coordinator.RegisterHotkeys(_config, ToggleMicViaHotkey, AppendLog, ToggleQuickChatViaHotkey);
         AppendLog("↺ Ajustes de preferencia restaurados a valores de fábrica (cuentas y memoria conservadas).");
-        ShowToast("↺ Ajustes restaurados a valores de fábrica.");
+        ShowToast(AppLocalizationService.T("↺ Ajustes restaurados a valores de fábrica.", "↺ Settings restored to factory defaults."));
     }
 
     private void RefreshHistoryDashboardUi()
@@ -353,8 +556,10 @@ public partial class MainWindow
         }
         else
         {
-            TxtHistoryReviewViewer.Text = "Aún no guardaste resúmenes post-partida.\nAl terminar una sesión en vivo o modo prueba, tocá '📊 Resumen Partida' en el Observador.";
-            LblHistoryReaderTitle.Text = "📖 Lector de Resumen";
+            TxtHistoryReviewViewer.Text = AppLocalizationService.T(
+                "Aún no guardaste resúmenes post-partida.\nAl terminar una sesión en vivo o modo prueba, tocá '📊 Resumen Partida' en el Observador.",
+                "No post-match reviews saved yet.\nAfter finishing a live or test session, click '📊 Match Review' on the Observer tab.");
+            LblHistoryReaderTitle.Text = AppLocalizationService.T("📖 Lector de Resumen", "📖 Review Reader");
             BtnDeleteReview.IsEnabled = false;
         }
 
@@ -382,7 +587,7 @@ public partial class MainWindow
         var content = _repo.ReadPostMatchReview(item.FileName);
         LblHistoryReaderTitle.Text = $"📖 {item.Title}";
         TxtHistoryReviewViewer.Text = string.IsNullOrWhiteSpace(content)
-            ? "(Archivo vacío o no disponible)"
+            ? AppLocalizationService.T("(Archivo vacío o no disponible)", "(Empty or unavailable review)")
             : content;
         BtnDeleteReview.IsEnabled = true;
     }
@@ -390,7 +595,7 @@ public partial class MainWindow
     private void BtnRefreshHistory_Click(object sender, RoutedEventArgs e)
     {
         RefreshHistoryDashboardUi();
-        ShowToast("🔄 Historial y progreso actualizados.");
+        ShowToast(AppLocalizationService.T("🔄 Historial y progreso actualizados.", "🔄 History and progress refreshed."));
     }
 
     private void CmbHistoryGameFilter_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -408,8 +613,8 @@ public partial class MainWindow
             return;
 
         var ans = System.Windows.MessageBox.Show(
-            $"¿Eliminar el resumen '{item.Title}' ({item.TimestampLabel})?",
-            "HUDMind · Eliminar resumen",
+            AppLocalizationService.T($"¿Eliminar el resumen '{item.Title}' ({item.TimestampLabel})?", $"Delete review '{item.Title}' ({item.TimestampLabel})?"),
+            AppLocalizationService.T("HUDMind · Eliminar resumen", "HUDMind · Delete Review"),
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);
         if (ans != MessageBoxResult.Yes)
@@ -418,14 +623,14 @@ public partial class MainWindow
         if (_repo.DeletePostMatchReview(item.FileName))
         {
             RefreshHistoryDashboardUi();
-            ShowToast("🗑 Resumen eliminado.");
+            ShowToast(AppLocalizationService.T("🗑 Resumen eliminado.", "🗑 Review deleted."));
         }
     }
 
     private void RenderHistoryLeaksBars(string gameId)
     {
         HistoryLeaksBarsHost.Children.Clear();
-        bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+        bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true) || AppLocalizationService.IsEnglish;
 
         PlayerLeakReport report;
         lock (_leakIoLock)
@@ -458,7 +663,9 @@ public partial class MainWindow
         {
             HistoryLeaksBarsHost.Children.Add(new TextBlock
             {
-                Text = "Sin fugas tácticas registradas para este filtro todavía. HUDMind las detectará automáticamente cuando juegues con telemetría o visión.",
+                Text = AppLocalizationService.T(
+                    "Sin fugas tácticas registradas para este filtro todavía. HUDMind las detectará automáticamente cuando juegues con telemetría o visión.",
+                    "No repeated tactical leaks recorded for this filter yet. HUDMind detects them automatically while you play."),
                 Foreground = CreateStaticFrozenBrush("#8EA4BC"),
                 FontSize = 11.5,
                 TextWrapping = TextWrapping.Wrap
@@ -486,13 +693,13 @@ public partial class MainWindow
             var rowPanel = new StackPanel { Margin = new Thickness(0, 0, 0, 9) };
             var head = new DockPanel { Margin = new Thickness(0, 0, 0, 3) };
             string deltaBadge = prev > 0
-                ? (cur < prev ? $"⬇ -{prev - cur} mejor" : cur == prev ? "➡ igual" : $"⬆ +{cur - prev}")
-                : "nuevo";
+                ? (cur < prev ? AppLocalizationService.T($"⬇ -{prev - cur} mejor", $"⬇ -{prev - cur} better") : cur == prev ? AppLocalizationService.T("➡ igual", "➡ flat") : $"⬆ +{cur - prev}")
+                : AppLocalizationService.T("nuevo", "new");
             string deltaHex = prev > 0 && cur < prev ? "#34D399" : prev > 0 && cur > prev ? "#FBBF24" : "#94A3B8";
 
             var rightStat = new TextBlock
             {
-                Text = $"Hoy: {cur} · Ant: {prev} · Hist: {total} ({deltaBadge})",
+                Text = AppLocalizationService.T($"Hoy: {cur} · Ant: {prev} · Hist: {total} ({deltaBadge})", $"Today: {cur} · Prev: {prev} · All: {total} ({deltaBadge})"),
                 Foreground = CreateStaticFrozenBrush(deltaHex),
                 FontFamily = new System.Windows.Media.FontFamily("Consolas"),
                 FontSize = 10.5
@@ -533,7 +740,9 @@ public partial class MainWindow
 
         if (mem.Matches.Count == 0)
         {
-            TxtHistoryRollingDetails.Text = $"No hay memoria acumulada para '{normGame}' aún. Cada resumen post-partida alimenta automáticamente las últimas {PlayerMemoryStore.ClampWindowSize(_config.MemoryMatchWindow)} partidas.";
+            TxtHistoryRollingDetails.Text = AppLocalizationService.T(
+                $"No hay memoria acumulada para '{normGame}' aún. Cada resumen post-partida alimenta automáticamente las últimas {PlayerMemoryStore.ClampWindowSize(_config.MemoryMatchWindow)} partidas.",
+                $"No rolling match memory recorded for '{normGame}' yet. Each saved review feeds your last {PlayerMemoryStore.ClampWindowSize(_config.MemoryMatchWindow)} matches.");
             return;
         }
 
@@ -541,12 +750,12 @@ public partial class MainWindow
         {
             PlayerMemoryStore.FormatForUiSummary(mem),
             string.Empty,
-            "Últimas partidas registradas:"
+            AppLocalizationService.T("Últimas partidas registradas:", "Recent tracked matches:")
         };
         foreach (var m in mem.Matches.TakeLast(8).Reverse())
         {
             var focus = string.IsNullOrWhiteSpace(m.NextDrill) ? m.GameDisplayName : m.NextDrill;
-            var habits = m.Habits.Count > 0 ? $" · Patrones: {string.Join(", ", m.Habits)}" : string.Empty;
+            var habits = m.Habits.Count > 0 ? $" · {AppLocalizationService.T("Patrones", "Habits")}: {string.Join(", ", m.Habits)}" : string.Empty;
             lines.Add($"• [{m.RecordedAtUtc.ToLocalTime():dd/MM HH:mm}] {focus}{habits}");
         }
         TxtHistoryRollingDetails.Text = string.Join(Environment.NewLine, lines);

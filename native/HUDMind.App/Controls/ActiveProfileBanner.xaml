@@ -38,7 +38,7 @@
                               VerticalAlignment="Center" />
                     </Border>
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="PERFIL DE JUEGO ACTIVO"
+                        <TextBlock Text="{DynamicResource StrBannerHeaderGame}"
                                    Foreground="#22D3EE"
                                    FontSize="9.5"
                                    FontWeight="Bold"
@@ -75,7 +75,7 @@
                 </Border>
                 <Border Background="#070C13" CornerRadius="7" Padding="10,7" BorderBrush="#142537" BorderThickness="1">
                     <StackPanel>
-                        <TextBlock Text="CONSEJOS EN PARTIDA" FontSize="9.5" Foreground="#7A92AA" FontWeight="Bold" />
+                        <TextBlock Text="{DynamicResource StrBannerCardInterventions}" FontSize="9.5" Foreground="#7A92AA" FontWeight="Bold" />
                         <TextBlock x:Name="StatInterventions" Text="0" FontSize="15.5" FontWeight="Bold" Foreground="#E2E8F0" Margin="0,2,0,0" />
                     </StackPanel>
                 </Border>

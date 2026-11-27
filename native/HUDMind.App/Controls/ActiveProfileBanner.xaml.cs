@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Windows.Media;
+using HUDMind.App.Services;
 
 namespace HUDMind.App.Controls;
 
@@ -24,18 +25,24 @@ public partial class ActiveProfileBanner : System.Windows.Controls.UserControl
 
     public void UpdateHeaders(bool isLive)
     {
-        LblAiCardTitle.Text = isLive ? "RESPUESTA EN VIVO" : "VELOCIDAD DE RESPUESTA";
-        LblVoiceCardTitle.Text = isLive ? "VOZ Y MICRÓFONO" : "VOZ DEL COACH";
+        LblAiCardTitle.Text = isLive
+            ? AppLocalizationService.T("RESPUESTA EN VIVO", "LIVE RESPONSE")
+            : AppLocalizationService.T("VELOCIDAD DE RESPUESTA", "RESPONSE LATENCY");
+        LblVoiceCardTitle.Text = isLive
+            ? AppLocalizationService.T("VOZ Y MICRÓFONO", "VOICE & MIC")
+            : AppLocalizationService.T("VOZ DEL COACH", "COACH VOICE");
     }
 
     public void Reset(bool isTextOnly, string metaSubtitle)
     {
-        StatActiveGame.Text = "Esperando juego";
+        StatActiveGame.Text = AppLocalizationService.T("Esperando juego", "Waiting for game");
         TxtProfileMeta.Text = metaSubtitle;
         StatAiMs.Text = "—";
-        StatVoiceMs.Text = isTextOnly ? "Silencio" : "Listo";
+        StatVoiceMs.Text = isTextOnly
+            ? AppLocalizationService.T("Silencio", "Muted")
+            : AppLocalizationService.T("Listo", "Ready");
         StatInterventions.Text = "0";
-        SetContextStatus("Memoria .md: LISTO", isHighlighted: false);
+        SetContextStatus(AppLocalizationService.T("Memoria .md: LISTO", ".md Memory: READY"), isHighlighted: false);
     }
 
     public void UpdateMetrics(
@@ -48,7 +55,7 @@ public partial class ActiveProfileBanner : System.Windows.Controls.UserControl
         bool contextActive)
     {
         StatActiveGame.Text = string.IsNullOrWhiteSpace(activeGame) || activeGame == "-"
-            ? "Detectando..."
+            ? AppLocalizationService.T("Detectando...", "Detecting...")
             : activeGame;
         TxtProfileMeta.Text = metaSubtitle;
         StatAiMs.Text = lastAiMs <= 0

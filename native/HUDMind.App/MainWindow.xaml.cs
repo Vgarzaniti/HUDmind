@@ -35,10 +35,16 @@ public sealed class AccountRowView
     public string ProviderDisplay => CoachFeedFormatter.FriendlyShortProvider(Source.Provider);
     public string Model => Source.Model;
     public string VisionDisplay => Source.SupportsVisionOverride.HasValue
-        ? (Source.SupportsVisionOverride.Value ? "Visión*" : "OCR/Logs*")
-        : (Source.SupportsVision ? "Visión" : "OCR/Logs");
+        ? (Source.SupportsVisionOverride.Value
+            ? AppLocalizationService.T("Visión*", "Vision*")
+            : "OCR/Logs*")
+        : (Source.SupportsVision
+            ? AppLocalizationService.T("Visión", "Vision")
+            : "OCR/Logs");
     public string MaskedKeyDisplay => Source.MaskedKey();
-    public string EnabledDisplay => Source.Enabled ? "Sí" : "No";
+    public string EnabledDisplay => Source.Enabled
+        ? AppLocalizationService.T("Sí", "Yes")
+        : AppLocalizationService.T("No", "No");
 }
 
 public partial class MainWindow : Window
@@ -91,13 +97,15 @@ public partial class MainWindow : Window
     private string? _editingAccountId;
     private readonly bool _smokeMode;
     private readonly bool _startMinimized;
+    private readonly string? _startupArchivePath;
     private DispatcherTimer? _toastTimer;
     private bool _overlayDragActive;
 
-    public MainWindow(bool smokeMode = false, bool startMinimized = false)
+    public MainWindow(bool smokeMode = false, bool startMinimized = false, string? startupArchivePath = null)
     {
         _smokeMode = smokeMode;
         _startMinimized = startMinimized && !smokeMode;
+        _startupArchivePath = _smokeMode ? null : startupArchivePath;
         if (_smokeMode)
         {
             ShowInTaskbar = false;
@@ -174,6 +182,7 @@ public partial class MainWindow : Window
         _sharedVoice = new HybridVoiceService(_baseWorkspaceRoot);
         _config = _repo.LoadUserConfig();
         AppLocalizationService.ApplyLanguage(_config.TextLanguage);
+        RefreshPersonalWelcomeFeedItem();
         _sharedVoice.SetSpeechRate(_config.TtsRate);
         _sharedVoice.SetOutputDevice(_config.AudioOutputDeviceName);
         _accounts = _repo.LoadAccounts();
@@ -250,7 +259,7 @@ public partial class MainWindow : Window
             .Select(p => new GameProfileOption(
                 p.Manifest.GameId,
                 p.Manifest.GameId == "universal"
-                    ? "🌐 Cualquier Juego (Automático)"
+                    ? AppLocalizationService.T("🌐 Cualquier Juego (Automático)", "🌐 Any Game (Automatic)")
                     : p.Manifest.DisplayName))
             .ToList();
 
@@ -378,20 +387,25 @@ public partial class MainWindow : Window
     {
         int screenCount = Math.Max(1, Win32DisplayHelper.GetAllWorkingAreas().Length);
         CmbMonitor.ItemsSource = Enumerable.Range(1, screenCount)
-            .Select(i => new MonitorOption(i, i == 1 ? "Monitor 1 (Principal)" : $"Monitor {i}"))
+            .Select(i => new MonitorOption(
+                i,
+                i == 1
+                    ? AppLocalizationService.T("Monitor 1 (Principal)", "Display 1 (Primary)")
+                    : AppLocalizationService.T($"Monitor {i}", $"Display {i}")))
             .ToList();
         CmbMonitor.SelectedValue = Math.Clamp(_config.CaptureMonitor, 1, screenCount);
     }
 
     private void RefreshAudioDevicesList()
     {
+        var defaultAudioLabel = AppLocalizationService.T("(Predeterminado de Windows)", "(Windows Default)");
         CmbMicDevice.Items.Clear();
-        CmbMicDevice.Items.Add(new ComboBoxItem { Content = "(Predeterminado de Windows)", Tag = string.Empty });
+        CmbMicDevice.Items.Add(new ComboBoxItem { Content = defaultAudioLabel, Tag = string.Empty });
         foreach (var dev in Win32AudioDevices.GetInputDeviceNames())
             CmbMicDevice.Items.Add(new ComboBoxItem { Content = dev, Tag = dev });
 
         CmbSpeakerDevice.Items.Clear();
-        CmbSpeakerDevice.Items.Add(new ComboBoxItem { Content = "(Predeterminado de Windows)", Tag = string.Empty });
+        CmbSpeakerDevice.Items.Add(new ComboBoxItem { Content = defaultAudioLabel, Tag = string.Empty });
         foreach (var dev in Win32AudioDevices.GetOutputDeviceNames())
             CmbSpeakerDevice.Items.Add(new ComboBoxItem { Content = dev, Tag = dev });
     }
@@ -625,11 +639,13 @@ public partial class MainWindow : Window
 
     private void RefreshHotkeyButtonLabels()
     {
-        BtnAnalyzeNow.Content = $"🎯 Analizar ({_config.HotkeyAnalyzeNow})";
+        BtnAnalyzeNow.Content = AppLocalizationService.T(
+            $"🎯 Analizar ({_config.HotkeyAnalyzeNow})",
+            $"🎯 Analyze ({_config.HotkeyAnalyzeNow})");
         BtnPause.Content = _coordinator.IsPaused
-            ? $"▶ Reanudar ({_config.HotkeyTogglePause})"
-            : $"⏸ Pausar ({_config.HotkeyTogglePause})";
-        _overlay.SetHotkeyHints(_config.HotkeyTogglePause, _config.HotkeyAnalyzeNow);
+            ? AppLocalizationService.T($"▶ Reanudar ({_config.HotkeyTogglePause})", $"▶ Resume ({_config.HotkeyTogglePause})")
+            : AppLocalizationService.T($"⏸ Pausar ({_config.HotkeyTogglePause})", $"⏸ Pause ({_config.HotkeyTogglePause})");
+        _overlay.SetHotkeyHints(_config.HotkeyTogglePause, _config.HotkeyAnalyzeNow, _config.HotkeyQuickChat);
     }
 
     private void UpdateLatencyCardHeaders(bool isLive) =>
@@ -638,17 +654,25 @@ public partial class MainWindow : Window
     private string BuildActiveBannerSubtitle()
     {
         var engine = _coordinator.IsRunning
-            ? (_coordinator.SupportsLiveMic ? "Live WebSocket Audio+Video" : "Turnos Multi-IA")
-            : (_config.UseLiveConversational ? "Live listo · Auto-Detectar" : "Turnos listo · Auto-Detectar");
+            ? (_coordinator.SupportsLiveMic
+                ? AppLocalizationService.T("Live WebSocket Audio+Video", "Live WebSocket Audio+Video")
+                : AppLocalizationService.T("Turnos Multi-IA", "Multi-AI Turns"))
+            : (_config.UseLiveConversational
+                ? AppLocalizationService.T("Live listo · Auto-Detectar", "Live Ready · Auto-Detect")
+                : AppLocalizationService.T("Turnos listo · Auto-Detectar", "Turns Ready · Auto-Detect"));
         var style = _config.CoachStyle switch
         {
-            "honest" => "Sincero",
-            "tactical" => "Táctico",
-            "strict" => "Torneo",
-            _ => "Amigable"
+            "honest" => AppLocalizationService.T("Sincero", "Honest"),
+            "tactical" => AppLocalizationService.T("Táctico", "Tactical"),
+            "strict" => AppLocalizationService.T("Torneo", "Tournament"),
+            _ => AppLocalizationService.T("Amigable", "Friendly")
         };
-        var pacingTag = _config.IsEventFirstMode ? " · Solo Eventos IGL" : string.Empty;
-        return $"{engine} · Estilo {style}{pacingTag} · 0% GPU pasivo";
+        var pacingTag = _config.IsEventFirstMode
+            ? AppLocalizationService.T(" · Solo Eventos IGL", " · Events Only IGL")
+            : string.Empty;
+        return AppLocalizationService.T(
+            $"{engine} · Estilo {style}{pacingTag} · 0% GPU pasivo",
+            $"{engine} · {style}{pacingTag} · 0% GPU Passive");
     }
 
     private (string Label, bool Highlighted) ResolveContextBadge()
@@ -656,8 +680,12 @@ public partial class MainWindow : Window
         bool hasMemoryOrSoul = !string.IsNullOrWhiteSpace(_config.PreviousMatchFocus) ||
                                !string.IsNullOrWhiteSpace(_config.CoachSoulSummary);
         if (_coordinator.IsRunning)
-            return hasMemoryOrSoul ? ("Memoria & Contexto: ACTIVO", true) : ("Observación en vivo: ACTIVA", true);
-        return hasMemoryOrSoul ? ("Memoria .md: CARGADA", false) : ("Memoria .md: LISTO", false);
+            return hasMemoryOrSoul
+                ? (AppLocalizationService.T("Memoria & Contexto: ACTIVO", "Memory & Context: ACTIVE"), true)
+                : (AppLocalizationService.T("Observación en vivo: ACTIVA", "Live Observation: ACTIVE"), true);
+        return hasMemoryOrSoul
+            ? (AppLocalizationService.T("Memoria .md: CARGADA", ".md Memory: LOADED"), false)
+            : (AppLocalizationService.T("Memoria .md: LISTO", ".md Memory: READY"), false);
     }
 
     private void ApplyRunStateVisual(HudRunState state)
@@ -669,7 +697,9 @@ public partial class MainWindow : Window
         HeaderStatusText.Foreground = v.TextBrush;
         BtnStartStop.Background = v.PrimaryButtonBackgroundBrush;
         BtnStartStop.BorderBrush = v.PrimaryButtonBorderBrush;
-        BtnStartStop.Content = v.PrimaryButtonLabel;
+        BtnStartStop.Content = state == HudRunState.Idle
+            ? AppLocalizationService.T("▶ Activar Coach", "▶ Start Coach")
+            : AppLocalizationService.T("⏹ Detener Coach", "⏹ Stop Coach");
     }
 
     private void ResetStatsCards()
@@ -1782,50 +1812,13 @@ public partial class MainWindow : Window
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
-            Title = "Importar backup personal cifrado (.hudmind)",
+            Title = AppLocalizationService.T("Importar backup personal cifrado (.hudmind)", "Import encrypted personal backup (.hudmind)"),
             Filter = "HUDMind Personal Bundle (*.hudmind)|*.hudmind"
         };
         if (dlg.ShowDialog(this) != true)
             return;
 
-        var (ok, passphrase, importKeys) = PersonalAccountDialogs.ShowPassphraseDialog(this, isExport: false);
-        if (!ok)
-            return;
-
-        try
-        {
-            var bytes = File.ReadAllBytes(dlg.FileName);
-            var importRes = ProfileArchiveCodec.ImportBundleDetailed(bytes, _repo, passphrase, importApiAccounts: importKeys);
-            if (importRes.Metadata is { } meta)
-            {
-                _userStore.UpdateProfileMetadata(
-                    _activeUserProfile.ProfileId,
-                    meta.DisplayName,
-                    meta.AvatarBadge,
-                    meta.AccentHex,
-                    meta.FavoriteGameId);
-                var refreshed = _userStore.LoadOrInitialize().Profiles
-                    .FirstOrDefault(p => p.ProfileId == _activeUserProfile.ProfileId);
-                if (refreshed is not null)
-                    _activeUserProfile = refreshed;
-            }
-            ReloadWorkspaceForActiveProfile(_activeUserProfile);
-            string keysNote = importRes.ImportedApiAccounts
-                ? "Incluyó cuentas IA cifradas."
-                : "No incluyó claves IA (revisá Proveedores IA si necesitás conectar una).";
-            AppendLog($"📥 Backup restaurado ({importRes.FilesWritten} archivos) en perfil '{_activeUserProfile.DisplayName}'. {keysNote}");
-            System.Windows.MessageBox.Show(
-                $"Se restauraron {importRes.FilesWritten} archivos en '{_activeUserProfile.DisplayName}'.\n{keysNote}",
-                "HUDMind · Backup Restaurado",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            var safe = SecretRedactor.Redact(ex.Message);
-            AppendLog($"⚠ Error importando .hudmind: {safe}");
-            System.Windows.MessageBox.Show("Contraseña incorrecta o archivo .hudmind inválido/dañado.", "Error de Importación", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
+        ImportPersonalArchiveFromPath(dlg.FileName);
     }
 
     private void ReloadWorkspaceForActiveProfile(UserProfileRecord targetProfile)
@@ -1882,11 +1875,11 @@ public partial class MainWindow : Window
         if (TxtActiveUserUniqueId is not null)
             TxtActiveUserUniqueId.Text = $"ID: {_activeUserProfile.UniqueUserId}";
 
-        string lockBadge = _activeUserProfile.HasPin ? "🔒 PIN" : "Libre";
+        string lockBadge = _activeUserProfile.HasPin ? "🔒 PIN" : AppLocalizationService.T("Libre", "Unlocked");
         if (BtnLockSession is not null)
             BtnLockSession.Visibility = _activeUserProfile.HasPin ? Visibility.Visible : Visibility.Collapsed;
         string providerBadge = string.IsNullOrWhiteSpace(_activeUserProfile.LinkedAccountBadge)
-            ? "Cuenta local"
+            ? AppLocalizationService.T("Cuenta local", "Local Profile")
             : _activeUserProfile.LinkedAccountBadge;
         TxtActiveUserSub.Text = $"{providerBadge} · {lockBadge}";
     }
@@ -1895,13 +1888,17 @@ public partial class MainWindow : Window
     {
         if (_feedEntries.Count == 0)
             return;
-        if (_feedEntries[0].Author == "HUDMind" && _feedEntries[0].Message.StartsWith("Listo para acompañarte", StringComparison.Ordinal))
+        if (_feedEntries[0].Author == "HUDMind" &&
+            (_feedEntries[0].Message.StartsWith("Listo para acompañarte", StringComparison.Ordinal) ||
+             _feedEntries[0].Message.StartsWith("Ready to coach", StringComparison.Ordinal)))
         {
             _feedEntries[0] = new CoachFeedItem
             {
                 Timestamp = DateTime.Now.ToString("HH:mm"),
                 Author = "HUDMind",
-                Message = $"Listo para acompañarte, {_activeUserProfile.DisplayName}. Elegí tu juego (o dejalo en Automático) y tocá Activar Coach.",
+                Message = AppLocalizationService.T(
+                    $"Listo para acompañarte, {_activeUserProfile.DisplayName}. Elegí tu juego (o dejalo en Automático) y tocá Activar Coach.",
+                    $"Ready to coach you, {_activeUserProfile.DisplayName}. Pick your game (or leave Automatic) and click Start Coach."),
                 AccentHex = _activeUserProfile.AccentHex,
                 CardBackgroundHex = "#081C19",
                 AuthorForegroundHex = "#6EE7B7"

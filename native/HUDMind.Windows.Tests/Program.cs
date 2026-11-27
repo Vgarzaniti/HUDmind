@@ -877,6 +877,23 @@ await RunTest("W21. SingleInstancePipeServer wakeup, SystemDiagnosticsProbe & Wi
     }
 });
 
+// W22. SingleInstancePipeServer handles long IMPORT:<archivePath> payloads safely (up to 1024 bytes)
+await RunTest("W22. SingleInstancePipeServer forwards long .hudmind IMPORT path commands cleanly", async () =>
+{
+    string pipeName = $"hudmind_win_import_pipe_{Guid.NewGuid():N}";
+    var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+    using var server = new SingleInstancePipeServer(pipeName, cmd => received.TrySetResult(cmd));
+
+    string longPayload = @"IMPORT:C:\Users\PlayerWithLongAccountName\Documents\HUDMind-Backups\Season2026\competitive-profile-backup.hudmind";
+    Assert(longPayload.Length > 90 && longPayload.Length < 512, "Payload must exceed prior 64-byte cap");
+
+    bool sent = SingleInstancePipeServer.TrySignalExistingInstance(pipeName, longPayload, timeoutMs: 1500);
+    Assert(sent, "TrySignalExistingInstance must transmit full IMPORT path payload cleanly");
+    var done = await Task.WhenAny(received.Task, Task.Delay(2000));
+    Assert(done == received.Task && string.Equals(await received.Task, longPayload, StringComparison.Ordinal),
+        $"Expected exact IMPORT path round-trip (got '{(done == received.Task ? await received.Task : "TIMEOUT")}')");
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

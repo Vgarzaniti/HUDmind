@@ -61,6 +61,9 @@ jobs:
 
       - name: Publish Hardened Standalone & Framework-Dependent Single-File .exe
         shell: pwsh
+        env:
+          CODESIGN_PFX_BASE64: ${{ secrets.CODESIGN_PFX_BASE64 }}
+          CODESIGN_PASSWORD: ${{ secrets.CODESIGN_PASSWORD }}
         run: |
           New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
 
@@ -104,10 +107,41 @@ jobs:
           & $iscc "/DMyAppVersion=$env:APP_VERSION" "/DInputExe=$standaloneAbs" "/O$assetsAbs" "native/installer/HUDMind.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
 
+          if (-not [string]::IsNullOrWhiteSpace($env:CODESIGN_PFX_BASE64) -and -not [string]::IsNullOrWhiteSpace($env:CODESIGN_PASSWORD)) {
+            Write-Host "Signing release binaries with Authenticode certificate..."
+            $pfxPath = Join-Path $env:RUNNER_TEMP "hudmind-codesign.pfx"
+            [System.IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:CODESIGN_PFX_BASE64))
+            try {
+              $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+                Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+              if (-not $signtool) { throw "signtool.exe not found on runner" }
+              foreach ($exe in Get-ChildItem "release-assets/*.exe") {
+                & $signtool sign /f $pfxPath /p $env:CODESIGN_PASSWORD /fd SHA256 /tr "http://timestamp.digicert.com" /td SHA256 $exe.FullName
+                if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for $($exe.Name)" }
+              }
+            }
+            finally {
+              Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
+            }
+          } else {
+            Write-Host "Notice: CODESIGN_PFX_BASE64 secret not set; skipping Authenticode signing ($0 mode, SHA256SUMS.txt generated)."
+          }
+
           $hashLines = @()
           foreach ($file in Get-ChildItem "release-assets/*.exe" | Sort-Object Name) {
             $h = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             $hashLines += "$h  $($file.Name)"
+            if ($file.Name -eq "HUDMind-Setup-win-x64.exe" -and (Test-Path "packaging/winget/Vgarzaniti.HUDMind.installer.yaml")) {
+              $wingetYaml = Get-Content "packaging/winget/Vgarzaniti.HUDMind.installer.yaml" -Raw
+              $wingetYaml = $wingetYaml -replace '(?m)^(\s*PackageVersion:\s*).*$', "`$1$env:APP_VERSION"
+              $wingetYaml = $wingetYaml -replace 'releases/download/v[^/]+/', "releases/download/$env:RELEASE_TAG/"
+              $wingetYaml = $wingetYaml -replace '(?m)^(\s*InstallerSha256:\s*).*$', "`$1$($h.ToUpperInvariant())"
+              New-Item -ItemType Directory -Force -Path "release-assets/winget" | Out-Null
+              Copy-Item "packaging/winget/Vgarzaniti.HUDMind.yaml" "release-assets/winget/" -Force
+              Copy-Item "packaging/winget/Vgarzaniti.HUDMind.locale.en-US.yaml" "release-assets/winget/" -Force
+              Copy-Item "packaging/winget/Vgarzaniti.HUDMind.locale.es-ES.yaml" "release-assets/winget/" -Force
+              Set-Content -Path "release-assets/winget/Vgarzaniti.HUDMind.installer.yaml" -Value $wingetYaml -NoNewline
+            }
           }
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllLines("$PWD/release-assets/SHA256SUMS.txt", $hashLines, $utf8NoBom)

@@ -10,6 +10,9 @@
         MinHeight="640"
         Background="#070C13"
         Foreground="#F1F5F9"
+        AllowDrop="True"
+        DragOver="MainWindow_DragOver"
+        Drop="MainWindow_Drop"
         WindowStartupLocation="CenterScreen">
     <Grid>
         <Grid.ColumnDefinitions>
@@ -37,7 +40,7 @@
                             <TextBlock Text="HUD" FontSize="18" FontWeight="Bold" Foreground="#F8FAFC" />
                             <TextBlock Text="mind" FontSize="18" FontWeight="Light" Foreground="#22D3EE" />
                         </StackPanel>
-                        <TextBlock Text="CO-PILOT NATIVO" FontSize="8.5" FontWeight="Bold" Foreground="#5E7891" />
+                        <TextBlock Text="{DynamicResource StrAppSubtitle}" FontSize="8.5" FontWeight="Bold" Foreground="#5E7891" />
                     </StackPanel>
                 </StackPanel>
 
@@ -45,7 +48,7 @@
                 <StackPanel DockPanel.Dock="Bottom" Margin="2,10,2,0">
                     <Border Background="#071B19" BorderBrush="#134E4A" BorderThickness="1" CornerRadius="6" Padding="8,5" Margin="0,0,0,8">
                         <TextBlock x:Name="TxtHeaderBadge"
-                                   Text="🛡 0% GPU · Anti-Cheat Safe"
+                                   Text="{DynamicResource StrSidebarBadge}"
                                    FontSize="10"
                                    FontWeight="Bold"
                                    Foreground="#6EE7B7"
@@ -54,7 +57,7 @@
                     <DockPanel>
                         <Button x:Name="BtnVersionCheck"
                                 DockPanel.Dock="Left"
-                                Content="v1.6.0"
+                                Content="v1.7.0"
                                 FontSize="10.5"
                                 Padding="9,4"
                                 Background="#09121C"
@@ -202,7 +205,7 @@
                             <StackPanel Orientation="Horizontal">
                                 <Ellipse x:Name="StatusDot" Width="8" Height="8" Fill="#64748B" VerticalAlignment="Center" Margin="0,0,7,0" />
                                 <TextBlock x:Name="HeaderStatusText"
-                                           Text="Listo para jugar"
+                                           Text="{DynamicResource StrHeaderStatusIdle}"
                                            Foreground="#94A3B8"
                                            FontSize="11.5"
                                            FontWeight="Bold"
@@ -219,7 +222,7 @@
                                 Padding="8,4"
                                 VerticalAlignment="Center"
                                 Visibility="Collapsed">
-                            <TextBlock Text="PAUSADO" FontSize="10.5" FontWeight="Bold" Foreground="#FCD34D" />
+                            <TextBlock Text="{DynamicResource StrPauseBadge}" FontSize="10.5" FontWeight="Bold" Foreground="#FCD34D" />
                         </Border>
                     </StackPanel>
 
@@ -228,7 +231,7 @@
                         <Button x:Name="BtnAnalyzeNow" Content="🎯 Analizar (F10)" Padding="11,6" Click="BtnAnalyzeNow_Click" IsEnabled="False" Margin="0,0,7,0" />
                         <Button x:Name="BtnPause" Content="⏸ Pausar (F9)" Padding="11,6" Click="BtnPause_Click" IsEnabled="False" Margin="0,0,9,0" />
                         <Button x:Name="BtnStartStop"
-                                Content="▶ Activar Coach"
+                                Content="{DynamicResource StrBtnStartCoach}"
                                 Background="#086F83"
                                 BorderBrush="#22D3EE"
                                 Foreground="#ECFEFF"
@@ -331,13 +334,13 @@
                             <DockPanel>
                                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" Margin="10,0,0,0" VerticalAlignment="Center">
                                     <Button Content="{DynamicResource StrBtnRunWizard}" Background="#059669" BorderBrush="#10B981" Padding="10,5" Margin="0,0,6,0" Click="BtnRunWizard_Click" />
-                                    <Button Content="1. Conectar IA Gratis →" Background="#086F83" BorderBrush="#22D3EE" Padding="12,5" Margin="0,0,6,0" Click="BtnGoAccounts_Click" />
-                                    <Button Content="2. Voz y Cartel" Padding="10,5" Margin="0,0,6,0" Click="BtnGoSettings_Click" />
+                                    <Button Content="{DynamicResource StrBtnOnboardingGoAccounts}" Background="#086F83" BorderBrush="#22D3EE" Padding="12,5" Margin="0,0,6,0" Click="BtnGoAccounts_Click" />
+                                    <Button Content="{DynamicResource StrBtnOnboardingGoSettings}" Padding="10,5" Margin="0,0,6,0" Click="BtnGoSettings_Click" />
                                     <Button Content="✕" Padding="8,5" ToolTip="Ocultar guía" Click="BtnDismissOnboarding_Click" />
                                 </StackPanel>
                                 <StackPanel VerticalAlignment="Center">
                                     <TextBlock Text="{DynamicResource StrOnboardingTitle}" Foreground="#F8FAFC" FontWeight="Bold" FontSize="13" />
-                                    <TextBlock Text="1) Elegí OpenRouter en 1 clic, Gemini Live o Groq → 2) Probá tu voz y cartel → 3) Tocá Activar Coach y abrí tu juego." Foreground="#CFFAFE" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                    <TextBlock Text="{DynamicResource StrOnboardingSubtitle}" Foreground="#CFFAFE" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,0" />
                                 </StackPanel>
                             </DockPanel>
                         </Border>
@@ -348,33 +351,33 @@
                         <!-- Compact Tactical Modes & Routing Strip -->
                         <Border Grid.Row="2" Style="{StaticResource CardPanel}" Padding="11,9" Margin="0,0,0,10">
                             <WrapPanel VerticalAlignment="Center">
-                                <TextBlock Text="Comunicación:" VerticalAlignment="Center" Foreground="#22D3EE" FontWeight="SemiBold" FontSize="12" Margin="0,0,6,4" />
+                                <TextBlock Text="{DynamicResource StrLblComm}" VerticalAlignment="Center" Foreground="#22D3EE" FontWeight="SemiBold" FontSize="12" Margin="0,0,6,4" />
                                 <ComboBox x:Name="CmbCommMode" Width="184" Margin="0,0,12,4" SelectionChanged="CmbCommMode_SelectionChanged">
-                                    <ComboBoxItem Content="🎙 Charla (Mic + Voz)" Tag="conversation" />
-                                    <ComboBoxItem Content="🔊 Solo voz del coach" Tag="coach_voice" />
-                                    <ComboBoxItem Content="💬 Solo texto (Sin voz)" Tag="text_only" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbCommConv}" Tag="conversation" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbCommCoach}" Tag="coach_voice" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbCommText}" Tag="text_only" />
                                 </ComboBox>
 
-                                <TextBlock Text="Voz:" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
+                                <TextBlock Text="{DynamicResource StrLblVoiceShort}" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
                                 <ComboBox x:Name="CmbQuickGender" Width="108" Margin="0,0,12,4" SelectionChanged="CmbQuickGender_SelectionChanged">
-                                    <ComboBoxItem Content="👨 Hombre" Tag="male" />
-                                    <ComboBoxItem Content="👩 Mujer" Tag="female" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbGenderMaleShort}" Tag="male" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbGenderFemaleShort}" Tag="female" />
                                 </ComboBox>
 
-                                <TextBlock Text="Partida:" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
+                                <TextBlock Text="{DynamicResource StrLblMatchMode}" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
                                 <ComboBox x:Name="CmbCoachMode" Width="130" Margin="0,0,12,4" SelectionChanged="CmbCoachMode_SelectionChanged">
-                                    <ComboBoxItem Content="Automático" Tag="auto" />
-                                    <ComboBoxItem Content="Competitiva" Tag="match" />
-                                    <ComboBoxItem Content="Entrenamiento" Tag="training" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbModeAuto}" Tag="auto" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbModeMatch}" Tag="match" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbModeTraining}" Tag="training" />
                                 </ComboBox>
 
-                                <TextBlock Text="Ritmo:" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
+                                <TextBlock Text="{DynamicResource StrLblPacingShort}" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
                                 <ComboBox x:Name="CmbQuickPacing" Width="148" Margin="0,0,12,4" SelectionChanged="CmbQuickPacing_SelectionChanged" ToolTip="Solo Eventos Clave evita interrupciones de rutina en medio de la acción">
-                                    <ComboBoxItem Content="⚡ Continuo" Tag="balanced" />
-                                    <ComboBoxItem Content="🎯 Solo Eventos" Tag="event_first" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbPacingBalancedShort}" Tag="balanced" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbPacingEventShort}" Tag="event_first" />
                                 </ComboBox>
 
-                                <TextBlock Text="Rol:" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
+                                <TextBlock Text="{DynamicResource StrLblRoleShort}" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
                                 <ComboBox x:Name="CmbQuickRole" Width="168" Margin="0,0,12,4" SelectionChanged="CmbQuickRole_SelectionChanged" ToolTip="Ajusta prioridades tácticas según tu rol o modalidad">
                                     <ComboBoxItem Content="🌐 Auto" Tag="auto" />
                                     <ComboBoxItem Content="🚗 RL · 1v1" Tag="rl_1v1" />
@@ -389,16 +392,16 @@
                                     <ComboBoxItem Content="💖 LoL · Support" Tag="lol_support" />
                                 </ComboBox>
 
-                                <TextBlock Text="Modo IA:" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
+                                <TextBlock Text="{DynamicResource StrLblAiEngine}" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
                                 <ComboBox x:Name="CmbEngineType" Width="180" Margin="0,0,12,4" ToolTip="Live permite hablar en tiempo real (~0.9s); Turnos analiza jugadas cada pocos segundos">
-                                    <ComboBoxItem Content="🎙 Live en Vivo (~0.9s)" Tag="live" />
-                                    <ComboBoxItem Content="⚡ Turnos Automáticos" Tag="classic" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbEngineLive}" Tag="live" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbEngineClassic}" Tag="classic" />
                                 </ComboBox>
 
-                                <TextBlock Text="Pantalla:" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
+                                <TextBlock Text="{DynamicResource StrLblScreenSource}" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
                                 <ComboBox x:Name="CmbRunMode" Width="162" Margin="0,0,0,4" SelectedIndex="0" ToolTip="Auto-Detectar espera a que abras el juego; Modo Prueba analiza tu escritorio actual">
-                                    <ComboBoxItem Content="Auto-Detectar Juego" Tag="auto" />
-                                    <ComboBoxItem Content="Probar en Escritorio" Tag="test" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbRunAuto}" Tag="auto" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbRunTest}" Tag="test" />
                                 </ComboBox>
                             </WrapPanel>
                         </Border>
@@ -411,8 +414,8 @@
                                     <RowDefinition Height="*" />
                                 </Grid.RowDefinitions>
                                 <DockPanel Grid.Row="0" Margin="2,0,2,7">
-                                    <TextBlock Text="💬 FEED TÁCTICO Y CHAT EN VIVO" Foreground="#22D3EE" FontSize="10.5" FontWeight="Bold" VerticalAlignment="Center" />
-                                    <Button DockPanel.Dock="Right" Content="🧹 Limpiar" Padding="9,2" FontSize="11" Click="BtnClearFeed_Click" />
+                                    <TextBlock Text="{DynamicResource StrFeedHeader}" Foreground="#22D3EE" FontSize="10.5" FontWeight="Bold" VerticalAlignment="Center" />
+                                    <Button DockPanel.Dock="Right" Content="{DynamicResource StrBtnClear}" Padding="9,2" FontSize="11" Click="BtnClearFeed_Click" />
                                 </DockPanel>
                                 <ListBox x:Name="LstCoachFeed"
                                          Grid.Row="1"
@@ -453,7 +456,7 @@
                         <!-- Collapsible Live Event Latency Log Terminal -->
                         <Expander Grid.Row="4" Margin="0,8,0,0" IsExpanded="False">
                             <Expander.Header>
-                                <TextBlock Text="LIVE EVENT LATENCY LOG · Sensores, captura y red" Foreground="#8EA4BC" FontFamily="Consolas" FontSize="11" FontWeight="SemiBold" />
+                                <TextBlock Text="{DynamicResource StrExpLatencyLog}" Foreground="#8EA4BC" FontFamily="Consolas" FontSize="11" FontWeight="SemiBold" />
                             </Expander.Header>
                             <Grid MaxHeight="145">
                                 <Grid.RowDefinitions>
@@ -461,8 +464,8 @@
                                     <RowDefinition Height="*" />
                                 </Grid.RowDefinitions>
                                 <DockPanel Grid.Row="0" Margin="0,0,0,5">
-                                    <TextBlock Text="Claves API redactadas automáticamente · Clic derecho para copiar línea" Foreground="#5C738A" FontSize="11" VerticalAlignment="Center" />
-                                    <Button DockPanel.Dock="Right" Content="🧹 Limpiar Logs" Padding="9,2" FontSize="11" Click="BtnClearLogs_Click" />
+                                    <TextBlock Text="{DynamicResource StrLogHint}" Foreground="#5C738A" FontSize="11" VerticalAlignment="Center" />
+                                    <Button DockPanel.Dock="Right" Content="{DynamicResource StrBtnClearLogs}" Padding="9,2" FontSize="11" Click="BtnClearLogs_Click" />
                                 </DockPanel>
                                 <ListBox x:Name="LstLiveLogs"
                                          Grid.Row="1"
@@ -549,8 +552,8 @@
                                     <Button Content="{DynamicResource StrBtnGroqFree}" Background="#059669" BorderBrush="#10B981" Click="BtnOpenGroq_Click" ToolTip="Abre Groq Console para obtener tu API Key gratuita de respuesta ultrarrápida (~0.4s)" />
                                 </StackPanel>
                                 <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="⚡ CONECTÁ TU IA SIN SABER PROGRAMAR ($0 GRATIS)" Foreground="#22D3EE" FontWeight="Bold" FontSize="12.5" />
-                                    <TextBlock Text="Entrá directo con OpenRouter en 1 clic automático, usá el asistente guiado de Google Gemini Live (con voz), o pegá tu clave gratis de Groq abajo." Foreground="#B5D3E7" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                    <TextBlock Text="{DynamicResource StrAccountsHeroTitle}" Foreground="#22D3EE" FontWeight="Bold" FontSize="12.5" />
+                                    <TextBlock Text="{DynamicResource StrAccountsHeroSub}" Foreground="#B5D3E7" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,0" />
                                 </StackPanel>
                             </DockPanel>
                         </Border>
@@ -558,13 +561,13 @@
                         <ListView x:Name="LstAccounts" Grid.Row="1" Background="#0A121D" Foreground="#F1F5F9" BorderBrush="#182A3D" Margin="0,0,0,10" MouseDoubleClick="LstAccounts_MouseDoubleClick">
                             <ListView.View>
                                 <GridView>
-                                    <GridViewColumn Header="Orden" Width="48" DisplayMemberBinding="{Binding Priority}" />
-                                    <GridViewColumn Header="Nombre" Width="195" DisplayMemberBinding="{Binding Label}" />
-                                    <GridViewColumn Header="Servicio" Width="115" DisplayMemberBinding="{Binding ProviderDisplay}" />
-                                    <GridViewColumn Header="Capacidades" Width="95" DisplayMemberBinding="{Binding VisionDisplay}" />
-                                    <GridViewColumn Header="Clave" Width="125" DisplayMemberBinding="{Binding MaskedKeyDisplay}" />
-                                    <GridViewColumn Header="Activa" Width="60" DisplayMemberBinding="{Binding EnabledDisplay}" />
-                                    <GridViewColumn Header="Modelo" Width="195" DisplayMemberBinding="{Binding Model}" />
+                                    <GridViewColumn Header="{DynamicResource StrColOrder}" Width="48" DisplayMemberBinding="{Binding Priority}" />
+                                    <GridViewColumn Header="{DynamicResource StrColName}" Width="195" DisplayMemberBinding="{Binding Label}" />
+                                    <GridViewColumn Header="{DynamicResource StrColProvider}" Width="115" DisplayMemberBinding="{Binding ProviderDisplay}" />
+                                    <GridViewColumn Header="{DynamicResource StrColVision}" Width="95" DisplayMemberBinding="{Binding VisionDisplay}" />
+                                    <GridViewColumn Header="{DynamicResource StrColKey}" Width="125" DisplayMemberBinding="{Binding MaskedKeyDisplay}" />
+                                    <GridViewColumn Header="{DynamicResource StrColActive}" Width="60" DisplayMemberBinding="{Binding EnabledDisplay}" />
+                                    <GridViewColumn Header="{DynamicResource StrColModel}" Width="195" DisplayMemberBinding="{Binding Model}" />
                                 </GridView>
                             </ListView.View>
                         </ListView>
@@ -580,24 +583,24 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                                        <TextBlock Text="Servicio de IA:" Foreground="#8EA4BC" FontSize="11" Margin="0,0,0,3" />
+                                        <TextBlock Text="{DynamicResource StrLblService}" Foreground="#8EA4BC" FontSize="11" Margin="0,0,0,3" />
                                         <ComboBox x:Name="CmbNewProvider" DisplayMemberPath="FriendlyName" SelectedValuePath="Id" SelectionChanged="CmbNewProvider_SelectionChanged" />
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" Margin="0,0,8,0">
-                                        <TextBlock Text="Nombre (ej: Mi Groq):" Foreground="#8EA4BC" FontSize="11" Margin="0,0,0,3" />
+                                        <TextBlock Text="{DynamicResource StrLblAccName}" Foreground="#8EA4BC" FontSize="11" Margin="0,0,0,3" />
                                         <TextBox x:Name="TxtNewLabel" Text="Groq LPU Gratis (~0.4s)" />
                                     </StackPanel>
                                     <StackPanel Grid.Column="2" Margin="0,0,8,0">
-                                        <TextBlock Text="Tu Clave API (oculta si hacés stream en OBS/Discord):" Foreground="#8EA4BC" FontSize="11" Margin="0,0,0,3" />
+                                        <TextBlock Text="{DynamicResource StrLblApiKey}" Foreground="#8EA4BC" FontSize="11" Margin="0,0,0,3" />
                                         <PasswordBox x:Name="PwdNewApiKey" ToolTip="Pegá tu API Key (queda oculta con puntos para cuidar tu privacidad)" />
                                     </StackPanel>
-                                    <Button x:Name="BtnAddAccount" Grid.Column="3" Content="+ Conectar IA" VerticalAlignment="Bottom" Background="#059669" BorderBrush="#10B981" Padding="14,6" Click="BtnAddAccount_Click" />
-                                    <Button x:Name="BtnCancelEdit" Grid.Column="4" Content="Cancelar" VerticalAlignment="Bottom" Visibility="Collapsed" Margin="6,0,0,0" Click="BtnCancelEdit_Click" />
+                                    <Button x:Name="BtnAddAccount" Grid.Column="3" Content="{DynamicResource StrBtnAddAccount}" VerticalAlignment="Bottom" Background="#059669" BorderBrush="#10B981" Padding="14,6" Click="BtnAddAccount_Click" />
+                                    <Button x:Name="BtnCancelEdit" Grid.Column="4" Content="{DynamicResource StrBtnCancel}" VerticalAlignment="Bottom" Visibility="Collapsed" Margin="6,0,0,0" Click="BtnCancelEdit_Click" />
                                 </Grid>
 
                                 <Expander x:Name="ExpAccountAdvanced" Margin="0,10,0,0" IsExpanded="False">
                                     <Expander.Header>
-                                        <TextBlock Text="⚙ Opciones avanzadas (modelo específico, servidor propio / Ollama, modo solo texto)" Foreground="#8EA4BC" FontSize="11.5" />
+                                        <TextBlock Text="{DynamicResource StrExpAccountAdv}" Foreground="#8EA4BC" FontSize="11.5" />
                                     </Expander.Header>
                                     <Grid>
                                         <Grid.ColumnDefinitions>
@@ -608,21 +611,21 @@
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="175" />
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="Modelo:" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                        <TextBlock Grid.Column="0" Text="{DynamicResource StrLblModel}" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
                                         <TextBox x:Name="TxtNewModel" Grid.Column="1" Margin="0,0,12,0" Text="meta-llama/llama-4-scout-17b-16e-instruct" />
-                                        <TextBlock Grid.Column="2" Text="Servidor (opcional):" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                        <TextBlock Grid.Column="2" Text="{DynamicResource StrLblCustomUrl}" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
                                         <TextBox x:Name="TxtNewBaseUrl"
                                                  Grid.Column="3"
                                                  Margin="0,0,12,0"
                                                  ToolTip="Solo si usás un servidor HTTPS propio o Ollama local (http://localhost:11434/v1). Dejar vacío para usar el oficial." />
-                                        <TextBlock Grid.Column="4" Text="Modo:" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                        <TextBlock Grid.Column="4" Text="{DynamicResource StrLblVisionMode}" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
                                         <ComboBox x:Name="CmbNewVisionOverride"
                                                   Grid.Column="5"
                                                   SelectedIndex="0"
                                                   ToolTip="Automático detecta si el modelo ve imágenes; Solo Texto usa lectura de pantalla + logs.">
-                                            <ComboBoxItem Content="Automático" Tag="auto" />
-                                            <ComboBoxItem Content="Con Visión (Imagen)" Tag="vision" />
-                                            <ComboBoxItem Content="Solo Texto (OCR+Logs)" Tag="text" />
+                                            <ComboBoxItem Content="{DynamicResource StrCmbVisAuto}" Tag="auto" />
+                                            <ComboBoxItem Content="{DynamicResource StrCmbVisImg}" Tag="vision" />
+                                            <ComboBoxItem Content="{DynamicResource StrCmbVisText}" Tag="text" />
                                         </ComboBox>
                                     </Grid>
                                 </Expander>
@@ -630,12 +633,12 @@
                         </Border>
 
                         <StackPanel Grid.Row="3" Orientation="Horizontal">
-                            <Button Content="↑ Prioridad +" Click="BtnMoveUp_Click" Margin="0,0,6,0" />
-                            <Button Content="↓ Prioridad -" Click="BtnMoveDown_Click" Margin="0,0,6,0" />
-                            <Button x:Name="BtnEditAccount" Content="✏ Editar" Click="BtnEditAccount_Click" Margin="0,0,6,0" />
-                            <Button Content="Activar / Pausar" Click="BtnToggleAccount_Click" Margin="0,0,6,0" />
-                            <Button x:Name="BtnTestAccount" Content="🔍 Probar Conexión" Click="BtnTestAccount_Click" Margin="0,0,6,0" />
-                            <Button Content="Eliminar" Background="#7F1D1D" BorderBrush="#EF4444" Click="BtnDeleteAccount_Click" />
+                            <Button Content="{DynamicResource StrBtnPriorityUp}" Click="BtnMoveUp_Click" Margin="0,0,6,0" />
+                            <Button Content="{DynamicResource StrBtnPriorityDown}" Click="BtnMoveDown_Click" Margin="0,0,6,0" />
+                            <Button x:Name="BtnEditAccount" Content="{DynamicResource StrBtnEditAcc}" Click="BtnEditAccount_Click" Margin="0,0,6,0" />
+                            <Button Content="{DynamicResource StrBtnToggleAcc}" Click="BtnToggleAccount_Click" Margin="0,0,6,0" />
+                            <Button x:Name="BtnTestAccount" Content="{DynamicResource StrBtnTestAcc}" Click="BtnTestAccount_Click" Margin="0,0,6,0" />
+                            <Button Content="{DynamicResource StrBtnDelete}" Background="#7F1D1D" BorderBrush="#EF4444" Click="BtnDeleteAccount_Click" />
                         </StackPanel>
                     </Grid>
                 </TabItem>
@@ -655,10 +658,10 @@
 
                         <DockPanel Grid.Row="0" Margin="0,0,0,10">
                             <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
-                                <TextBlock Text="Cartucho de Juego:" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#22D3EE" Margin="0,0,8,0" />
+                                <TextBlock Text="{DynamicResource StrLblGameCartridge}" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#22D3EE" Margin="0,0,8,0" />
                                 <ComboBox x:Name="CmbRulesGame" Width="250" DisplayMemberPath="DisplayName" SelectedValuePath="GameId" SelectionChanged="CmbRulesGame_SelectionChanged" />
                             </StackPanel>
-                            <TextBlock x:Name="LblRulesCount" DockPanel.Dock="Right" Text="0 / 600 caracteres" Foreground="#8EA4BC" VerticalAlignment="Center" />
+                            <TextBlock x:Name="LblRulesCount" DockPanel.Dock="Right" Text="0 / 600" Foreground="#8EA4BC" VerticalAlignment="Center" />
                         </DockPanel>
 
                         <Border Grid.Row="1" Style="{StaticResource CardPanel}" Padding="10" Margin="0,0,0,10">
@@ -672,20 +675,20 @@
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="+ Nuevo Juego" Foreground="#22D3EE" FontWeight="Bold" VerticalAlignment="Center" Margin="2,0,12,0" />
-                                <TextBlock Grid.Column="1" Text="Nombre:" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <TextBlock Grid.Column="0" Text="{DynamicResource StrNewGameTitle}" Foreground="#22D3EE" FontWeight="Bold" VerticalAlignment="Center" Margin="2,0,12,0" />
+                                <TextBlock Grid.Column="1" Text="{DynamicResource StrLblNameShort}" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
                                 <TextBox x:Name="TxtNewProfName" Grid.Column="2" Margin="0,0,10,0" ToolTip="Nombre del juego (ej: Apex Legends, Fortnite)" />
-                                <TextBlock Grid.Column="3" Text="Archivo (.exe):" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <TextBlock Grid.Column="3" Text="{DynamicResource StrLblExeFile}" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
                                 <TextBox x:Name="TxtNewProfExe" Grid.Column="4" Margin="0,0,6,0" ToolTip="Nombre del archivo del juego (ej: r5apex.exe) o usá 'Elegir .exe'" />
-                                <Button x:Name="BtnBrowseNewExe" Grid.Column="5" Content="📂 Elegir .exe" Margin="0,0,8,0" Click="BtnBrowseNewExe_Click" ToolTip="Buscá el .exe del juego en tu PC sin tener que escribirlo" />
-                                <Button x:Name="BtnCreateProfile" Grid.Column="6" Content="➕ Agregar" Background="#059669" BorderBrush="#10B981" Click="BtnCreateProfile_Click" />
+                                <Button x:Name="BtnBrowseNewExe" Grid.Column="5" Content="{DynamicResource StrBtnBrowseExe}" Margin="0,0,8,0" Click="BtnBrowseNewExe_Click" ToolTip="Buscá el .exe del juego en tu PC sin tener que escribirlo" />
+                                <Button x:Name="BtnCreateProfile" Grid.Column="6" Content="{DynamicResource StrBtnAddProfile}" Background="#059669" BorderBrush="#10B981" Click="BtnCreateProfile_Click" />
                             </Grid>
                         </Border>
 
                         <StackPanel Grid.Row="2" Margin="0,0,0,8">
-                            <TextBlock Text="📝 Indicaciones personales para el coach en este juego (opcional):" Foreground="#CBD5E1" FontWeight="SemiBold" Margin="0,0,0,6" />
+                            <TextBlock Text="{DynamicResource StrLblCustomRulesPrompt}" Foreground="#CBD5E1" FontWeight="SemiBold" Margin="0,0,0,6" />
                             <WrapPanel>
-                                <TextBlock Text="Ideas rápidas:" Foreground="#5C738A" FontSize="11.5" VerticalAlignment="Center" Margin="0,0,8,4" />
+                                <TextBlock Text="{DynamicResource StrLblQuickIdeas}" Foreground="#5C738A" FontSize="11.5" VerticalAlignment="Center" Margin="0,0,8,4" />
                                 <Button Style="{StaticResource ChipButton}" Content="+ Sé breve, solo jugadas clave" Tag="Sé breve y directo: avisame solo en jugadas clave." Margin="0,0,6,4" Click="BtnPromptChip_Click" />
                                 <Button Style="{StaticResource ChipButton}" Content="+ Controlar recursos / boost" Tag="Avisame cuando esté bajo de recursos, vida o boost." Margin="0,0,6,4" Click="BtnPromptChip_Click" />
                                 <Button Style="{StaticResource ChipButton}" Content="+ Cuidar posicionamiento" Tag="Recordame cuidar el posicionamiento y no regalar ventaja." Margin="0,0,0,4" Click="BtnPromptChip_Click" />
@@ -705,7 +708,7 @@
 
                         <Expander Grid.Row="4" Margin="0,8,0,0" IsExpanded="False">
                             <Expander.Header>
-                                <TextBlock Text="⚙ Sensibilidad perceptual (pHash), pausas y ejecutables .exe" Foreground="#8EA4BC" FontSize="11.5" />
+                                <TextBlock Text="{DynamicResource StrExpGameTech}" Foreground="#8EA4BC" FontSize="11.5" />
                             </Expander.Header>
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -716,11 +719,11 @@
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="55" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="Archivos .exe:" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <TextBlock Grid.Column="0" Text="{DynamicResource StrLblExeList}" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
                                 <TextBox x:Name="TxtProfileExes" Grid.Column="1" Margin="0,0,12,0" ToolTip="Ejecutables del juego separados por coma" />
-                                <TextBlock Grid.Column="2" Text="Pausa entre avisos (seg):" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <TextBlock Grid.Column="2" Text="{DynamicResource StrLblCooldown}" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
                                 <TextBox x:Name="TxtProfileCooldown" Grid.Column="3" Margin="0,0,12,0" ToolTip="Segundos mínimos entre consejos automáticos (1 a 120)" />
-                                <TextBlock Grid.Column="4" Text="Sensibilidad pHash (1–64):" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                <TextBlock Grid.Column="4" Text="{DynamicResource StrLblPhash}" Foreground="#8EA4BC" VerticalAlignment="Center" Margin="0,0,6,0" />
                                 <TextBox x:Name="TxtProfilePhash" Grid.Column="5" ToolTip="Menor número = reacciona ante cambios más chicos en pantalla (recomendado: 6 a 10)" />
                             </Grid>
                         </Expander>
@@ -729,22 +732,22 @@
                             <StackPanel>
                                 <DockPanel>
                                     <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
-                                        <Button Content="📂 Memoria (.md)" Padding="10,4" FontSize="11.5" Margin="0,0,6,0" Click="BtnOpenGameMemory_Click" ToolTip="Abre la carpeta con los resúmenes Markdown por juego e índice INDEX.md" />
-                                        <Button x:Name="BtnResetGameMemory" Content="🧹 Limpiar memoria" Padding="10,4" FontSize="11.5" Click="BtnResetGameMemory_Click" ToolTip="Borra los patrones repetidos guardados en las últimas partidas de este juego" />
+                                        <Button Content="{DynamicResource StrBtnOpenMemFolder}" Padding="10,4" FontSize="11.5" Margin="0,0,6,0" Click="BtnOpenGameMemory_Click" ToolTip="Abre la carpeta con los resúmenes Markdown por juego e índice INDEX.md" />
+                                        <Button x:Name="BtnResetGameMemory" Content="{DynamicResource StrBtnClearGameMem}" Padding="10,4" FontSize="11.5" Click="BtnResetGameMemory_Click" ToolTip="Borra los patrones repetidos guardados en las últimas partidas de este juego" />
                                     </StackPanel>
                                     <TextBlock x:Name="LblRollingMemorySummary" Text="🧠 Memoria del coach: sin partidas registradas aún (se actualiza sola al jugar)." Foreground="#CBD5E1" FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,10,0" />
                                 </DockPanel>
                                 <Border Height="1" Background="#162A3E" Margin="0,7,0,7" />
                                 <DockPanel>
-                                    <Button x:Name="BtnResetGameLeaks" DockPanel.Dock="Right" Content="🧹 Reset fugas" Padding="10,4" FontSize="11" Click="BtnResetGameLeaks_Click" ToolTip="Reinicia los contadores medibles de errores repetidos (Hoy vs Anterior)" />
+                                    <Button x:Name="BtnResetGameLeaks" DockPanel.Dock="Right" Content="{DynamicResource StrBtnResetLeaks}" Padding="10,4" FontSize="11" Click="BtnResetGameLeaks_Click" ToolTip="Reinicia los contadores medibles de errores repetidos (Hoy vs Anterior)" />
                                     <TextBlock x:Name="LblLeaksSummary" Text="📉 Fugas medibles (Hoy vs Anterior): sin errores tácticos repetidos detectados aún." Foreground="#93C5FD" FontSize="11.5" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,10,0" />
                                 </DockPanel>
                             </StackPanel>
                         </Border>
 
                         <DockPanel Grid.Row="6" Margin="0,10,0,0">
-                            <Button x:Name="BtnDeleteProfile" DockPanel.Dock="Left" Content="🗑 Eliminar Juego" Background="#7F1D1D" BorderBrush="#EF4444" Click="BtnDeleteProfile_Click" />
-                            <Button Content="💾 Guardar Indicaciones" HorizontalAlignment="Right" Background="#086F83" BorderBrush="#22D3EE" Padding="14,6" Click="BtnSaveRules_Click" />
+                            <Button x:Name="BtnDeleteProfile" DockPanel.Dock="Left" Content="{DynamicResource StrBtnDeleteProfile}" Background="#7F1D1D" BorderBrush="#EF4444" Click="BtnDeleteProfile_Click" />
+                            <Button Content="{DynamicResource StrBtnSaveRules}" HorizontalAlignment="Right" Background="#086F83" BorderBrush="#22D3EE" Padding="14,6" Click="BtnSaveRules_Click" />
                         </DockPanel>
                     </Grid>
                 </TabItem>
@@ -876,7 +879,7 @@
                                 <!-- Card 1: Player Profile & Coach Personality -->
                                 <Border Style="{StaticResource CardPanel}" Margin="0,0,0,10">
                                     <StackPanel>
-                                        <TextBlock Text="🎯 TU NIVEL, PERSONALIDAD Y MEMORIA" Foreground="#22D3EE" FontWeight="Bold" FontSize="12.5" Margin="0,0,0,10" />
+                                        <TextBlock Text="{DynamicResource StrSettingsLevelCard}" Foreground="#22D3EE" FontWeight="Bold" FontSize="12.5" Margin="0,0,0,10" />
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="220" />
@@ -894,61 +897,61 @@
                                                 <RowDefinition Height="36" />
                                             </Grid.RowDefinitions>
 
-                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Tu Nivel de Juego:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="{DynamicResource StrLblSkillTier}" FontWeight="SemiBold" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbSkillTier" Grid.Row="0" Grid.Column="1" VerticalAlignment="Center">
-                                                <ComboBoxItem Content="🌱 Principiante (fundamentos simples y paciencia)" Tag="beginner" />
-                                                <ComboBoxItem Content="🥉 Casual (Bronce–Plata / Hierro–Bronce)" Tag="casual" />
-                                                <ComboBoxItem Content="🥈 Intermedio (Oro–Platino / Plata–Oro)" Tag="intermediate" />
-                                                <ComboBoxItem Content="🥇 Avanzado (Diamante–Campeón / Ascendente)" Tag="advanced" />
-                                                <ComboBoxItem Content="🏆 Competitivo / Pro (GC–SSL / Radiant / Faceit 10)" Tag="pro" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbTierBeginner}" Tag="beginner" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbTierCasual}" Tag="casual" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbTierIntermediate}" Tag="intermediate" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbTierAdvanced}" Tag="advanced" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbTierPro}" Tag="pro" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Tu Rango exacto (opcional):" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="{DynamicResource StrLblRankExact}" VerticalAlignment="Center" />
                                             <TextBox x:Name="TxtRankLabel" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" ToolTip="Ej: Platino 2 en 2v2, Diamante 1, Oro 3..." />
 
-                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Personalidad del Coach:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="{DynamicResource StrLblCoachStyle}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbCoachStyle" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center">
-                                                <ComboBoxItem Content="🤝 Amigable y motivador (celebra aciertos)" Tag="friendly" />
-                                                <ComboBoxItem Content="🪞 Sincero sin humo (directo + Anti-Tilt)" Tag="honest" />
-                                                <ComboBoxItem Content="🎯 Directo y táctico (al punto)" Tag="tactical" />
-                                                <ComboBoxItem Content="🔥 Exigente estilo torneo (sin filtro)" Tag="strict" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbStyleFriendly}" Tag="friendly" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbStyleHonest}" Tag="honest" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbStyleTactical}" Tag="tactical" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbStyleStrict}" Tag="strict" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Idioma del Coach / GUI:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="{DynamicResource StrLblLanguageGui}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbLanguage" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbLanguage_SelectionChanged">
                                                 <ComboBoxItem Content="🇪🇸 Español" Tag="es" />
                                                 <ComboBoxItem Content="🇺🇸 English" Tag="en" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Frecuencia en modo Live:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="4" Grid.Column="0" Text="{DynamicResource StrLblLiveAutoFreq}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbLiveAutoRate" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" ToolTip="Buffer continuo estilo OBS (~10 FPS en RAM · 25s historial): observa todo y predice jugadas incluso sin hablar">
-                                                <ComboBoxItem Content="🎙 Solo cuando le hablo o toco F10 (sigue mirando tipo OBS)" Tag="0" />
-                                                <ComboBoxItem Content="⚖ Equilibrado (cada 10s · jugada completa)" Tag="10" />
-                                                <ComboBoxItem Content="⚡ Activo (cada 6s · OBS continuo recomendado)" Tag="6" />
-                                                <ComboBoxItem Content="🔥 OBS Máximo (cada 4s · observa y predice todo sin hablar)" Tag="4" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbRateManual}" Tag="0" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbRate10s}" Tag="10" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbRate6s}" Tag="6" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbRate4s}" Tag="4" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="5" Grid.Column="0" Text="Velocidad vs Nitidez visual:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="5" Grid.Column="0" Text="{DynamicResource StrLblSharpness}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbEfficiency" Grid.Row="5" Grid.Column="1" VerticalAlignment="Center" ToolTip="Rápido consume menos datos y responde antes; Máxima nitidez lee textos muy chicos del HUD">
-                                                <ComboBoxItem Content="⚡ Rápido (menor consumo · recomendado)" Tag="eco" />
-                                                <ComboBoxItem Content="⚖ Equilibrado (HD)" Tag="balanced" />
-                                                <ComboBoxItem Content="💎 Máxima nitidez (Full HD)" Tag="high" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbEffEco}" Tag="eco" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbEffBalanced}" Tag="balanced" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbEffHigh}" Tag="high" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="6" Grid.Column="0" Text="Memoria de partidas:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="6" Grid.Column="0" Text="{DynamicResource StrLblMemWindow}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbMemoryWindow" Grid.Row="6" Grid.Column="1" VerticalAlignment="Center" ToolTip="Cantidad de partidas recientes que el coach recuerda (al entrar nuevas se borran las más viejas)">
-                                                <ComboBoxItem Content="🧠 Últimas 5 partidas (se adapta rápido)" Tag="5" />
-                                                <ComboBoxItem Content="🧠 Últimas 10 partidas (recomendado)" Tag="10" />
-                                                <ComboBoxItem Content="🧠 Últimas 20 partidas (historial largo)" Tag="20" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbMem5}" Tag="5" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbMem10}" Tag="10" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbMem20}" Tag="20" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="7" Grid.Column="0" Text="Ritmo del Coach (Pacing):" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="7" Grid.Column="0" Text="{DynamicResource StrLblPacingMode}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbCoachingPacing" Grid.Row="7" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbCoachingPacing_SelectionChanged" ToolTip="Solo Eventos Clave evita interrupciones por reloj durante la acción intensa y solo avisa ante eventos reales, alertas críticas o F10">
-                                                <ComboBoxItem Content="⚡ Continuo (cada Xs + Eventos)" Tag="balanced" />
-                                                <ComboBoxItem Content="🎯 Solo Eventos Clave (Silencio IGL)" Tag="event_first" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbPacingBalancedFull}" Tag="balanced" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbPacingEventFull}" Tag="event_first" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="8" Grid.Column="0" Text="Rol / Modo en Partida:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="8" Grid.Column="0" Text="{DynamicResource StrLblRoleFull}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbPlayerRole" Grid.Row="8" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbPlayerRole_SelectionChanged" ToolTip="Ajusta las prioridades tácticas del coach según tu rol o modalidad de juego">
                                                 <ComboBoxItem Content="🌐 Automático (según contexto)" Tag="auto" />
                                                 <ComboBoxItem Content="🚗 Rocket League · 1v1 (Duelos)" Tag="rl_1v1" />
@@ -966,16 +969,16 @@
 
                                         <Expander Margin="0,10,0,0" IsExpanded="False">
                                             <Expander.Header>
-                                                <TextBlock Text="🎭 Personalidad (coach_soul.md) y Perfil Global (player_profile.md)" Foreground="#8EA4BC" FontSize="11.5" />
+                                                <TextBlock Text="{DynamicResource StrExpSoulMd}" Foreground="#8EA4BC" FontSize="11.5" />
                                             </Expander.Header>
                                             <StackPanel Margin="0,6,0,0">
                                                 <DockPanel Margin="0,0,0,4">
-                                                    <Button DockPanel.Dock="Right" Content="📂 Abrir archivos .md" Padding="9,3" FontSize="11" Click="BtnOpenSoulFolder_Click" ToolTip="Abre la carpeta config/ para editar o compartir coach_soul.md y player_profile.md" />
-                                                    <TextBlock Text="Cómo querés que sea tu coach (coach_soul.md):" Foreground="#CBD5E1" FontSize="11.5" VerticalAlignment="Center" />
+                                                    <Button DockPanel.Dock="Right" Content="{DynamicResource StrBtnOpenMdFiles}" Padding="9,3" FontSize="11" Click="BtnOpenSoulFolder_Click" ToolTip="Abre la carpeta config/ para editar o compartir coach_soul.md y player_profile.md" />
+                                                    <TextBlock Text="{DynamicResource StrLblSoulDesc}" Foreground="#CBD5E1" FontSize="11.5" VerticalAlignment="Center" />
                                                 </DockPanel>
                                                 <TextBox x:Name="TxtCoachSoul" Height="64" MaxLength="700" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Margin="0,0,0,8" />
 
-                                                <TextBlock Text="Tus hábitos globales entre todos los juegos (player_profile.md):" Foreground="#CBD5E1" FontSize="11.5" Margin="0,0,0,4" />
+                                                <TextBlock Text="{DynamicResource StrLblProfileDesc}" Foreground="#CBD5E1" FontSize="11.5" Margin="0,0,0,4" />
                                                 <TextBox x:Name="TxtPlayerProfile" Height="56" MaxLength="700" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" />
                                             </StackPanel>
                                         </Expander>
@@ -986,8 +989,8 @@
                                 <Border Style="{StaticResource FeaturedCardPanel}" Margin="0,0,0,10">
                                     <StackPanel>
                                         <DockPanel Margin="0,0,0,10">
-                                            <TextBlock Text="🎙 VOICE &amp; TTS · SALIDA 24kHz PRE-BUFFERED" Foreground="#10B981" FontWeight="Bold" FontSize="12.5" VerticalAlignment="Center" />
-                                            <Button x:Name="BtnTestMic" DockPanel.Dock="Right" Content="🎤 Probar Micrófono" Padding="10,4" Click="BtnTestMic_Click" />
+                                            <TextBlock Text="{DynamicResource StrSettingsVoiceCard}" Foreground="#10B981" FontWeight="Bold" FontSize="12.5" VerticalAlignment="Center" />
+                                            <Button x:Name="BtnTestMic" DockPanel.Dock="Right" Content="{DynamicResource StrBtnTestMic}" Padding="10,4" Click="BtnTestMic_Click" />
                                         </DockPanel>
 
                                         <!-- Reusable Vector Spectrum Bar echoing cyber-tactical HUD audio aesthetics -->
@@ -1016,54 +1019,54 @@
                                                 <RowDefinition Height="36" />
                                             </Grid.RowDefinitions>
 
-                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Modo de Comunicación:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="{DynamicResource StrLblCommSettings}" FontWeight="SemiBold" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbCommModeSettings" Grid.Row="0" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbCommModeSettings_SelectionChanged">
-                                                <ComboBoxItem Content="🎙 Charla (Micrófono + Voz del coach)" Tag="conversation" />
-                                                <ComboBoxItem Content="🔊 Solo voz del coach (mic apagado)" Tag="coach_voice" />
-                                                <ComboBoxItem Content="💬 Solo texto (100% silencioso)" Tag="text_only" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbCommConvFull}" Tag="conversation" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbCommCoachFull}" Tag="coach_voice" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbCommTextFull}" Tag="text_only" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Voz del Coach:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="{DynamicResource StrLblVoiceGender}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbVoiceGender" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbVoiceSettings_SelectionChanged">
-                                                <ComboBoxItem Content="👨 Hombre (Fenrir / Tomás)" Tag="male" />
-                                                <ComboBoxItem Content="👩 Mujer (Aoede / Elena)" Tag="female" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbVoiceMaleFull}" Tag="male" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbVoiceFemaleFull}" Tag="female" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Calidad de Voz (Turnos):" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="{DynamicResource StrLblVoiceStyle}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbVoiceStyle" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbVoiceSettings_SelectionChanged">
-                                                <ComboBoxItem Content="🎙 Voz Natural Windows (recomendada)" Tag="neural" />
-                                                <ComboBoxItem Content="⚡ Instantánea ultra-rápida (~8ms)" Tag="instant" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbVoiceNeural}" Tag="neural" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbVoiceInstant}" Tag="instant" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Velocidad de Voz:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="{DynamicResource StrLblVoiceRate}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbVoiceRate" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbVoiceRate_SelectionChanged" ToolTip="Bajá a Natural o Pausada si querés que se entienda con total claridad sobre el sonido del juego">
-                                                <ComboBoxItem Content="🐢 Pausada y muy clara (-10%)" Tag="-10%" />
-                                                <ComboBoxItem Content="🎯 Natural (0% · máxima dicción)" Tag="+0%" />
-                                                <ComboBoxItem Content="✨ Clara y ágil (+5% · recomendada)" Tag="+5%" />
-                                                <ComboBoxItem Content="⚡ Rápida (+15%)" Tag="+15%" />
-                                                <ComboBoxItem Content="🚀 Muy rápida (+25%)" Tag="+25%" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbRateSlow}" Tag="-10%" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbRateNormal}" Tag="+0%" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbRateFast5}" Tag="+5%" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbRateFast15}" Tag="+15%" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbRateFast25}" Tag="+25%" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Uso del Micrófono (Live):" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="4" Grid.Column="0" Text="{DynamicResource StrLblMicInputMode}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbMicInputMode" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center">
-                                                <ComboBoxItem Content="🎙 Mic Abierto (hablás cuando querés)" Tag="open_mic" />
-                                                <ComboBoxItem Content="⌨ Push-to-Talk (mantener tecla para hablar)" Tag="push_to_talk" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbMicOpen}" Tag="open_mic" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbMicPtt}" Tag="push_to_talk" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="5" Grid.Column="0" Text="Tecla Push-to-Talk:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="5" Grid.Column="0" Text="{DynamicResource StrLblPttKey}" VerticalAlignment="Center" />
                                             <TextBox x:Name="TxtPttKey" Grid.Row="5" Grid.Column="1" VerticalAlignment="Center" ToolTip="Ej: V, Alt, CapsLock, Space, Mouse4, Mouse5" />
 
-                                            <TextBlock Grid.Row="6" Grid.Column="0" Text="Micrófono:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="6" Grid.Column="0" Text="{DynamicResource StrLblMicDev}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbMicDevice" Grid.Row="6" Grid.Column="1" VerticalAlignment="Center" />
 
-                                            <TextBlock Grid.Row="7" Grid.Column="0" Text="Auriculares / Parlantes:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="7" Grid.Column="0" Text="{DynamicResource StrLblSpeakerDev}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbSpeakerDevice" Grid.Row="7" Grid.Column="1" VerticalAlignment="Center" />
 
-                                            <TextBlock Grid.Row="8" Grid.Column="0" Text="Volumen de Voz:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="8" Grid.Column="0" Text="{DynamicResource StrLblVoiceVol}" VerticalAlignment="Center" />
                                             <Slider x:Name="SldVolume" Grid.Row="8" Grid.Column="1" Minimum="0" Maximum="1" TickFrequency="0.05" VerticalAlignment="Center" ValueChanged="SldVolume_ValueChanged" />
                                             <TextBlock x:Name="LblVolumePct" Grid.Row="8" Grid.Column="2" Text="75%" Foreground="#22D3EE" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
                                         </Grid>
-                                        <CheckBox x:Name="ChkEnableAudioCues" Content="Sonidos suaves de confirmación (al pausar, mutear mic o pulsar Push-to-Talk)" Margin="0,8,0,0" ToolTip="Emite un tono sutil al usar atajos (silenciado en modo Solo Texto)." />
+                                        <CheckBox x:Name="ChkEnableAudioCues" Content="{DynamicResource StrChkAudioCues}" Margin="0,8,0,0" ToolTip="Emite un tono sutil al usar atajos (silenciado en modo Solo Texto)." />
                                     </StackPanel>
                                 </Border>
 
@@ -1078,11 +1081,11 @@
                                             <TextBlock Text="{DynamicResource StrSettingsOverlayCard}" Foreground="#22D3EE" FontWeight="Bold" FontSize="12.5" VerticalAlignment="Center" />
                                         </DockPanel>
                                         <WrapPanel Margin="0,0,0,8">
-                                            <CheckBox x:Name="ChkEnableOverlay" Content="Mostrar cartel sobre el juego (transparente al mouse)" Margin="0,0,20,6" />
-                                            <CheckBox x:Name="ChkOverlayFollowMonitor" Content="Seguir monitor activo del juego" Margin="0,0,20,6" ToolTip="Reubica automáticamente el cartel al monitor donde estés jugando." />
-                                            <CheckBox x:Name="ChkEnableCompanionHud" Content="Companion Web HUD (Pantalla Completa / 2º monitor)" Margin="0,0,20,6" Checked="CompanionHudSettingChanged" Unchecked="CompanionHudSettingChanged" ToolTip="Inicia un mini HUD web local (0% GPU, 0% riesgo anti-cheat) para verlo en otro monitor, OBS Browser Source o el celular." />
-                                            <CheckBox x:Name="ChkCompanionLan" Content="Permitir celular en Wi-Fi (LAN)" Margin="0,0,20,6" Checked="CompanionHudSettingChanged" Unchecked="CompanionHudSettingChanged" ToolTip="Habilita acceso por red Wi-Fi local usando una URL con clave temporal de sesión." />
-                                            <CheckBox x:Name="ChkEnableInGameOverlayBridge" Content="Puente HUD externo en juego (Pantalla Completa)" Margin="0,0,0,6" Checked="InGameOverlayBridgeSettingChanged" Unchecked="InGameOverlayBridgeSettingChanged" ToolTip="Reenvía callouts finales vía WebSocket local (127.0.0.1 RCON) a puentes/mods compatibles del propio juego para ver avisos dentro de pantalla completa exclusiva sin hooks." />
+                                            <CheckBox x:Name="ChkEnableOverlay" Content="{DynamicResource StrChkEnableOverlay}" Margin="0,0,20,6" />
+                                            <CheckBox x:Name="ChkOverlayFollowMonitor" Content="{DynamicResource StrChkFollowMonitor}" Margin="0,0,20,6" ToolTip="Reubica automáticamente el cartel al monitor donde estés jugando." />
+                                            <CheckBox x:Name="ChkEnableCompanionHud" Content="{DynamicResource StrChkCompanion}" Margin="0,0,20,6" Checked="CompanionHudSettingChanged" Unchecked="CompanionHudSettingChanged" ToolTip="Inicia un mini HUD web local (0% GPU, 0% riesgo anti-cheat) para verlo en otro monitor, OBS Browser Source o el celular." />
+                                            <CheckBox x:Name="ChkCompanionLan" Content="{DynamicResource StrChkCompanionLan}" Margin="0,0,20,6" Checked="CompanionHudSettingChanged" Unchecked="CompanionHudSettingChanged" ToolTip="Habilita acceso por red Wi-Fi local usando una URL con clave temporal de sesión." />
+                                            <CheckBox x:Name="ChkEnableInGameOverlayBridge" Content="{DynamicResource StrChkExternalBridge}" Margin="0,0,0,6" Checked="InGameOverlayBridgeSettingChanged" Unchecked="InGameOverlayBridgeSettingChanged" ToolTip="Reenvía callouts finales vía WebSocket local (127.0.0.1 RCON) a puentes/mods compatibles del propio juego para ver avisos dentro de pantalla completa exclusiva sin hooks." />
                                         </WrapPanel>
                                         <Border x:Name="CompanionUrlBar" Visibility="Collapsed" Background="#07101B" BorderBrush="#1E3A5F" BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,10">
                                             <DockPanel LastChildFill="True">
@@ -1116,38 +1119,38 @@
                                                 <RowDefinition Height="36" />
                                             </Grid.RowDefinitions>
 
-                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Estilo del Overlay:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="{DynamicResource StrLblOverlayStyle}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbOverlayStyle" Grid.Row="0" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbOverlayVisual_SelectionChanged" ToolTip="El texto se mantiene nítido con sombra 0% GPU incluso con fondo 0% transparente">
-                                                <ComboBoxItem Content="🫥 Solo texto flotante (sin caja ni bordes)" Tag="transparent_text" />
-                                                <ComboBoxItem Content="💠 Cápsula translúcida (estilo Discord)" Tag="discord_pill" />
-                                                <ComboBoxItem Content="🖥 Tarjeta táctica completa (onda + atajos)" Tag="card" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbOvTransparent}" Tag="transparent_text" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbOvDiscord}" Tag="discord_pill" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbOvCard}" Tag="card" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Mensajes en Pantalla:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="{DynamicResource StrLblOverlayLines}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbOverlayFeedLines" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbOverlayVisual_SelectionChanged" ToolTip="Elegí ver un solo consejo táctico o un mini-feed apilado estilo Discord Overlay">
-                                                <ComboBoxItem Content="💬 Mini-feed Discord (últimos 3 mensajes)" Tag="3" />
-                                                <ComboBoxItem Content="⚡ Aviso único (solo el último consejo)" Tag="1" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbOvLines3}" Tag="3" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbOvLines1}" Tag="1" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Posición en Pantalla:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="{DynamicResource StrLblOverlayPos}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbOverlayPos" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbOverlayVisual_SelectionChanged">
-                                                <ComboBoxItem Content="↗ Arriba a la derecha" Tag="top-right" />
-                                                <ComboBoxItem Content="↖ Arriba a la izquierda" Tag="top-left" />
-                                                <ComboBoxItem Content="⬆ Arriba al centro" Tag="top-center" />
-                                                <ComboBoxItem Content="↘ Abajo a la derecha" Tag="bottom-right" />
-                                                <ComboBoxItem Content="↙ Abajo a la izquierda" Tag="bottom-left" />
-                                                <ComboBoxItem Content="⬇ Abajo al centro (estilo subtítulos)" Tag="bottom-center" />
-                                                <ComboBoxItem Content="📌 Personalizada (arrastrar libre)" Tag="custom" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbPosTR}" Tag="top-right" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbPosTL}" Tag="top-left" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbPosTC}" Tag="top-center" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbPosBR}" Tag="bottom-right" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbPosBL}" Tag="bottom-left" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbPosBC}" Tag="bottom-center" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbPosCustom}" Tag="custom" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Pantalla / Monitor:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="{DynamicResource StrLblMonitor}" VerticalAlignment="Center" />
                                             <ComboBox x:Name="CmbMonitor" Grid.Row="3" Grid.Column="1" DisplayMemberPath="Label" SelectedValuePath="Index" VerticalAlignment="Center" SelectionChanged="CmbOverlayVisual_SelectionChanged" />
 
-                                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Tamaño del Texto:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="4" Grid.Column="0" Text="{DynamicResource StrLblOverlaySize}" VerticalAlignment="Center" />
                                             <Slider x:Name="SldOverlayScale" Grid.Row="4" Grid.Column="1" Minimum="0.75" Maximum="1.45" TickFrequency="0.05" IsSnapToTickEnabled="True" VerticalAlignment="Center" ValueChanged="SldOverlayVisual_ValueChanged" />
                                             <TextBlock x:Name="LblOverlayScale" Grid.Row="4" Grid.Column="2" Text="100%" Foreground="#22D3EE" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
 
-                                            <TextBlock Grid.Row="5" Grid.Column="0" Text="Opacidad del Fondo:" VerticalAlignment="Center" ToolTip="Regulá qué tan translúcida es la caja (0% = transparente, texto siempre nítido)" />
+                                            <TextBlock Grid.Row="5" Grid.Column="0" Text="{DynamicResource StrLblOverlayOpacity}" VerticalAlignment="Center" ToolTip="Regulá qué tan translúcida es la caja (0% = transparente, texto siempre nítido)" />
                                             <Slider x:Name="SldOverlayOpacity" Grid.Row="5" Grid.Column="1" Minimum="0.00" Maximum="0.95" TickFrequency="0.05" IsSnapToTickEnabled="True" VerticalAlignment="Center" ValueChanged="SldOverlayVisual_ValueChanged" />
                                             <TextBlock x:Name="LblOverlayOpacity" Grid.Row="5" Grid.Column="2" Text="55%" Foreground="#22D3EE" FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0" />
                                         </Grid>
@@ -1159,11 +1162,11 @@
                                     <StackPanel>
                                         <TextBlock Text="{DynamicResource StrSettingsHotkeysCard}" Foreground="#F59E0B" FontWeight="Bold" FontSize="12.5" Margin="0,0,0,10" />
                                         <WrapPanel Margin="0,0,0,8">
-                                            <CheckBox x:Name="ChkEnableHotkeys" Content="Activar teclas rápidas dentro del juego" Margin="0,0,20,6" />
-                                            <CheckBox x:Name="ChkMinimizeToTray" Content="Minimizar junto al reloj (Bandeja)" Margin="0,0,20,6" />
-                                            <CheckBox x:Name="ChkLaunchWithWindows" Content="Iniciar con Windows minimizado junto al reloj" IsChecked="False" Margin="0,0,20,6" ToolTip="Desactivado por defecto: marcalo solo si querés que HUDMind arranque en segundo plano al encender la PC." />
-                                            <CheckBox x:Name="ChkCheckUpdatesOnStartup" Content="Avisar nuevas versiones disponibles" Margin="0,0,20,6" ToolTip="Busca actualizaciones en GitHub Releases al abrir y cada 60 min en reposo." />
-                                            <CheckBox x:Name="ChkExternalTelemetryWs" Content="Telemetría WebSocket local (ws://127.0.0.1)" Margin="0,0,0,6" ToolTip="Escucha eventos pasivos JSON en loopback (replays, clock, boost, score, hudmind:telemetry). 0 ms de impacto si no hay relay." />
+                                            <CheckBox x:Name="ChkEnableHotkeys" Content="{DynamicResource StrChkHotkeys}" Margin="0,0,20,6" />
+                                            <CheckBox x:Name="ChkMinimizeToTray" Content="{DynamicResource StrChkTray}" Margin="0,0,20,6" />
+                                            <CheckBox x:Name="ChkLaunchWithWindows" Content="{DynamicResource StrChkStartup}" IsChecked="False" Margin="0,0,20,6" ToolTip="Desactivado por defecto: marcalo solo si querés que HUDMind arranque en segundo plano al encender la PC." />
+                                            <CheckBox x:Name="ChkCheckUpdatesOnStartup" Content="{DynamicResource StrChkUpdatesStartup}" Margin="0,0,20,6" ToolTip="Busca actualizaciones en GitHub Releases al abrir y cada 60 min en reposo." />
+                                            <CheckBox x:Name="ChkExternalTelemetryWs" Content="{DynamicResource StrChkExternalWs}" Margin="0,0,0,6" ToolTip="Escucha eventos pasivos JSON en loopback (replays, clock, boost, score, hudmind:telemetry). 0 ms de impacto si no hay relay." />
                                         </WrapPanel>
                                         <Grid Margin="0,0,0,10">
                                             <Grid.ColumnDefinitions>
@@ -1178,27 +1181,28 @@
                                                 <RowDefinition Height="36" />
                                             </Grid.RowDefinitions>
 
-                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Tecla Pausar / Reanudar:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="{DynamicResource StrLblHkPause}" VerticalAlignment="Center" />
                                             <TextBox x:Name="TxtPauseKey" Grid.Row="0" Grid.Column="1" VerticalAlignment="Center" />
 
-                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="Tecla Analizar Ahora:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="{DynamicResource StrLblHkAnalyze}" VerticalAlignment="Center" />
                                             <TextBox x:Name="TxtAnalyzeKey" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" />
 
-                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Tecla Silenciar Micrófono:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="{DynamicResource StrLblHkMic}" VerticalAlignment="Center" />
                                             <TextBox x:Name="TxtMicKey" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" ToolTip="Ej: F8, Ctrl+M" />
 
-                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Tecla Chat Rápido en Juego:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="{DynamicResource StrLblHkQuickChat}" VerticalAlignment="Center" />
                                             <TextBox x:Name="TxtQuickChatKey" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" ToolTip="Abre un chat rápido flotante sin salir del juego (ej: F7, Alt+Q, Insert)" />
 
-                                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Puerto WS Telemetría Local:" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="4" Grid.Column="0" Text="{DynamicResource StrLblWsPort}" VerticalAlignment="Center" />
                                             <TextBox x:Name="TxtTelemetryWsPort" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" ToolTip="Puerto loopback ws://127.0.0.1 (por defecto 49122, rango 1024-65535)" />
                                         </Grid>
                                         <WrapPanel>
-                                            <Button Content="🎮 Activar conexión CS2 / Dota 2" Click="BtnInstallGsi_Click" Margin="0,0,10,6" ToolTip="Instala el archivo oficial de lectura de partida en Steam (100% seguro, sin tocar memoria)" />
-                                            <Button x:Name="BtnSetupExternalBridge" Content="🔗 Activar Puente HUD Local (Pantalla Completa)" Click="BtnSetupExternalBridge_Click" Margin="0,0,10,6" ToolTip="Autoriza 'toast' en el puente RCON local instalado (%APPDATA%) y verifica la conexión loopback para mostrar avisos en pantalla completa." />
-                                            <Button x:Name="BtnCheckUpdates" Content="🔄 Buscar Actualizaciones" Click="BtnCheckUpdates_Click" Margin="0,0,10,6" ToolTip="Verifica si salió una nueva versión en GitHub Releases" />
+                                            <Button Content="{DynamicResource StrBtnGsiSetup}" Click="BtnInstallGsi_Click" Margin="0,0,10,6" ToolTip="Instala el archivo oficial de lectura de partida en Steam (100% seguro, sin tocar memoria)" />
+                                            <Button x:Name="BtnSetupExternalBridge" Content="{DynamicResource StrBtnExtBridge}" Click="BtnSetupExternalBridge_Click" Margin="0,0,10,6" ToolTip="Autoriza 'toast' en el puente RCON local instalado (%APPDATA%) y verifica la conexión loopback para mostrar avisos en pantalla completa." />
+                                            <Button x:Name="BtnCheckUpdates" Content="{DynamicResource StrBtnCheckUpdates}" Click="BtnCheckUpdates_Click" Margin="0,0,10,6" ToolTip="Verifica si salió una nueva versión en GitHub Releases" />
                                             <Button x:Name="BtnDiagnostics" Content="{DynamicResource StrBtnDiagnostics}" Click="BtnDiagnostics_Click" Margin="0,0,10,6" ToolTip="Ejecuta un chequeo de salud completo (0% GPU, Bóveda, Micrófono, OCR y puertos loopback)" />
                                             <Button x:Name="BtnRunWizard" Content="{DynamicResource StrBtnRunWizard}" Click="BtnRunWizard_Click" Margin="0,0,10,6" ToolTip="Abre el asistente paso a paso de bienvenida" />
+                                            <Button x:Name="BtnWhatsNew" Content="{DynamicResource StrBtnWhatsNew}" Click="BtnWhatsNew_Click" Margin="0,0,10,6" ToolTip="Muestra qué cambió en esta versión" />
                                             <Button x:Name="BtnFactoryReset" Content="{DynamicResource StrBtnFactoryReset}" Click="BtnFactoryReset_Click" Margin="0,0,0,6" Background="#3B1219" BorderBrush="#991B1B" ToolTip="Restaura voz, overlay y atajos por defecto sin borrar tus API Keys ni perfiles" />
                                         </WrapPanel>
                                     </StackPanel>

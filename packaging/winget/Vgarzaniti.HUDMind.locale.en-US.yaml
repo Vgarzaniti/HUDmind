@@ -1,0 +1,28 @@
+PackageIdentifier: Vgarzaniti.HUDMind
+PackageVersion: 1.7.0
+PackageLocale: en-US
+Publisher: Vgarzaniti
+PublisherUrl: https://github.com/Vgarzaniti/HUDmind
+PublisherSupportUrl: https://github.com/Vgarzaniti/HUDmind/issues
+Author: Vgarzaniti
+PackageName: HUDMind
+PackageUrl: https://github.com/Vgarzaniti/HUDmind
+License: MIT
+LicenseUrl: https://github.com/Vgarzaniti/HUDmind/blob/main/LICENSE
+ShortDescription: Real-time 0% GPU tactical eSports AI coach for Windows 10/11 (.NET 9 Native, anti-cheat safe).
+Description: >-
+  HUDMind is a native .NET 9 + WPF + Win32 real-time tactical eSports AI coach engineered for 0% GPU
+  overhead (RenderMode.SoftwareOnly), zero external NuGet dependencies, and 100% passive anti-cheat
+  safe observation. Supports bidirectional Live WebSocket voice coaching, multi-AI failover, local
+  DPAPI-protected profiles, encrypted .hudmind backups, click-through draggable overlay, and
+  non-invasive telemetry across CS2, Valorant, Rocket League, League of Legends, Dota 2, and AoE2 DE.
+Moniker: hudmind
+Tags:
+  - esports
+  - gaming
+  - ai-coach
+  - overlay
+  - dotnet
+ReleaseNotesUrl: https://github.com/Vgarzaniti/HUDmind/releases/tag/v1.7.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

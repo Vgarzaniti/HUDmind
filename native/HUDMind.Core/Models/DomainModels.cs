@@ -402,6 +402,9 @@ public sealed class UserConfig
     [JsonPropertyName("window_maximized")]
     public bool WindowMaximized { get; set; } = false;
 
+    [JsonPropertyName("last_seen_app_version")]
+    public string LastSeenAppVersion { get; set; } = string.Empty;
+
     [JsonIgnore]
     public string PreviousMatchFocus { get; set; } = string.Empty;
 
@@ -458,6 +461,7 @@ public sealed class UserConfig
         WindowWidth = source.WindowWidth;
         WindowHeight = source.WindowHeight;
         WindowMaximized = source.WindowMaximized;
+        LastSeenAppVersion = source.LastSeenAppVersion;
         HasCompletedOnboarding = source.HasCompletedOnboarding;
         HotkeyTogglePause = source.HotkeyTogglePause;
         HotkeyAnalyzeNow = source.HotkeyAnalyzeNow;
@@ -496,6 +500,7 @@ public sealed class UserConfig
     public void ResetPreferencesToDefaults()
     {
         bool completedOnboarding = HasCompletedOnboarding;
+        string lastSeenVersion = LastSeenAppVersion;
         string prevFocus = PreviousMatchFocus;
         string soul = CoachSoulSummary;
         string profile = PlayerProfileSummary;
@@ -505,6 +510,7 @@ public sealed class UserConfig
         var defaults = new UserConfig
         {
             HasCompletedOnboarding = completedOnboarding,
+            LastSeenAppVersion = lastSeenVersion,
             PreviousMatchFocus = prevFocus,
             CoachSoulSummary = soul,
             PlayerProfileSummary = profile,

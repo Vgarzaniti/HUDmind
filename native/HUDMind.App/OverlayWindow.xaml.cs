@@ -9,6 +9,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using HUDMind.App.Services;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 using HUDMind.Core.Pipeline;
@@ -270,15 +271,17 @@ public partial class OverlayWindow : Window, IOverlayOutputService
                 {
                     var snapshot = _feedBuffer.Upsert(
                         new OverlayCalloutMessage(
-                            "📌 Arrastrá este cartel con el mouse hasta donde te resulte cómodo y luego tocá '🔒 Fijar posición'.",
+                            AppLocalizationService.T(
+                                "📌 Arrastrá este cartel con el mouse hasta donde te resulte cómodo y luego tocá '🔒 Fijar posición'.",
+                                "📌 Drag this overlay anywhere with your mouse, then click '🔒 Lock Position'."),
                             UrgencyLevel.Low,
-                            "HUDMind · Posición",
+                            AppLocalizationService.T("HUDMind · Posición", "HUDMind · Position"),
                             30.0,
                             OverlayEntryKind.Status,
                             "HUD"),
                         DateTimeOffset.UtcNow);
                     _activeHeaderUrgency = UrgencyLevel.Low;
-                    _activeHeaderTitle = "HUDMind · Posición";
+                    _activeHeaderTitle = AppLocalizationService.T("HUDMind · Posición", "HUDMind · Position");
                     SyncRowsFromSnapshot(snapshot);
                 }
 
@@ -381,10 +384,12 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         Dispatcher.BeginInvoke(() =>
         {
             if (_closed) return;
-            TxtPauseChip.Text = $"{p} PAUSA";
-            TxtAnalyzeChip.Text = $"{a} IA";
+            TxtPauseChip.Text = $"{p} {AppLocalizationService.T("PAUSA", "PAUSE")}";
+            TxtAnalyzeChip.Text = $"{a} {AppLocalizationService.T("IA", "AI")}";
             _quickChatKeyLabel = q;
-            TxtQuickChatPlaceholder.Text = $"Preguntale al coach... (Enter = enviar · Esc/{_quickChatKeyLabel} = volver)";
+            TxtQuickChatPlaceholder.Text = AppLocalizationService.T(
+                $"Preguntale al coach... (Enter = enviar · Esc/{_quickChatKeyLabel} = volver)",
+                $"Ask your coach... (Enter = send · Esc/{_quickChatKeyLabel} = back)");
         });
     }
 
@@ -409,7 +414,9 @@ public partial class OverlayWindow : Window, IOverlayOutputService
                 _activeHeaderTitle = "HUDMind";
             ApplyVisualTheme(_activeHeaderUrgency, _activeHeaderTitle);
             QuickChatDock.Visibility = Visibility.Visible;
-            TxtQuickChatPlaceholder.Text = $"Preguntale al coach... (Enter = enviar · Esc/{_quickChatKeyLabel} = volver)";
+            TxtQuickChatPlaceholder.Text = AppLocalizationService.T(
+                $"Preguntale al coach... (Enter = enviar · Esc/{_quickChatKeyLabel} = volver)",
+                $"Ask your coach... (Enter = send · Esc/{_quickChatKeyLabel} = back)");
             TxtQuickChatPlaceholder.Visibility = Visibility.Visible;
 
             if (!IsVisible)
@@ -513,7 +520,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             {
                 Interlocked.Exchange(ref _lastPttToastTick, Environment.TickCount64);
                 ShowMessage(new OverlayCalloutMessage(
-                    "🎤 Te escucho...",
+                    AppLocalizationService.T("🎤 Te escucho...", "🎤 Listening..."),
                     UrgencyLevel.Low,
                     string.IsNullOrWhiteSpace(_activeHeaderTitle) ? "HUDMind Live" : _activeHeaderTitle,
                     1.8,
@@ -542,7 +549,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
 
         if (userOn)
         {
-            VoicePillText.Text = "🎤 ESCUCHANDO";
+            VoicePillText.Text = AppLocalizationService.T("🎤 ESCUCHANDO", "🎤 LISTENING");
             VoicePillText.Foreground = HudVisualPalette.MicLiveFgBrush;
             VoicePillBorder.Background = _style == UserConfig.OverlayStyleTransparentText
                 ? MediaBrushes.Transparent
@@ -555,7 +562,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         }
         else if (coachOn)
         {
-            VoicePillText.Text = "🔊 VOZ";
+            VoicePillText.Text = AppLocalizationService.T("🔊 VOZ", "🔊 VOICE");
             VoicePillText.Foreground = HudVisualPalette.CoachVoiceFgBrush;
             VoicePillBorder.Background = _style == UserConfig.OverlayStyleTransparentText
                 ? MediaBrushes.Transparent
@@ -820,7 +827,14 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         StatusTagText.FontSize = 9.5 * _scale;
         StatusTagText.StrongHalo = strongHalo;
         StatusTagText.Foreground = visual.TagForegroundBrush;
-        StatusTagText.Text = visual.TagText;
+        StatusTagText.Text = AppLocalizationService.IsEnglish
+            ? urgency switch
+            {
+                UrgencyLevel.High => "URGENT",
+                UrgencyLevel.Medium => "TACTICAL",
+                _ => "ACTIVE"
+            }
+            : visual.TagText;
 
         VoicePillText.FontSize = 9.5 * _scale;
         VoicePillText.StrongHalo = strongHalo;

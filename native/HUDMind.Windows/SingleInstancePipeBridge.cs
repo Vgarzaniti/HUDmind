@@ -38,8 +38,8 @@ public sealed class SingleInstancePipeServer : IDisposable
             client.Connect(Math.Clamp(timeoutMs, 100, 3000));
             var msg = (string.IsNullOrWhiteSpace(command) ? "SHOW" : command.Trim()) + "\n";
             var bytes = Encoding.UTF8.GetBytes(msg);
-            if (bytes.Length > 64)
-                bytes = bytes[..64];
+            if (bytes.Length > 1024)
+                bytes = bytes[..1024];
             client.Write(bytes, 0, bytes.Length);
             client.Flush();
             return true;
@@ -52,7 +52,7 @@ public sealed class SingleInstancePipeServer : IDisposable
 
     private async Task ListenLoopAsync()
     {
-        var buffer = new byte[64];
+        var buffer = new byte[1024];
         while (!_cts.IsCancellationRequested && !_disposed)
         {
             NamedPipeServerStream? server = null;
@@ -100,8 +100,8 @@ public sealed class SingleInstancePipeServer : IDisposable
                 maxNumberOfServerInstances: 1,
                 PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous,
-                inBufferSize: 256,
-                outBufferSize: 256,
+                inBufferSize: 1024,
+                outBufferSize: 1024,
                 ps);
         }
 
@@ -111,8 +111,8 @@ public sealed class SingleInstancePipeServer : IDisposable
             maxNumberOfServerInstances: 1,
             PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous,
-            256,
-            256);
+            1024,
+            1024);
     }
 
     public void Dispose()
