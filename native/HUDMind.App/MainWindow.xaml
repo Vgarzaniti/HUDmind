@@ -54,7 +54,7 @@
                     <DockPanel>
                         <Button x:Name="BtnVersionCheck"
                                 DockPanel.Dock="Left"
-                                Content="v1.5.2"
+                                Content="v1.6.0"
                                 FontSize="10.5"
                                 Padding="9,4"
                                 Background="#09121C"
@@ -137,15 +137,16 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <Button Grid.Column="0"
-                                        Content="👤 Mi Perfil"
+                                        Content="{DynamicResource StrBtnManageProfiles}"
                                         FontSize="10.5"
                                         Padding="7,3"
+                                        Margin="0,0,5,0"
                                         Background="#102031"
                                         BorderBrush="#21405C"
                                         ToolTip="Cambiar de persona, crear cuenta local o activar PIN privado"
                                         Click="BtnManageProfiles_Click" />
                                 <Button Grid.Column="2"
-                                        Content="💾 Backup"
+                                        Content="{DynamicResource StrBtnBackup}"
                                         FontSize="10.5"
                                         Padding="7,3"
                                         Background="#0E1826"
@@ -156,11 +157,12 @@
                         </StackPanel>
                     </Border>
 
-                    <TextBlock Text="MÓDULOS" Foreground="#4E667D" FontSize="9.5" FontWeight="Bold" Margin="8,0,0,6" />
-                    <RadioButton x:Name="NavCoach" GroupName="HudNavGroup" Style="{StaticResource SidebarNavButton}" IsChecked="True" Content="👁  Observador" />
-                    <RadioButton x:Name="NavAccounts" GroupName="HudNavGroup" Style="{StaticResource SidebarNavButton}" Content="🤖  Proveedores IA" />
-                    <RadioButton x:Name="NavGames" GroupName="HudNavGroup" Style="{StaticResource SidebarNavButton}" Content="🗂  Juegos y Memoria" />
-                    <RadioButton x:Name="NavSettings" GroupName="HudNavGroup" Style="{StaticResource SidebarNavButton}" Content="🎙  Voz y Ajustes" />
+                    <TextBlock Text="{DynamicResource StrNavSection}" Foreground="#4E667D" FontSize="9.5" FontWeight="Bold" Margin="8,0,0,6" />
+                    <RadioButton x:Name="NavCoach" GroupName="HudNavGroup" Style="{StaticResource SidebarNavButton}" IsChecked="True" Content="{DynamicResource StrNavObserver}" />
+                    <RadioButton x:Name="NavAccounts" GroupName="HudNavGroup" Style="{StaticResource SidebarNavButton}" Content="{DynamicResource StrNavAccounts}" />
+                    <RadioButton x:Name="NavGames" GroupName="HudNavGroup" Style="{StaticResource SidebarNavButton}" Content="{DynamicResource StrNavGames}" />
+                    <RadioButton x:Name="NavHistory" GroupName="HudNavGroup" Style="{StaticResource SidebarNavButton}" Content="{DynamicResource StrNavHistory}" />
+                    <RadioButton x:Name="NavSettings" GroupName="HudNavGroup" Style="{StaticResource SidebarNavButton}" Content="{DynamicResource StrNavSettings}" />
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -328,13 +330,14 @@
                         <Border x:Name="OnboardingBanner" Grid.Row="0" Visibility="Collapsed" Background="#0A2233" CornerRadius="9" Padding="11" Margin="0,0,0,10" BorderBrush="#22D3EE" BorderThickness="1">
                             <DockPanel>
                                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" Margin="10,0,0,0" VerticalAlignment="Center">
+                                    <Button Content="{DynamicResource StrBtnRunWizard}" Background="#059669" BorderBrush="#10B981" Padding="10,5" Margin="0,0,6,0" Click="BtnRunWizard_Click" />
                                     <Button Content="1. Conectar IA Gratis →" Background="#086F83" BorderBrush="#22D3EE" Padding="12,5" Margin="0,0,6,0" Click="BtnGoAccounts_Click" />
                                     <Button Content="2. Voz y Cartel" Padding="10,5" Margin="0,0,6,0" Click="BtnGoSettings_Click" />
                                     <Button Content="✕" Padding="8,5" ToolTip="Ocultar guía" Click="BtnDismissOnboarding_Click" />
                                 </StackPanel>
                                 <StackPanel VerticalAlignment="Center">
-                                    <TextBlock Text="👋 Empezá en 30 segundos (Gratis · 0% GPU)" Foreground="#F8FAFC" FontWeight="Bold" FontSize="13" />
-                                    <TextBlock Text="1) Pegá tu clave gratis de Groq o Gemini en 'Proveedores IA' → 2) Probá tu voz y cartel → 3) Tocá Activar Coach y abrí tu juego." Foreground="#CFFAFE" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                    <TextBlock Text="{DynamicResource StrOnboardingTitle}" Foreground="#F8FAFC" FontWeight="Bold" FontSize="13" />
+                                    <TextBlock Text="1) Elegí OpenRouter en 1 clic, Gemini Live o Groq → 2) Probá tu voz y cartel → 3) Tocá Activar Coach y abrí tu juego." Foreground="#CFFAFE" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,0" />
                                 </StackPanel>
                             </DockPanel>
                         </Border>
@@ -496,7 +499,7 @@
                                     <ColumnDefinition Width="Auto" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="💬 Preguntale:" Foreground="#22D3EE" FontWeight="SemiBold" VerticalAlignment="Center" Margin="2,0,8,0" />
+                                <TextBlock Grid.Column="0" Text="{DynamicResource StrChatAskLabel}" Foreground="#22D3EE" FontWeight="SemiBold" VerticalAlignment="Center" Margin="2,0,8,0" />
                                 <TextBox x:Name="TxtChatInput"
                                          Grid.Column="1"
                                          Margin="0,0,8,0"
@@ -505,7 +508,7 @@
                                          ToolTip="Escribí una pregunta mientras jugás (el coach ve tu pantalla actual) · Presioná Enter para enviar" />
                                 <Button x:Name="BtnSendChat"
                                         Grid.Column="2"
-                                        Content="Enviar ↵"
+                                        Content="{DynamicResource StrBtnSendChat}"
                                         Background="#086F83"
                                         BorderBrush="#22D3EE"
                                         Margin="0,0,8,0"
@@ -513,14 +516,14 @@
                                         Click="BtnSendChat_Click" />
                                 <Button x:Name="BtnMatchReview"
                                         Grid.Column="3"
-                                        Content="📊 Resumen Partida"
+                                        Content="{DynamicResource StrBtnMatchReview}"
                                         IsEnabled="False"
                                         Margin="0,0,8,0"
                                         ToolTip="Analiza tus errores de la última partida y te da 1 ejercicio práctico para la siguiente"
                                         Click="BtnMatchReview_Click" />
                                 <Button x:Name="BtnOpenReviews"
                                         Grid.Column="4"
-                                        Content="📂 Resúmenes"
+                                        Content="{DynamicResource StrBtnOpenReviews}"
                                         ToolTip="Abre la carpeta donde se guardan tus resúmenes post-partida"
                                         Click="BtnOpenReviews_Click" />
                             </Grid>
@@ -541,9 +544,9 @@
                         <Border Grid.Row="0" Style="{StaticResource FeaturedCardPanel}" Margin="0,0,0,10">
                             <DockPanel>
                                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" Margin="10,0,0,0">
-                                    <Button x:Name="BtnOpenRouterPkce" Content="🔐 Entrar OpenRouter (1 clic)" Background="#086F83" BorderBrush="#22D3EE" Click="BtnOpenRouterPkce_Click" Margin="0,0,6,0" ToolTip="Abre tu navegador e importa automáticamente tu clave personal sin copiar ni pegar nada" />
-                                    <Button Content="✨ Gemini 2 clics" Background="#1E3A5F" BorderBrush="#38BDF8" Click="BtnGuidedGemini_Click" Margin="0,0,6,0" ToolTip="Asistente visual guiado para conectar tu clave gratis de Google AI Studio sin saber programar" />
-                                    <Button Content="🌐 Groq (Gratis)" Background="#059669" BorderBrush="#10B981" Click="BtnOpenGroq_Click" ToolTip="Abre Groq Console para obtener tu API Key gratuita de respuesta ultrarrápida (~0.4s)" />
+                                    <Button x:Name="BtnOpenRouterPkce" Content="{DynamicResource StrBtnOpenRouter1Click}" Background="#086F83" BorderBrush="#22D3EE" Click="BtnOpenRouterPkce_Click" Margin="0,0,6,0" ToolTip="Abre tu navegador e importa automáticamente tu clave personal sin copiar ni pegar nada" />
+                                    <Button Content="{DynamicResource StrBtnGemini2Clicks}" Background="#1E3A5F" BorderBrush="#38BDF8" Click="BtnGuidedGemini_Click" Margin="0,0,6,0" ToolTip="Asistente visual guiado para conectar tu clave gratis de Google AI Studio sin saber programar" />
+                                    <Button Content="{DynamicResource StrBtnGroqFree}" Background="#059669" BorderBrush="#10B981" Click="BtnOpenGroq_Click" ToolTip="Abre Groq Console para obtener tu API Key gratuita de respuesta ultrarrápida (~0.4s)" />
                                 </StackPanel>
                                 <StackPanel VerticalAlignment="Center">
                                     <TextBlock Text="⚡ CONECTÁ TU IA SIN SABER PROGRAMAR ($0 GRATIS)" Foreground="#22D3EE" FontWeight="Bold" FontSize="12.5" />
@@ -746,7 +749,120 @@
                     </Grid>
                 </TabItem>
 
-                <!-- PAGE 4: VOICE, TELEMETRY, OVERLAY & HOTKEYS -->
+                <!-- PAGE 4: MATCH HISTORY & MEASURABLE PROGRESS -->
+                <TabItem Header="Historial">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <DockPanel Grid.Row="0" Margin="0,0,0,10">
+                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
+                                <ComboBox x:Name="CmbHistoryGameFilter" Width="210" DisplayMemberPath="DisplayName" SelectedValuePath="GameId" Margin="0,0,8,0" SelectionChanged="CmbHistoryGameFilter_SelectionChanged" ToolTip="Filtrá tu progreso de fugas y memoria rolling por juego" />
+                                <Button x:Name="BtnRefreshHistory" Content="{DynamicResource StrBtnRefreshHistory}" Padding="10,5" Click="BtnRefreshHistory_Click" />
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock Text="{DynamicResource StrHistoryHeader}" Foreground="#22D3EE" FontWeight="Bold" FontSize="13.5" />
+                                <TextBlock Text="{DynamicResource StrHistorySubtitle}" Foreground="#8EA4BC" FontSize="11.5" Margin="0,2,0,0" />
+                            </StackPanel>
+                        </DockPanel>
+
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.1*" />
+                                <ColumnDefinition Width="12" />
+                                <ColumnDefinition Width="0.95*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Left: Post-Match Reviews List + Built-In Markdown Reader -->
+                            <Grid Grid.Column="0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="0.46*" />
+                                    <RowDefinition Height="10" />
+                                    <RowDefinition Height="0.54*" />
+                                </Grid.RowDefinitions>
+
+                                <Border Grid.Row="0" Style="{StaticResource CardPanel}">
+                                    <DockPanel>
+                                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                                                <Button Content="{DynamicResource StrBtnOpenReviews}" Padding="8,3" FontSize="11" Margin="0,0,6,0" Click="BtnOpenReviews_Click" />
+                                                <Button x:Name="BtnDeleteReview" Content="{DynamicResource StrBtnDeleteReview}" Padding="8,3" FontSize="11" Background="#7F1D1D" BorderBrush="#EF4444" IsEnabled="False" Click="BtnDeleteReview_Click" />
+                                            </StackPanel>
+                                            <TextBlock Text="{DynamicResource StrHistoryReviewsTitle}" Foreground="#CBD5E1" FontWeight="Bold" FontSize="12" VerticalAlignment="Center" />
+                                        </DockPanel>
+                                        <ListBox x:Name="LstHistoryReviews"
+                                                 Background="#060A10"
+                                                 BorderBrush="#1A2C40"
+                                                 BorderThickness="1"
+                                                 Foreground="#F1F5F9"
+                                                 SelectionChanged="LstHistoryReviews_SelectionChanged">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel Margin="4,4,4,4">
+                                                        <TextBlock Text="{Binding Title}" Foreground="#F8FAFC" FontWeight="SemiBold" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{Binding TimestampLabel}" Foreground="#22D3EE" FontFamily="Consolas" FontSize="10.5" Margin="0,1,0,0" />
+                                                        <TextBlock Text="{Binding PreviewLine}" Foreground="#8EA4BC" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </DockPanel>
+                                </Border>
+
+                                <Border Grid.Row="2" Style="{StaticResource CardPanel}">
+                                    <DockPanel>
+                                        <TextBlock x:Name="LblHistoryReaderTitle" DockPanel.Dock="Top" Text="📖 Lector de Resumen" Foreground="#22D3EE" FontWeight="Bold" FontSize="12" Margin="0,0,0,6" />
+                                        <TextBox x:Name="TxtHistoryReviewViewer"
+                                                 IsReadOnly="True"
+                                                 AcceptsReturn="True"
+                                                 TextWrapping="Wrap"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 Background="#060A10"
+                                                 BorderBrush="#1A2C40"
+                                                 Foreground="#CBD5E1"
+                                                 FontFamily="Segoe UI"
+                                                 FontSize="12.2"
+                                                 Padding="9"
+                                                 Text="Seleccioná un resumen post-partida de la lista para leerlo acá." />
+                                    </DockPanel>
+                                </Border>
+                            </Grid>
+
+                            <!-- Right: Measurable Leaks Bars (0% GPU) + Rolling Multi-Match Trend -->
+                            <Grid Grid.Column="2">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="10" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <Border Grid.Row="0" Style="{StaticResource FeaturedCardPanel}">
+                                    <StackPanel>
+                                        <TextBlock Text="{DynamicResource StrHistoryLeaksTitle}" Foreground="#22D3EE" FontWeight="Bold" FontSize="12" Margin="0,0,0,8" />
+                                        <StackPanel x:Name="HistoryLeaksBarsHost" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Grid.Row="2" Style="{StaticResource CardPanel}">
+                                    <DockPanel>
+                                        <TextBlock DockPanel.Dock="Top" Text="{DynamicResource StrHistoryRollingTitle}" Foreground="#10B981" FontWeight="Bold" FontSize="12" Margin="0,0,0,6" />
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                            <TextBlock x:Name="TxtHistoryRollingDetails"
+                                                       Text="Jugá al menos una partida y generá un resumen post-partida para ver tu evolución."
+                                                       Foreground="#CBD5E1"
+                                                       FontSize="12"
+                                                       TextWrapping="Wrap" />
+                                        </ScrollViewer>
+                                    </DockPanel>
+                                </Border>
+                            </Grid>
+                        </Grid>
+                    </Grid>
+                </TabItem>
+
+                <!-- PAGE 5: VOICE, TELEMETRY, OVERLAY & HOTKEYS -->
                 <TabItem Header="Voz y Ajustes">
                     <Grid>
                         <Grid.RowDefinitions>
@@ -798,8 +914,8 @@
                                                 <ComboBoxItem Content="🔥 Exigente estilo torneo (sin filtro)" Tag="strict" />
                                             </ComboBox>
 
-                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Idioma del Coach:" VerticalAlignment="Center" />
-                                            <ComboBox x:Name="CmbLanguage" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Grid.Row="3" Grid.Column="0" Text="Idioma del Coach / GUI:" VerticalAlignment="Center" />
+                                            <ComboBox x:Name="CmbLanguage" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbLanguage_SelectionChanged">
                                                 <ComboBoxItem Content="🇪🇸 Español" Tag="es" />
                                                 <ComboBoxItem Content="🇺🇸 English" Tag="en" />
                                             </ComboBox>
@@ -955,8 +1071,11 @@
                                 <Border Style="{StaticResource CardPanel}" Margin="0,0,0,10">
                                     <StackPanel>
                                         <DockPanel Margin="0,0,0,10">
-                                            <TextBlock Text="💬 CARTEL HUD SOBRE EL JUEGO (OVERLAY · 0% GPU)" Foreground="#22D3EE" FontWeight="Bold" FontSize="12.5" VerticalAlignment="Center" />
-                                            <Button DockPanel.Dock="Right" Content="👁 Probar HUD + Voz" Padding="10,4" Click="BtnPreviewOverlay_Click" />
+                                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                                                <Button x:Name="BtnToggleOverlayDrag" Content="{DynamicResource StrBtnMoveOverlay}" Padding="10,4" Margin="0,0,8,0" Click="BtnToggleOverlayDrag_Click" ToolTip="Desbloquea el cartel para arrastrarlo con el mouse a cualquier punto de tus monitores" />
+                                                <Button Content="{DynamicResource StrBtnPreviewOverlay}" Padding="10,4" Click="BtnPreviewOverlay_Click" />
+                                            </StackPanel>
+                                            <TextBlock Text="{DynamicResource StrSettingsOverlayCard}" Foreground="#22D3EE" FontWeight="Bold" FontSize="12.5" VerticalAlignment="Center" />
                                         </DockPanel>
                                         <WrapPanel Margin="0,0,0,8">
                                             <CheckBox x:Name="ChkEnableOverlay" Content="Mostrar cartel sobre el juego (transparente al mouse)" Margin="0,0,20,6" />
@@ -1018,6 +1137,7 @@
                                                 <ComboBoxItem Content="↘ Abajo a la derecha" Tag="bottom-right" />
                                                 <ComboBoxItem Content="↙ Abajo a la izquierda" Tag="bottom-left" />
                                                 <ComboBoxItem Content="⬇ Abajo al centro (estilo subtítulos)" Tag="bottom-center" />
+                                                <ComboBoxItem Content="📌 Personalizada (arrastrar libre)" Tag="custom" />
                                             </ComboBox>
 
                                             <TextBlock Grid.Row="3" Grid.Column="0" Text="Pantalla / Monitor:" VerticalAlignment="Center" />
@@ -1037,7 +1157,7 @@
                                 <!-- Card 4: Hotkeys & Game Telemetry -->
                                 <Border Style="{StaticResource CardPanel}" Margin="0,0,0,4">
                                     <StackPanel>
-                                        <TextBlock Text="⌨ TECLAS RÁPIDAS Y TELEMETRÍA" Foreground="#F59E0B" FontWeight="Bold" FontSize="12.5" Margin="0,0,0,10" />
+                                        <TextBlock Text="{DynamicResource StrSettingsHotkeysCard}" Foreground="#F59E0B" FontWeight="Bold" FontSize="12.5" Margin="0,0,0,10" />
                                         <WrapPanel Margin="0,0,0,8">
                                             <CheckBox x:Name="ChkEnableHotkeys" Content="Activar teclas rápidas dentro del juego" Margin="0,0,20,6" />
                                             <CheckBox x:Name="ChkMinimizeToTray" Content="Minimizar junto al reloj (Bandeja)" Margin="0,0,20,6" />
@@ -1074,9 +1194,12 @@
                                             <TextBox x:Name="TxtTelemetryWsPort" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" ToolTip="Puerto loopback ws://127.0.0.1 (por defecto 49122, rango 1024-65535)" />
                                         </Grid>
                                         <WrapPanel>
-                                            <Button Content="🎮 Activar conexión CS2 / Dota 2" Click="BtnInstallGsi_Click" Margin="0,0,10,4" ToolTip="Instala el archivo oficial de lectura de partida en Steam (100% seguro, sin tocar memoria)" />
-                                            <Button x:Name="BtnSetupExternalBridge" Content="🔗 Activar Puente HUD Local (Pantalla Completa)" Click="BtnSetupExternalBridge_Click" Margin="0,0,10,4" ToolTip="Autoriza 'toast' en el puente RCON local instalado (%APPDATA%) y verifica la conexión loopback para mostrar avisos en pantalla completa." />
-                                            <Button x:Name="BtnCheckUpdates" Content="🔄 Buscar Actualizaciones" Click="BtnCheckUpdates_Click" Margin="0,0,0,4" ToolTip="Verifica si salió una nueva versión en GitHub Releases" />
+                                            <Button Content="🎮 Activar conexión CS2 / Dota 2" Click="BtnInstallGsi_Click" Margin="0,0,10,6" ToolTip="Instala el archivo oficial de lectura de partida en Steam (100% seguro, sin tocar memoria)" />
+                                            <Button x:Name="BtnSetupExternalBridge" Content="🔗 Activar Puente HUD Local (Pantalla Completa)" Click="BtnSetupExternalBridge_Click" Margin="0,0,10,6" ToolTip="Autoriza 'toast' en el puente RCON local instalado (%APPDATA%) y verifica la conexión loopback para mostrar avisos en pantalla completa." />
+                                            <Button x:Name="BtnCheckUpdates" Content="🔄 Buscar Actualizaciones" Click="BtnCheckUpdates_Click" Margin="0,0,10,6" ToolTip="Verifica si salió una nueva versión en GitHub Releases" />
+                                            <Button x:Name="BtnDiagnostics" Content="{DynamicResource StrBtnDiagnostics}" Click="BtnDiagnostics_Click" Margin="0,0,10,6" ToolTip="Ejecuta un chequeo de salud completo (0% GPU, Bóveda, Micrófono, OCR y puertos loopback)" />
+                                            <Button x:Name="BtnRunWizard" Content="{DynamicResource StrBtnRunWizard}" Click="BtnRunWizard_Click" Margin="0,0,10,6" ToolTip="Abre el asistente paso a paso de bienvenida" />
+                                            <Button x:Name="BtnFactoryReset" Content="{DynamicResource StrBtnFactoryReset}" Click="BtnFactoryReset_Click" Margin="0,0,0,6" Background="#3B1219" BorderBrush="#991B1B" ToolTip="Restaura voz, overlay y atajos por defecto sin borrar tus API Keys ni perfiles" />
                                         </WrapPanel>
                                     </StackPanel>
                                 </Border>
@@ -1087,13 +1210,35 @@
                         <!-- Sticky Save Bar -->
                         <Border Grid.Row="1" Style="{StaticResource CardPanel}" Padding="11,9" Margin="0,8,0,0">
                             <DockPanel>
-                                <TextBlock Text="Los cambios de volumen, velocidad, cartel y voz se aplican en tiempo real al guardar." Foreground="#8EA4BC" FontSize="11.5" VerticalAlignment="Center" />
-                                <Button DockPanel.Dock="Right" Content="💾 Guardar y Aplicar Cambios" Background="#086F83" BorderBrush="#22D3EE" Padding="16,7" Click="BtnSaveConfig_Click" />
+                                <TextBlock Text="{DynamicResource StrSaveBarNote}" Foreground="#8EA4BC" FontSize="11.5" VerticalAlignment="Center" />
+                                <Button DockPanel.Dock="Right" Content="{DynamicResource StrBtnSaveConfig}" Background="#086F83" BorderBrush="#22D3EE" Padding="16,7" Click="BtnSaveConfig_Click" />
                             </DockPanel>
                         </Border>
                     </Grid>
                 </TabItem>
             </TabControl>
+
+            <!-- Non-Blocking Inline Notification Toast Banner (0% GPU) -->
+            <Border x:Name="ToastBanner"
+                    Grid.Row="2"
+                    Visibility="Collapsed"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Bottom"
+                    Margin="0,0,22,22"
+                    Background="#0B2D3E"
+                    BorderBrush="#22D3EE"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="13,9"
+                    IsHitTestVisible="False">
+                <TextBlock x:Name="TxtToastMessage"
+                           Text=""
+                           Foreground="#ECFEFF"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           MaxWidth="420"
+                           TextWrapping="Wrap" />
+            </Border>
         </Grid>
     </Grid>
 </Window>

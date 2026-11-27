@@ -3,6 +3,10 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              ShutdownMode="OnMainWindowClose">
     <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Resources/Strings.es.xaml" />
+            </ResourceDictionary.MergedDictionaries>
         <!-- Cyber-Tactical HUD Palette (0% GPU SoftwareOnly, crisp hairlines & translucent layering) -->
         <SolidColorBrush x:Key="BgRoot" Color="#070C13" />
         <SolidColorBrush x:Key="BgSidebar" Color="#0A111A" />
@@ -474,5 +478,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

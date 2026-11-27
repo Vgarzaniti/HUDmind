@@ -274,4 +274,46 @@ public static class Win32DisplayHelper
         }, IntPtr.Zero);
         return list.Count > 0 ? list.ToArray() : [new MonitorBoundsRect(0, 0, 1920, 1080)];
     }
+
+    /// <summary>
+    /// Clamps a pixel-space rectangle inside the nearest connected monitor's working area
+    /// so custom-dragged overlays never end up stranded off-screen when displays change.
+    /// </summary>
+    public static (int Left, int Top, int MonitorIndex) ClampPixelRectToWorkingArea(
+        int left,
+        int top,
+        int width,
+        int height,
+        MonitorBoundsRect[]? areas = null)
+    {
+        var screens = areas is { Length: > 0 } ? areas : GetAllWorkingAreas();
+        int cx = left + Math.Max(1, width / 2);
+        int cy = top + Math.Max(1, height / 2);
+
+        int bestIdx = 0;
+        long bestDistSq = long.MaxValue;
+        for (int i = 0; i < screens.Length; i++)
+        {
+            var s = screens[i];
+            int clampedX = Math.Clamp(cx, s.Left, s.Left + Math.Max(1, s.Width));
+            int clampedY = Math.Clamp(cy, s.Top, s.Top + Math.Max(1, s.Height));
+            long dx = cx - clampedX;
+            long dy = cy - clampedY;
+            long distSq = dx * dx + dy * dy;
+            if (distSq < bestDistSq)
+            {
+                bestDistSq = distSq;
+                bestIdx = i;
+                if (distSq == 0)
+                    break;
+            }
+        }
+
+        var target = screens[bestIdx];
+        int maxLeft = target.Left + Math.Max(0, target.Width - Math.Max(40, width));
+        int maxTop = target.Top + Math.Max(0, target.Height - Math.Max(40, height));
+        int finalLeft = Math.Clamp(left, target.Left, Math.Max(target.Left, maxLeft));
+        int finalTop = Math.Clamp(top, target.Top, Math.Max(target.Top, maxTop));
+        return (finalLeft, finalTop, bestIdx + 1);
+    }
 }

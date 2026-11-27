@@ -10,6 +10,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using HUDMind.App.Controls;
+using HUDMind.App.Services;
 using HUDMind.Core.AI;
 using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
@@ -90,6 +91,8 @@ public partial class MainWindow : Window
     private string? _editingAccountId;
     private readonly bool _smokeMode;
     private readonly bool _startMinimized;
+    private DispatcherTimer? _toastTimer;
+    private bool _overlayDragActive;
 
     public MainWindow(bool smokeMode = false, bool startMinimized = false)
     {
@@ -154,7 +157,7 @@ public partial class MainWindow : Window
                 }
             }
         };
-        _navMediator = new HudNavigationMediator(MainTabs, [NavCoach, NavAccounts, NavGames, NavSettings]);
+        _navMediator = new HudNavigationMediator(MainTabs, [NavCoach, NavAccounts, NavGames, NavHistory, NavSettings]);
         SettingsVoiceWave.SetBarHeightScale(26);
         LstCoachFeed.ItemsSource = _feedEntries;
         LstLiveLogs.ItemsSource = _logEntries;
@@ -170,6 +173,7 @@ public partial class MainWindow : Window
 
         _sharedVoice = new HybridVoiceService(_baseWorkspaceRoot);
         _config = _repo.LoadUserConfig();
+        AppLocalizationService.ApplyLanguage(_config.TextLanguage);
         _sharedVoice.SetSpeechRate(_config.TtsRate);
         _sharedVoice.SetOutputDevice(_config.AudioOutputDeviceName);
         _accounts = _repo.LoadAccounts();
@@ -178,6 +182,8 @@ public partial class MainWindow : Window
         _profiles.Insert(0, ConfigRepository.CreateUniversalProfile(_repo.ProfilesDir));
 
         BindInitialUi();
+        WireDesktopFeatureHandlers();
+        RestoreWindowGeometryFromConfig();
         Loaded += MainWindow_Loaded;
         StateChanged += MainWindow_StateChanged;
         Closing += MainWindow_Closing;
@@ -215,6 +221,8 @@ public partial class MainWindow : Window
             _ = CheckForUpdatesAsync(manual: false);
         if (_config.EnableCompanionHud)
             _ = SyncCompanionHudServerAsync();
+
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(MaybeLaunchFirstRunWizardOnStartup));
     }
 
     private void MainWindow_StateChanged(object? sender, EventArgs e)
@@ -258,6 +266,15 @@ public partial class MainWindow : Window
             CmbRulesGame.SelectedValue = selectRulesId;
         else if (rulesOptions.Count > 0)
             CmbRulesGame.SelectedIndex = 0;
+
+        if (CmbHistoryGameFilter is not null)
+        {
+            CmbHistoryGameFilter.ItemsSource = mainOptions.ToList();
+            if (!string.IsNullOrWhiteSpace(selectMainId) && mainOptions.Any(o => o.GameId == selectMainId))
+                CmbHistoryGameFilter.SelectedValue = selectMainId;
+            else if (mainOptions.Count > 0)
+                CmbHistoryGameFilter.SelectedIndex = 0;
+        }
     }
 
     private void BindInitialUi()
@@ -346,6 +363,7 @@ public partial class MainWindow : Window
         RefreshAccountsList();
         RefreshOnboardingBanner();
         RefreshRollingMemoryUi();
+        RefreshHistoryDashboardUi();
         UpdateLatencyCardHeaders(isLive: false);
         ResetStatsCards();
 
@@ -393,7 +411,9 @@ public partial class MainWindow : Window
             style: style,
             maxMessages: maxMessages,
             followActiveMonitor: _config.OverlayFollowActiveMonitor,
-            desktopOverlayEnabled: _config.EnableOverlay);
+            desktopOverlayEnabled: _config.EnableOverlay,
+            customLeft: _config.OverlayCustomLeft,
+            customTop: _config.OverlayCustomTop);
         _companionHud.ConfigureMaxMessages(maxMessages);
     }
 
@@ -535,6 +555,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrEmpty(url)) return;
         System.Windows.Clipboard.SetText(url);
         AppendLog($"📋 URL de Companion Web HUD copiada al portapapeles: {url}");
+        ShowToast("📋 URL de Companion Web HUD copiada.");
     }
 
     private void BtnCopyCompanionObsUrl_Click(object sender, RoutedEventArgs e)
@@ -545,6 +566,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrEmpty(url)) return;
         System.Windows.Clipboard.SetText(url);
         AppendLog($"📺 URL transparente para OBS Browser Source copiada: {url}");
+        ShowToast("📺 URL transparente para OBS copiada.");
     }
 
     private void BtnOpenCompanionUrl_Click(object sender, RoutedEventArgs e)
@@ -816,6 +838,9 @@ public partial class MainWindow : Window
 
         try
         {
+            PersistWindowGeometryToConfig();
+            _toastTimer?.Stop();
+            _overlay.SetDragPositionMode(false);
             _updateTimer?.Stop();
             _updateTimer = null;
             _voiceUiTimer?.Stop();
@@ -1840,6 +1865,7 @@ public partial class MainWindow : Window
             {
                 Clipboard.SetText(_activeUserProfile.UniqueUserId);
                 AppendLog($"🆔 Identificador único copiado al portapapeles: {_activeUserProfile.UniqueUserId}");
+                ShowToast($"🆔 ID copiado: {_activeUserProfile.UniqueUserId}");
             }
         }
         catch { }
@@ -2450,7 +2476,7 @@ public partial class MainWindow : Window
         _navMediator.SelectTab(1);
 
     private void BtnGoSettings_Click(object sender, RoutedEventArgs e) =>
-        _navMediator.SelectTab(3);
+        _navMediator.SelectTab(4);
 
     private void BtnDismissOnboarding_Click(object sender, RoutedEventArgs e)
     {
@@ -2516,6 +2542,7 @@ public partial class MainWindow : Window
                 SyncAssembledContext(targetGameId, targetProfile, CoachContextDepth.RealtimePlay);
                 _coordinator.RefreshPersona("resumen post-partida guardado");
                 RefreshRollingMemoryUi();
+                RefreshHistoryDashboardUi();
                 AppendLog($"🧠 Memoria .md y rolling consolidados ({updatedMem.Matches.Count}/{PlayerMemoryStore.ClampWindowSize(_config.MemoryMatchWindow)} partidas).");
             }
             catch (Exception saveEx)
@@ -2805,6 +2832,7 @@ public partial class MainWindow : Window
         RefreshHotkeyButtonLabels();
         _coordinator.RegisterHotkeys(_config, ToggleMicViaHotkey, AppendLog, ToggleQuickChatViaHotkey);
         AppendLog($"Preferencias guardadas y aplicadas en vivo (Nivel: {_config.PlayerSkillTier}, Mic: {(_config.IsPushToTalkMode ? $"PTT {_config.PushToTalkKey}" : "Abierto")}).");
+        ShowToast("✅ Preferencias guardadas y aplicadas en vivo.");
     }
 
     private async void BtnPreviewOverlay_Click(object sender, RoutedEventArgs e)

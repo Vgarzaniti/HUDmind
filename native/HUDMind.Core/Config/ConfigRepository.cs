@@ -910,6 +910,110 @@ public sealed partial class ConfigRepository
         }
     }
 
+    public sealed record PostMatchReviewSummary(string FileName, string Title, string TimestampLabel, string PreviewLine);
+
+    public List<PostMatchReviewSummary> ListPostMatchReviews(int maxItems = 60)
+    {
+        var result = new List<PostMatchReviewSummary>();
+        try
+        {
+            var logsDir = Path.GetFullPath(Path.Combine(WorkspaceRoot, "logs"));
+            var reviewsFull = Path.GetFullPath(ReviewsDir);
+            if (!Directory.Exists(reviewsFull))
+                return result;
+            if ((Directory.Exists(logsDir) && (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) != 0) ||
+                (File.GetAttributes(reviewsFull) & FileAttributes.ReparsePoint) != 0)
+            {
+                return result;
+            }
+
+            foreach (var full in Directory.GetFiles(reviewsFull, "*.md", SearchOption.TopDirectoryOnly)
+                         .OrderByDescending(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
+                         .Take(Math.Clamp(maxItems, 1, 200)))
+            {
+                if ((File.GetAttributes(full) & FileAttributes.ReparsePoint) != 0)
+                    continue;
+                string name = Path.GetFileName(full);
+                string raw = ReadBoundedText(full, 2048);
+                var lines = raw.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                    .Select(l => l.Trim())
+                    .ToList();
+                string title = lines.FirstOrDefault(l => l.StartsWith("# ", StringComparison.Ordinal))?[2..].Trim() ?? name;
+                string dateLine = lines.FirstOrDefault(l => l.Contains("**Fecha:**", StringComparison.OrdinalIgnoreCase)) ?? string.Empty;
+                string ts = dateLine.Replace("- **Fecha:**", "", StringComparison.OrdinalIgnoreCase).Trim();
+                if (string.IsNullOrEmpty(ts) && name.Length >= 15 && DateTime.TryParseExact(name[..15], "yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsedTs))
+                    ts = parsedTs.ToString("yyyy-MM-dd HH:mm");
+                string preview = lines.FirstOrDefault(l => !l.StartsWith('#') && !l.StartsWith("- **", StringComparison.Ordinal)) ?? string.Empty;
+                if (preview.Length > 110)
+                    preview = preview[..107] + "...";
+                result.Add(new PostMatchReviewSummary(name, title, ts, SecretRedactor.Redact(preview)));
+            }
+        }
+        catch
+        {
+            // Keep UI resilient if disk access fails
+        }
+        return result;
+    }
+
+    public string ReadPostMatchReview(string? fileName)
+    {
+        if (!TryResolveSafeReviewFile(fileName, out var destPath) || !File.Exists(destPath))
+            return string.Empty;
+        try
+        {
+            if ((File.GetAttributes(destPath) & FileAttributes.ReparsePoint) != 0)
+                return string.Empty;
+            return SecretRedactor.Redact(ReadBoundedText(destPath, 65536));
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    public bool DeletePostMatchReview(string? fileName)
+    {
+        if (!TryResolveSafeReviewFile(fileName, out var destPath) || !File.Exists(destPath))
+            return false;
+        try
+        {
+            if ((File.GetAttributes(destPath) & FileAttributes.ReparsePoint) != 0)
+                return false;
+            File.Delete(destPath);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool TryResolveSafeReviewFile(string? fileName, out string resolvedPath)
+    {
+        resolvedPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(fileName))
+            return false;
+        string trimmed = fileName.Trim();
+        if (trimmed.Contains('/') || trimmed.Contains('\\') || trimmed.Contains("..", StringComparison.Ordinal) ||
+            !trimmed.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        var logsDir = Path.GetFullPath(Path.Combine(WorkspaceRoot, "logs"));
+        var reviewsFull = Path.GetFullPath(ReviewsDir);
+        if ((Directory.Exists(logsDir) && (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) != 0) ||
+            (Directory.Exists(reviewsFull) && (File.GetAttributes(reviewsFull) & FileAttributes.ReparsePoint) != 0))
+        {
+            return false;
+        }
+        var candidate = Path.GetFullPath(Path.Combine(reviewsFull, trimmed));
+        if (!candidate.StartsWith(reviewsFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            return false;
+        resolvedPath = candidate;
+        return true;
+    }
+
     public Pipeline.PlayerGameMemory LoadPlayerGameMemory(string? gameId)
     {
         var normId = string.IsNullOrWhiteSpace(gameId) ? "universal" : gameId.Trim().ToLowerInvariant();
