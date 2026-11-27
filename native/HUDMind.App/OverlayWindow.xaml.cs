@@ -170,6 +170,9 @@ public partial class OverlayWindow : Window, IOverlayOutputService
     private bool _followActiveMonitor = true;
     private bool _desktopOverlayEnabled = true;
     private int? _autoMonitorIndex;
+    private double? _customLeft;
+    private double? _customTop;
+    private bool _dragMode;
     private double _backdropOpacity = 0.55;
     private double _scale = 1.0;
     private string _style = UserConfig.OverlayStyleDiscordPill;
@@ -199,7 +202,9 @@ public partial class OverlayWindow : Window, IOverlayOutputService
     private MediaBrush? _cachedStatusBorderBrush;
 
     public event Action<string>? QuickChatSubmitted;
+    public event Action<double, double>? CustomPositionCommitted;
     public bool IsQuickChatOpen => _quickChatOpen;
+    public bool IsDragPositionMode => _dragMode;
 
     public OverlayWindow()
     {
@@ -207,6 +212,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         FeedItemsHost.ItemsSource = _rows;
         OverlayWave.SetBarHeightScale(18);
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        MouseLeftButtonDown += OnOverlayMouseLeftButtonDown;
 
         _pruneTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         _pruneTimer.Tick += (_, _) => OnPruneTimerTick();
@@ -214,7 +220,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         _topmostGuardTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         _topmostGuardTimer.Tick += (_, _) =>
         {
-            if (_closed || !IsVisible || _quickChatOpen)
+            if (_closed || !IsVisible || _quickChatOpen || _dragMode)
             {
                 _topmostGuardTimer.Stop();
                 return;
@@ -224,7 +230,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
 
         SizeChanged += (_, _) =>
         {
-            if (IsVisible && !_closed && Math.Abs(ActualHeight - _lastActualH) > 1.0)
+            if (IsVisible && !_closed && !_dragMode && Math.Abs(ActualHeight - _lastActualH) > 1.0)
                 PositionOnScreen(force: true);
         };
         Deactivated += (_, _) =>
@@ -243,7 +249,103 @@ public partial class OverlayWindow : Window, IOverlayOutputService
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        ApplyClickThroughStyle(clickThrough: !_quickChatOpen);
+        ApplyClickThroughStyle(clickThrough: !_quickChatOpen && !_dragMode);
+    }
+
+    public void SetDragPositionMode(bool enabled)
+    {
+        if (_closed) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_closed) return;
+            _dragMode = enabled;
+            Cursor = enabled ? System.Windows.Input.Cursors.SizeAll : System.Windows.Input.Cursors.Arrow;
+            ApplyClickThroughStyle(clickThrough: !_quickChatOpen && !_dragMode);
+
+            if (enabled)
+            {
+                _pruneTimer.Stop();
+                _topmostGuardTimer.Stop();
+                if (_feedBuffer.IsEmpty)
+                {
+                    var snapshot = _feedBuffer.Upsert(
+                        new OverlayCalloutMessage(
+                            "📌 Arrastrá este cartel con el mouse hasta donde te resulte cómodo y luego tocá '🔒 Fijar posición'.",
+                            UrgencyLevel.Low,
+                            "HUDMind · Posición",
+                            30.0,
+                            OverlayEntryKind.Status,
+                            "HUD"),
+                        DateTimeOffset.UtcNow);
+                    _activeHeaderUrgency = UrgencyLevel.Low;
+                    _activeHeaderTitle = "HUDMind · Posición";
+                    SyncRowsFromSnapshot(snapshot);
+                }
+
+                _cachedThemeKey = string.Empty;
+                ApplyVisualTheme(_activeHeaderUrgency, _activeHeaderTitle);
+                BeginAnimation(OpacityProperty, null);
+                Opacity = 1.0;
+                if (!IsVisible)
+                    Show();
+                UpdateLayout();
+                PositionOnScreen(force: true);
+            }
+            else
+            {
+                _cachedThemeKey = string.Empty;
+                ApplyVisualTheme(_activeHeaderUrgency, _activeHeaderTitle);
+                if (_feedBuffer.IsEmpty)
+                {
+                    if (IsVisible && !_quickChatOpen)
+                    {
+                        BeginAnimation(OpacityProperty, null);
+                        Hide();
+                    }
+                }
+                else
+                {
+                    ScheduleNextPrune(DateTimeOffset.UtcNow);
+                    if (!_topmostGuardTimer.IsEnabled)
+                        _topmostGuardTimer.Start();
+                }
+            }
+        });
+    }
+
+    private void OnOverlayMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!_dragMode || _closed || _quickChatOpen || e.ChangedButton != MouseButton.Left)
+            return;
+        try
+        {
+            DragMove();
+        }
+        catch
+        {
+            return;
+        }
+
+        var (clampedLeft, clampedTop) = ClampOverlayDipCoords(Left, Top, Width, Math.Max(52, ActualHeight));
+        Left = clampedLeft;
+        Top = clampedTop;
+        _customLeft = clampedLeft;
+        _customTop = clampedTop;
+        _position = "custom";
+        _lastPosKey = string.Empty;
+        CustomPositionCommitted?.Invoke(clampedLeft, clampedTop);
+        e.Handled = true;
+    }
+
+    private static (double Left, double Top) ClampOverlayDipCoords(double left, double top, double width, double height)
+    {
+        double vLeft = SystemParameters.VirtualScreenLeft;
+        double vTop = SystemParameters.VirtualScreenTop;
+        double vW = Math.Max(640, SystemParameters.VirtualScreenWidth);
+        double vH = Math.Max(480, SystemParameters.VirtualScreenHeight);
+        double maxL = vLeft + Math.Max(0, vW - Math.Max(160, width));
+        double maxT = vTop + Math.Max(0, vH - Math.Max(48, height));
+        return (Math.Clamp(left, vLeft, maxL), Math.Clamp(top, vTop, maxT));
     }
 
     private void ApplyClickThroughStyle(bool clickThrough)
@@ -486,7 +588,9 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         string? style = null,
         int maxMessages = 3,
         bool followActiveMonitor = true,
-        bool desktopOverlayEnabled = true)
+        bool desktopOverlayEnabled = true,
+        double? customLeft = null,
+        double? customTop = null)
     {
         if (_closed) return;
         Dispatcher.BeginInvoke(() =>
@@ -496,6 +600,8 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             _monitorIndex = Math.Max(1, monitorIndex);
             _followActiveMonitor = followActiveMonitor;
             _desktopOverlayEnabled = desktopOverlayEnabled;
+            _customLeft = customLeft;
+            _customTop = customTop;
             if (!followActiveMonitor)
                 _autoMonitorIndex = null;
             _scale = Math.Clamp(scale, 0.75, 1.45);
@@ -518,7 +624,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
 
             if (IsVisible)
             {
-                if (_rows.Count == 0 && !_quickChatOpen)
+                if (_rows.Count == 0 && !_quickChatOpen && !_dragMode)
                 {
                     _pruneTimer.Stop();
                     _topmostGuardTimer.Stop();
@@ -630,7 +736,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
                     Opacity = 1.0;
             }
 
-            if (!_quickChatOpen)
+            if (!_quickChatOpen && !_dragMode)
             {
                 ScheduleNextPrune(nowUtc);
                 if (!_topmostGuardTimer.IsEnabled)
@@ -641,7 +747,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
 
     private void OnPruneTimerTick()
     {
-        if (_closed || _quickChatOpen)
+        if (_closed || _quickChatOpen || _dragMode)
         {
             _pruneTimer.Stop();
             return;
@@ -674,6 +780,11 @@ public partial class OverlayWindow : Window, IOverlayOutputService
 
     private void ScheduleNextPrune(DateTimeOffset nowUtc)
     {
+        if (_dragMode || _quickChatOpen)
+        {
+            _pruneTimer.Stop();
+            return;
+        }
         var nextUtc = _feedBuffer.GetNextExpirationUtc();
         if (nextUtc is null)
         {
@@ -718,7 +829,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             OverlayWave.SetBarHeightScale(Math.Round(18.0 * _scale));
 
         int alphaPct = (int)Math.Round(_backdropOpacity * 100);
-        string themeKey = $"{_style}:{alphaPct}:{urgency}";
+        string themeKey = $"{_style}:{alphaPct}:{urgency}:{(_dragMode ? 1 : 0)}";
         if (themeKey == _cachedThemeKey)
             return;
         _cachedThemeKey = themeKey;
@@ -727,9 +838,14 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         {
             OuterShadowFrame.Background = MediaBrushes.Transparent;
             OuterShadowFrame.Padding = new Thickness(0);
-            CardBorder.Background = MediaBrushes.Transparent;
-            CardBorder.BorderBrush = MediaBrushes.Transparent;
-            CardBorder.BorderThickness = new Thickness(0);
+            CardBorder.Background = _dragMode
+                ? HudVisualPalette.CreateFrozenBrush(0x08, 0x26, 0x36, 150)
+                : MediaBrushes.Transparent;
+            CardBorder.BorderBrush = _dragMode
+                ? HudVisualPalette.CreateFrozenBrush(0x22, 0xD3, 0xEE, 235)
+                : MediaBrushes.Transparent;
+            CardBorder.BorderThickness = new Thickness(_dragMode ? 1.5 : 0);
+            CardBorder.CornerRadius = new CornerRadius(_dragMode ? 8 : 0);
             CardBorder.Padding = new Thickness(4, 2, 4, 2);
 
             StatusTagBorder.Background = MediaBrushes.Transparent;
@@ -741,9 +857,11 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             return;
         }
 
-        double effAlpha = _backdropOpacity;
+        double effAlpha = _dragMode ? Math.Max(0.45, _backdropOpacity) : _backdropOpacity;
         byte bgAlpha = (byte)Math.Round(effAlpha * 255.0);
-        byte borderAlpha = effAlpha <= 0.03 ? (byte)0 : (byte)Math.Round(Math.Clamp(effAlpha * 235.0, 28, 220));
+        byte borderAlpha = _dragMode
+            ? (byte)245
+            : effAlpha <= 0.03 ? (byte)0 : (byte)Math.Round(Math.Clamp(effAlpha * 235.0, 28, 220));
         byte outerAlpha = isCardStyle && effAlpha > 0.12 ? (byte)Math.Round(effAlpha * 90.0) : (byte)0;
         byte badgeAlpha = effAlpha <= 0.03 ? (byte)0 : (byte)Math.Round(Math.Clamp(effAlpha * 240.0, 30, 235));
 
@@ -940,8 +1058,10 @@ public partial class OverlayWindow : Window, IOverlayOutputService
     {
         if (_closed) return;
 
+        bool isCustomPos = string.Equals(_position, "custom", StringComparison.OrdinalIgnoreCase) &&
+                           _customLeft.HasValue && _customTop.HasValue;
         bool monitorChanged = false;
-        if (_followActiveMonitor)
+        if (_followActiveMonitor && !isCustomPos && !_dragMode)
         {
             IntPtr extHwnd = Win32WindowDetector.GetExternalForegroundWindowHandle();
             if (extHwnd != IntPtr.Zero)
@@ -955,7 +1075,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             }
         }
 
-        if (forceReposition || monitorChanged)
+        if (!_dragMode && (forceReposition || monitorChanged))
             PositionOnScreen(force: true);
 
         var hwnd = new WindowInteropHelper(this).Handle;
@@ -965,6 +1085,27 @@ public partial class OverlayWindow : Window, IOverlayOutputService
 
     private void PositionOnScreen(bool force = false)
     {
+        if (_dragMode)
+            return;
+
+        if (string.Equals(_position, "custom", StringComparison.OrdinalIgnoreCase) &&
+            _customLeft is double customLeft && _customTop is double customTop)
+        {
+            double customH = Math.Max(52, ActualHeight);
+            var (clampedL, clampedT) = ClampOverlayDipCoords(customLeft, customTop, Width, customH);
+            string customKey = $"custom:{clampedL:F0},{clampedT:F0}:{Width:F0}:{customH:F0}";
+            if (!force && customKey == _lastPosKey)
+                return;
+            _lastPosKey = customKey;
+            _lastActualH = customH;
+            Left = clampedL;
+            Top = clampedT;
+            var cHwnd = new WindowInteropHelper(this).Handle;
+            if (cHwnd != IntPtr.Zero && IsVisible)
+                SetWindowPos(cHwnd, HwndTopmost, 0, 0, 0, 0, SwpNoActivate | SwpNoMove | SwpNoSize);
+            return;
+        }
+
         if (_screensDirty || _cachedWorkingAreas.Length == 0)
         {
             _cachedWorkingAreas = Win32DisplayHelper.GetAllWorkingAreas();

@@ -831,6 +831,52 @@ await RunTest("W20. UserProfileStore + Win32DpapiSecretProtector isolates per-pr
     return Task.CompletedTask;
 });
 
+// W21. SingleInstancePipeServer IPC wakeup, SystemDiagnosticsProbe health checks & multi-monitor pixel clamping
+await RunTest("W21. SingleInstancePipeServer wakeup, SystemDiagnosticsProbe & Win32DisplayHelper clamp work on Windows", async () =>
+{
+    string pipeName = $"hudmind_win_test_pipe_{Guid.NewGuid():N}";
+    var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+    using var server = new SingleInstancePipeServer(pipeName, cmd => received.TrySetResult(cmd));
+
+    bool sent = SingleInstancePipeServer.TrySignalExistingInstance(pipeName, "SHOW", timeoutMs: 1500);
+    Assert(sent, "TrySignalExistingInstance must deliver SHOW command to active current-user named pipe");
+    var completed = await Task.WhenAny(received.Task, Task.Delay(2000));
+    Assert(completed == received.Task && string.Equals(await received.Task, "SHOW", StringComparison.Ordinal),
+        "SingleInstancePipeServer must invoke SHOW handler cleanly");
+
+    var clamped = Win32DisplayHelper.ClampPixelRectToWorkingArea(
+        -5000,
+        9999,
+        440,
+        120,
+        [new MonitorBoundsRect(0, 0, 1920, 1040)]);
+    Assert(clamped.Left >= 0 && clamped.Left <= 1920 - 440 &&
+           clamped.Top >= 0 && clamped.Top <= 1040 - 120,
+        $"Expected off-screen overlay bounds clamped inside (0..1920, 0..1040), got ({clamped.Left},{clamped.Top})");
+
+    var tmpDiagRoot = Path.Combine(Path.GetTempPath(), $"hudmind_win_diag_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmpDiagRoot);
+    try
+    {
+        var diagRepo = new HUDMind.Core.Config.ConfigRepository(tmpDiagRoot);
+        var checks = await SystemDiagnosticsProbe.RunChecksAsync(
+            new HUDMind.Core.Models.UserConfig(),
+            diagRepo,
+            "SoftwareOnly (0% GPU)",
+            isCompanionActive: false,
+            isGsiActive: false,
+            probeMicSample: false);
+        Assert(checks.Count >= 6 &&
+               checks.Any(c => c.Name.Contains("GPU", StringComparison.OrdinalIgnoreCase) && c.Detail.Contains("SoftwareOnly", StringComparison.OrdinalIgnoreCase) && c.Passed) &&
+               checks.Any(c => c.Name.Contains("Workspace", StringComparison.OrdinalIgnoreCase) && c.Passed),
+            $"Expected SystemDiagnosticsProbe to report valid GPU SoftwareOnly and Workspace checks (count={checks.Count})");
+    }
+    finally
+    {
+        try { Directory.Delete(tmpDiagRoot, recursive: true); } catch { }
+    }
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

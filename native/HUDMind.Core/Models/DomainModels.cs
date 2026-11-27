@@ -378,6 +378,30 @@ public sealed class UserConfig
     [JsonPropertyName("memory_match_window")]
     public int MemoryMatchWindow { get; set; } = 10;
 
+    [JsonPropertyName("has_completed_onboarding")]
+    public bool HasCompletedOnboarding { get; set; } = false;
+
+    [JsonPropertyName("overlay_custom_left")]
+    public double? OverlayCustomLeft { get; set; }
+
+    [JsonPropertyName("overlay_custom_top")]
+    public double? OverlayCustomTop { get; set; }
+
+    [JsonPropertyName("window_left")]
+    public double? WindowLeft { get; set; }
+
+    [JsonPropertyName("window_top")]
+    public double? WindowTop { get; set; }
+
+    [JsonPropertyName("window_width")]
+    public double? WindowWidth { get; set; }
+
+    [JsonPropertyName("window_height")]
+    public double? WindowHeight { get; set; }
+
+    [JsonPropertyName("window_maximized")]
+    public bool WindowMaximized { get; set; } = false;
+
     [JsonIgnore]
     public string PreviousMatchFocus { get; set; } = string.Empty;
 
@@ -427,6 +451,20 @@ public sealed class UserConfig
         OverlayStyle = source.OverlayStyle;
         OverlayMaxMessages = source.OverlayMaxMessages;
         OverlayFollowActiveMonitor = source.OverlayFollowActiveMonitor;
+        OverlayCustomLeft = source.OverlayCustomLeft;
+        OverlayCustomTop = source.OverlayCustomTop;
+        WindowLeft = source.WindowLeft;
+        WindowTop = source.WindowTop;
+        WindowWidth = source.WindowWidth;
+        WindowHeight = source.WindowHeight;
+        WindowMaximized = source.WindowMaximized;
+        HasCompletedOnboarding = source.HasCompletedOnboarding;
+        HotkeyTogglePause = source.HotkeyTogglePause;
+        HotkeyAnalyzeNow = source.HotkeyAnalyzeNow;
+        HotkeyToggleMic = source.HotkeyToggleMic;
+        HotkeyQuickChat = source.HotkeyQuickChat;
+        EnableHotkeys = source.EnableHotkeys;
+        MinimizeToTray = source.MinimizeToTray;
         EnableCompanionHud = source.EnableCompanionHud;
         CompanionHudPort = Math.Clamp(source.CompanionHudPort <= 0 ? 17890 : source.CompanionHudPort, 1024, 65535);
         CompanionHudAllowLan = source.CompanionHudAllowLan;
@@ -442,7 +480,6 @@ public sealed class UserConfig
         TokenEfficiencyMode = source.TokenEfficiencyMode;
         EnableAudioCues = source.EnableAudioCues;
         CheckUpdatesOnStartup = source.CheckUpdatesOnStartup;
-        HotkeyQuickChat = source.HotkeyQuickChat;
         LaunchWithWindows = source.LaunchWithWindows;
         MemoryMatchWindow = Math.Clamp(source.MemoryMatchWindow, 3, 30);
         PreviousMatchFocus = source.PreviousMatchFocus;
@@ -450,6 +487,32 @@ public sealed class UserConfig
         PlayerProfileSummary = source.PlayerProfileSummary;
         RuntimeTiltRisk = source.RuntimeTiltRisk;
         SetCommunicationMode(source.CommunicationMode);
+    }
+
+    /// <summary>
+    /// Restores UI, overlay, voice, hotkey, and capture preferences to factory defaults
+    /// while preserving account onboarding completion status and runtime context strings.
+    /// </summary>
+    public void ResetPreferencesToDefaults()
+    {
+        bool completedOnboarding = HasCompletedOnboarding;
+        string prevFocus = PreviousMatchFocus;
+        string soul = CoachSoulSummary;
+        string profile = PlayerProfileSummary;
+        string leakFocus = RuntimeLeakFocus;
+        bool tiltRisk = RuntimeTiltRisk;
+
+        var defaults = new UserConfig
+        {
+            HasCompletedOnboarding = completedOnboarding,
+            PreviousMatchFocus = prevFocus,
+            CoachSoulSummary = soul,
+            PlayerProfileSummary = profile,
+            RuntimeLeakFocus = leakFocus,
+            RuntimeTiltRisk = tiltRisk
+        };
+        UseLiveConversational = defaults.UseLiveConversational;
+        CopyRuntimePreferencesFrom(defaults);
     }
 
     /// <summary>

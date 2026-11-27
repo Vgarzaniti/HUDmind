@@ -30,9 +30,10 @@ public sealed record PersonalProfileDialogResult(
 
 /// <summary>
 /// Pure-WPF 0% GPU dark-theme dialogs for personal local profiles, PBKDF2 PIN unlock,
-/// portable AES-256-GCM (.hudmind) passphrase prompts, and guided 2-click Gemini Live key onboarding.
+/// portable AES-256-GCM (.hudmind) passphrase prompts, guided Gemini onboarding,
+/// system health diagnostics, crash recovery, and the first-run setup wizard.
 /// </summary>
-public static class PersonalAccountDialogs
+public static partial class PersonalAccountDialogs
 {
     private static readonly SolidColorBrush BgWindow = FreezeBrush("#070C13");
     private static readonly SolidColorBrush BgCard = FreezeBrush("#0B131E");

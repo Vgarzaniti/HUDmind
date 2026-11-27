@@ -3532,6 +3532,79 @@ await RunTest("62. BRIEF+TACTIC overlay coexistence, ProfileArchiveCodec metadat
     return Task.CompletedTask;
 });
 
+// 63. DiagnosticsFormatter redaction, PostMatchReview listing/CWE-22 guard & UserConfig factory reset/geometry round-trip
+await RunTest("63. DiagnosticsFormatter redacts secrets, ConfigRepository guards review reads/deletes & UserConfig resets safely", () =>
+{
+    var leakEx = new InvalidOperationException("Upstream error with key AIzaSyFakeTestSecret1234567890 and custom_secret_xyz987");
+    string crashReport = DiagnosticsFormatter.FormatCrashReport(leakEx, "1.6.0", "UnitTest", ["custom_secret_xyz987"]);
+    Assert(crashReport.Contains("=== HUDMind Crash & Diagnostics Report ===", StringComparison.Ordinal) &&
+           !crashReport.Contains("AIzaSyFakeTestSecret1234567890", StringComparison.Ordinal) &&
+           !crashReport.Contains("custom_secret_xyz987", StringComparison.Ordinal),
+        "DiagnosticsFormatter must redact API keys and custom secrets in crash reports");
+
+    var tmpRoot = Path.Combine(Path.GetTempPath(), $"hudmind_reviews_t63_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmpRoot);
+    try
+    {
+        var repo = new ConfigRepository(tmpRoot);
+        var cfg = new UserConfig
+        {
+            HasCompletedOnboarding = true,
+            OverlayPosition = "custom",
+            OverlayCustomLeft = 412,
+            OverlayCustomTop = 218,
+            WindowLeft = 90,
+            WindowTop = 60,
+            WindowWidth = 1280,
+            WindowHeight = 820,
+            WindowMaximized = true,
+            TtsRate = "+25%"
+        };
+        repo.SaveUserConfig(cfg);
+        var loadedCfg = repo.LoadUserConfig();
+        Assert(loadedCfg.HasCompletedOnboarding &&
+               loadedCfg.OverlayPosition == "custom" &&
+               loadedCfg.OverlayCustomLeft == 412 &&
+               loadedCfg.WindowWidth == 1280 &&
+               loadedCfg.WindowMaximized,
+            "UserConfig must persist onboarding, custom overlay, and window bounds cleanly");
+
+        loadedCfg.ResetPreferencesToDefaults();
+        Assert(loadedCfg.HasCompletedOnboarding &&
+               loadedCfg.OverlayPosition == "top-right" &&
+               loadedCfg.OverlayCustomLeft is null &&
+               loadedCfg.WindowWidth is null &&
+               !loadedCfg.WindowMaximized &&
+               loadedCfg.TtsRate == "+5%",
+            "ResetPreferencesToDefaults must reset preferences cleanly while preserving HasCompletedOnboarding");
+
+        string savedPath = repo.SavePostMatchReview("Rocket League", "gemini-2.5-flash", "1) Buen kick-off\n3) Practicá rotar 2do palo\nAIzaSyLeakedInReview999999");
+        var list = repo.ListPostMatchReviews();
+        Assert(list.Count == 1 && list[0].FileName == Path.GetFileName(savedPath),
+            $"Expected 1 review summary (got {list.Count})");
+
+        string readOk = repo.ReadPostMatchReview(list[0].FileName);
+        Assert(readOk.Contains("Rocket League", StringComparison.Ordinal) &&
+               !readOk.Contains("AIzaSyLeakedInReview999999", StringComparison.Ordinal),
+            "ReadPostMatchReview must return redacted markdown content");
+
+        // Strict CWE-22 path traversal rejection
+        Assert(string.IsNullOrEmpty(repo.ReadPostMatchReview("../../config/user_config.json")) &&
+               !repo.DeletePostMatchReview("..\\..\\config\\user_config.json") &&
+               File.Exists(repo.UserConfigPath),
+            "ReadPostMatchReview / DeletePostMatchReview must reject CWE-22 traversal paths");
+
+        Assert(repo.DeletePostMatchReview(list[0].FileName) && repo.ListPostMatchReviews().Count == 0,
+            "DeletePostMatchReview must delete the target review cleanly");
+    }
+    finally
+    {
+        try { Directory.Delete(tmpRoot, recursive: true); } catch { }
+    }
+
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

@@ -1,0 +1,46 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+    <sys:String x:Key="StrNavSection">MODULES</sys:String>
+    <sys:String x:Key="StrNavObserver">👁  Observer</sys:String>
+    <sys:String x:Key="StrNavAccounts">🤖  AI Providers</sys:String>
+    <sys:String x:Key="StrNavGames">🗂  Games &amp; Memory</sys:String>
+    <sys:String x:Key="StrNavHistory">📊  History</sys:String>
+    <sys:String x:Key="StrNavSettings">🎙  Voice &amp; Settings</sys:String>
+
+    <sys:String x:Key="StrBtnManageProfiles">👤 Profiles</sys:String>
+    <sys:String x:Key="StrBtnBackup">💾 Backup</sys:String>
+    <sys:String x:Key="StrHeaderStatusIdle">Ready to play</sys:String>
+    <sys:String x:Key="StrBtnStartCoach">▶ Start Coach</sys:String>
+    <sys:String x:Key="StrBtnStopCoach">⏹ Stop Coach</sys:String>
+
+    <sys:String x:Key="StrOnboardingTitle">Connect your free AI in seconds</sys:String>
+    <sys:String x:Key="StrBtnOpenRouter1Click">🔐 Sign in OpenRouter (1 click)</sys:String>
+    <sys:String x:Key="StrBtnGemini2Clicks">✨ Gemini 2 clicks</sys:String>
+    <sys:String x:Key="StrBtnGroqFree">🌐 Groq (Free)</sys:String>
+
+    <sys:String x:Key="StrChatAskLabel">💬 Ask Coach:</sys:String>
+    <sys:String x:Key="StrBtnSendChat">Send ↵</sys:String>
+    <sys:String x:Key="StrBtnMatchReview">📊 Match Review</sys:String>
+    <sys:String x:Key="StrBtnOpenReviews">📂 Reviews</sys:String>
+
+    <sys:String x:Key="StrSettingsLevelCard">🎯 SKILL TIER, PERSONALITY &amp; MEMORY</sys:String>
+    <sys:String x:Key="StrSettingsOverlayCard">💬 IN-GAME HUD OVERLAY (0% GPU)</sys:String>
+    <sys:String x:Key="StrSettingsHotkeysCard">⌨ HOTKEYS &amp; TELEMETRY</sys:String>
+    <sys:String x:Key="StrBtnPreviewOverlay">👁 Test HUD + Voice</sys:String>
+    <sys:String x:Key="StrBtnMoveOverlay">📌 Move Overlay</sys:String>
+    <sys:String x:Key="StrBtnLockOverlay">🔒 Lock Position</sys:String>
+    <sys:String x:Key="StrBtnDiagnostics">🩺 Diagnostics</sys:String>
+    <sys:String x:Key="StrBtnRunWizard">🧙 Setup Wizard</sys:String>
+    <sys:String x:Key="StrBtnFactoryReset">↺ Factory Reset</sys:String>
+    <sys:String x:Key="StrSaveBarNote">Volume, speech rate, overlay, and voice changes apply live when you save.</sys:String>
+    <sys:String x:Key="StrBtnSaveConfig">💾 Save &amp; Apply Changes</sys:String>
+
+    <sys:String x:Key="StrHistoryHeader">📊 MATCH HISTORY &amp; PROGRESS</sys:String>
+    <sys:String x:Key="StrHistorySubtitle">Inspect saved local Markdown reviews and track measurable leak reduction across sessions.</sys:String>
+    <sys:String x:Key="StrHistoryReviewsTitle">📄 Post-Match Reviews</sys:String>
+    <sys:String x:Key="StrHistoryLeaksTitle">📉 Measurable Leaks Progress (Today vs Prev · 0% GPU)</sys:String>
+    <sys:String x:Key="StrHistoryRollingTitle">🧠 Multi-Match Rolling Trend</sys:String>
+    <sys:String x:Key="StrBtnRefreshHistory">🔄 Refresh</sys:String>
+    <sys:String x:Key="StrBtnDeleteReview">🗑 Delete</sys:String>
+</ResourceDictionary>
