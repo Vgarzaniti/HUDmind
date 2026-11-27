@@ -91,10 +91,13 @@ dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-b
 # 3. Suite nativa Windows (Win32, GSI, TLS, Logs, Audio, KnownFolders)
 dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
 
-# 4. Smoke test real de la ventana WPF
+# 4. Suite E2E WPF UI Automation (7 escenarios reales sobre HUDMind.Native.exe aislado)
+dotnet run --project native/HUDMind.UiTests/HUDMind.UiTests.csproj -c Release --no-build
+
+# 5. Smoke test real de la ventana WPF
 .\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe --smoke-startup
 
-# 5. Revisar que no haya archivos privados ni binarios en git status
+# 6. Revisar que no haya archivos privados ni binarios en git status
 git status
 ```
 

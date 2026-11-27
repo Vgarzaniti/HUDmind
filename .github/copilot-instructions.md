@@ -11,5 +11,6 @@ Follow [AGENTS.md](../AGENTS.md) (full details in [AGENTS.en.md](../AGENTS.en.md
   1. `dotnet build native/HUDMind.sln -c Release` (0 warnings, 0 errors)
   2. `dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build`
   3. `dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build`
-  4. `HUDMind.Native.exe --smoke-startup` exits with code `0`
+  4. `dotnet run --project native/HUDMind.UiTests/HUDMind.UiTests.csproj -c Release --no-build`
+  5. `HUDMind.Native.exe --smoke-startup` exits with code `0`
 - **PR & Docs Standard:** `main` is protected; target PRs via [.github/PULL_REQUEST_TEMPLATE.md](PULL_REQUEST_TEMPLATE.md) following [docs/pull_request_guide.en.md](../docs/pull_request_guide.en.md) / [docs/pull_request_guide.es.md](../docs/pull_request_guide.es.md). Keep documentation pairs in both `.es.md` and `.en.md` with cross-links.

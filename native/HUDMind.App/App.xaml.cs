@@ -1,4 +1,6 @@
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -18,6 +20,7 @@ public partial class App : System.Windows.Application
     private Mutex? _singleInstanceMutex;
     private SingleInstancePipeServer? _singleInstancePipe;
     private int _crashDialogShowing;
+    private string? _customDataDir;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -27,19 +30,22 @@ public partial class App : System.Windows.Application
 
         bool smokeMode = e.Args.Any(a => string.Equals(a, "--smoke-startup", StringComparison.OrdinalIgnoreCase));
         bool startMinimized = !smokeMode && e.Args.Any(a => string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase));
+        bool disableUpdateCheck = !smokeMode && e.Args.Any(a => string.Equals(a, "--no-update-check", StringComparison.OrdinalIgnoreCase));
+        _customDataDir = TryExtractSafeDataDirArg(e.Args);
         string? pendingArchivePath = smokeMode ? null : TryExtractBackupArchiveArg(e.Args);
         ProfileVaultReader.RegisterRuntimeIntegrityProbe(() => RuntimeHardeningGuard.IsExternalDebuggerAttached(smokeMode));
 
         if (!smokeMode)
         {
-            _singleInstanceMutex = new Mutex(true, "HUDMind_Native_SingleInstance_Mutex", out bool createdNew);
+            var (mutexName, pipeName) = ResolveSingleInstanceChannels(_customDataDir);
+            _singleInstanceMutex = new Mutex(true, mutexName, out bool createdNew);
             if (!createdNew)
             {
                 string pipeCmd = pendingArchivePath is not null
                     ? $"IMPORT:{pendingArchivePath}"
                     : (startMinimized ? "PING" : "SHOW");
                 bool signaled = SingleInstancePipeServer.TrySignalExistingInstance(
-                    SingleInstancePipeServer.DefaultPipeName,
+                    pipeName,
                     pipeCmd,
                     timeoutMs: 650);
 
@@ -57,7 +63,7 @@ public partial class App : System.Windows.Application
 
             RegisterGlobalCrashHandlers();
             _singleInstancePipe = new SingleInstancePipeServer(
-                SingleInstancePipeServer.DefaultPipeName,
+                pipeName,
                 command => Dispatcher.BeginInvoke(() => (MainWindow as MainWindow)?.HandlePipeCommand(command)));
         }
 
@@ -66,7 +72,7 @@ public partial class App : System.Windows.Application
 
         try
         {
-            var win = new MainWindow(smokeMode, startMinimized, pendingArchivePath);
+            var win = new MainWindow(smokeMode, startMinimized, pendingArchivePath, _customDataDir, disableUpdateCheck);
             MainWindow = win;
             win.Show();
         }
@@ -78,7 +84,7 @@ public partial class App : System.Windows.Application
                 Shutdown(1);
                 return;
             }
-            var (report, logPath) = WriteRedactedCrashReport(ex, "Startup");
+            var (report, logPath) = WriteRedactedCrashReport(ex, "Startup", _customDataDir);
             PersonalAccountDialogs.ShowCrashReportDialog(null, report, logPath);
             Shutdown(1);
         }
@@ -88,7 +94,7 @@ public partial class App : System.Windows.Application
     {
         DispatcherUnhandledException += (_, args) =>
         {
-            var (report, logPath) = WriteRedactedCrashReport(args.Exception, "UI.Dispatcher");
+            var (report, logPath) = WriteRedactedCrashReport(args.Exception, "UI.Dispatcher", _customDataDir);
             args.Handled = true;
             if (Interlocked.CompareExchange(ref _crashDialogShowing, 1, 0) == 0)
             {
@@ -106,17 +112,17 @@ public partial class App : System.Windows.Application
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
         {
             if (args.ExceptionObject is Exception ex)
-                _ = WriteRedactedCrashReport(ex, args.IsTerminating ? "AppDomain.Fatal" : "AppDomain.Unhandled");
+                _ = WriteRedactedCrashReport(ex, args.IsTerminating ? "AppDomain.Fatal" : "AppDomain.Unhandled", _customDataDir);
         };
 
         TaskScheduler.UnobservedTaskException += (_, args) =>
         {
-            _ = WriteRedactedCrashReport(args.Exception, "TaskScheduler.Unobserved");
+            _ = WriteRedactedCrashReport(args.Exception, "TaskScheduler.Unobserved", _customDataDir);
             args.SetObserved();
         };
     }
 
-    private static (string Report, string? LogPath) WriteRedactedCrashReport(Exception? ex, string source)
+    private static (string Report, string? LogPath) WriteRedactedCrashReport(Exception? ex, string source, string? customDataDir = null)
     {
         var (ver, _) = GitHubReleaseUpdateService.GetCurrentAppVersion();
         var verStr = GitHubReleaseUpdateService.FormatVersion(ver);
@@ -124,7 +130,9 @@ public partial class App : System.Windows.Application
         string? writtenPath = null;
         try
         {
-            var root = ConfigRepository.DiscoverWorkspaceRoot();
+            var root = !string.IsNullOrWhiteSpace(customDataDir)
+                ? customDataDir
+                : ConfigRepository.DiscoverWorkspaceRoot();
             var logsDir = Path.GetFullPath(Path.Combine(root, "logs"));
             if (Directory.Exists(root) && (File.GetAttributes(root) & FileAttributes.ReparsePoint) == 0 &&
                 (!Directory.Exists(logsDir) || (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) == 0))
@@ -146,11 +154,81 @@ public partial class App : System.Windows.Application
         return (report, writtenPath);
     }
 
+    private static (string MutexName, string PipeName) ResolveSingleInstanceChannels(string? customDataDir)
+    {
+        if (string.IsNullOrWhiteSpace(customDataDir))
+            return ("HUDMind_Native_SingleInstance_Mutex", SingleInstancePipeServer.DefaultPipeName);
+
+        var normalized = customDataDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).ToLowerInvariant();
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)))[..12];
+        return ($"HUDMind_Native_SingleInstance_Mutex_{hash}", $"{SingleInstancePipeServer.DefaultPipeName}_{hash}");
+    }
+
+    private static string? TryExtractSafeDataDirArg(string[] args)
+    {
+        string? candidate = null;
+        for (int i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (string.Equals(arg, "--data-dir", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            {
+                candidate = args[i + 1];
+                break;
+            }
+            if (arg.StartsWith("--data-dir=", StringComparison.OrdinalIgnoreCase))
+            {
+                candidate = arg["--data-dir=".Length..];
+                break;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(candidate))
+            return null;
+
+        try
+        {
+            var cleaned = candidate.Trim().Trim('"');
+            if (!Path.IsPathRooted(cleaned) || cleaned.StartsWith(@"\\", StringComparison.Ordinal))
+                return null;
+            if (!Uri.TryCreate(cleaned, UriKind.Absolute, out var uri) || uri.IsUnc)
+                return null;
+            if (cleaned.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries).Any(s => s == ".."))
+                return null;
+
+            var full = Path.GetFullPath(cleaned);
+            Directory.CreateDirectory(full);
+            if ((File.GetAttributes(full) & FileAttributes.ReparsePoint) != 0)
+                return null;
+
+            var profilesDir = Path.Combine(full, "profiles");
+            var configDir = Path.Combine(full, "config");
+            Directory.CreateDirectory(profilesDir);
+            Directory.CreateDirectory(configDir);
+            if ((File.GetAttributes(profilesDir) & FileAttributes.ReparsePoint) != 0 ||
+                (File.GetAttributes(configDir) & FileAttributes.ReparsePoint) != 0)
+                return null;
+
+            return full;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static string? TryExtractBackupArchiveArg(string[] args)
     {
-        foreach (var raw in args)
+        for (int i = 0; i < args.Length; i++)
         {
-            if (string.IsNullOrWhiteSpace(raw) || raw.StartsWith("--", StringComparison.Ordinal))
+            var raw = args[i];
+            if (string.IsNullOrWhiteSpace(raw))
+                continue;
+            if (string.Equals(raw, "--data-dir", StringComparison.OrdinalIgnoreCase))
+            {
+                i++;
+                continue;
+            }
+            if (raw.StartsWith("--", StringComparison.Ordinal))
                 continue;
             if (!AppReleaseHighlights.IsValidBackupArchivePath(raw))
                 continue;

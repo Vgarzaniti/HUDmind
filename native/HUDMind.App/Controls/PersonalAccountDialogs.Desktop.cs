@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -19,6 +20,7 @@ public static partial class PersonalAccountDialogs
     public static void ShowWhatsNewDialog(Window? owner, string title, string summaryBody)
     {
         var win = CreateModalWindow(owner, title, width: 550, height: 370);
+        AutomationProperties.SetAutomationId(win, "HUDMindWhatsNewDialog");
         var root = new DockPanel { Margin = new Thickness(20) };
 
         var header = new StackPanel { Margin = new Thickness(0, 0, 0, 10) };
@@ -48,22 +50,25 @@ public static partial class PersonalAccountDialogs
         };
         DockPanel.SetDock(footer, Dock.Bottom);
         var btnOk = CreateButton(L("✅ ¡Entendido!", "✅ Got it!"), BtnPrimaryBg, BtnPrimaryBorder, new Thickness(0));
+        AutomationProperties.SetAutomationId(btnOk, "BtnWhatsNewOk");
         btnOk.Click += (_, _) => win.Close();
         footer.Children.Add(btnOk);
         root.Children.Add(footer);
 
         var card = CreateCardBorder();
+        var bodyTextBlock = new TextBlock
+        {
+            Text = summaryBody,
+            Foreground = TextPrimary,
+            FontSize = 12.2,
+            LineHeight = 20,
+            TextWrapping = TextWrapping.Wrap
+        };
+        AutomationProperties.SetAutomationId(bodyTextBlock, "TxtWhatsNewBody");
         var scroll = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = new TextBlock
-            {
-                Text = summaryBody,
-                Foreground = TextPrimary,
-                FontSize = 12.2,
-                LineHeight = 20,
-                TextWrapping = TextWrapping.Wrap
-            }
+            Content = bodyTextBlock
         };
         card.Child = scroll;
         root.Children.Add(card);
@@ -165,6 +170,7 @@ public static partial class PersonalAccountDialogs
         IEnumerable<string>? activeApiKeys = null)
     {
         var win = CreateModalWindow(owner, L("HUDMind · Diagnóstico del Sistema (0% GPU)", "HUDMind · System Health Diagnostics (0% GPU)"), width: 640, height: 500);
+        AutomationProperties.SetAutomationId(win, "HUDMindDiagnosticsDialog");
         var root = new DockPanel { Margin = new Thickness(18) };
         var latestChecks = new List<DiagnosticCheckItem>();
         var keySnapshot = activeApiKeys?.ToArray() ?? [];
@@ -200,6 +206,9 @@ public static partial class PersonalAccountDialogs
         var btnReprobeMic = CreateButton(L("🎤 Probar + Micrófono (0.5s)", "🎤 Re-test + Microphone (0.5s)"), BtnNeutralBg, BorderSubtle, new Thickness(0, 0, 8, 0));
         var btnCopy = CreateButton(L("📋 Copiar reporte", "📋 Copy report"), BtnPrimaryBg, BtnPrimaryBorder, new Thickness(0, 0, 8, 0));
         var btnClose = CreateButton(L("Cerrar", "Close"), BtnNeutralBg, BorderSubtle, new Thickness(0));
+        AutomationProperties.SetAutomationId(btnReprobeMic, "BtnDiagnosticsReprobe");
+        AutomationProperties.SetAutomationId(btnCopy, "BtnDiagnosticsCopy");
+        AutomationProperties.SetAutomationId(btnClose, "BtnDiagnosticsClose");
         btnClose.Click += (_, _) => win.Close();
         footer.Children.Add(btnReprobeMic);
         footer.Children.Add(btnCopy);
@@ -311,11 +320,13 @@ public static partial class PersonalAccountDialogs
         int currentStep = 1;
 
         var win = CreateModalWindow(owner, L("HUDMind · Asistente de Bienvenida (3 pasos)", "HUDMind · Quick Setup Wizard (3 Steps)"), width: 590, height: 470);
+        AutomationProperties.SetAutomationId(win, "HUDMindWizardDialog");
         var root = new DockPanel { Margin = new Thickness(20) };
 
         var headerStack = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
         DockPanel.SetDock(headerStack, Dock.Top);
         var lblStepTitle = new TextBlock { FontSize = 16, FontWeight = FontWeights.Bold, Foreground = TextAccent };
+        AutomationProperties.SetAutomationId(lblStepTitle, "LblWizardStepTitle");
         var lblStepSub = new TextBlock { FontSize = 11.5, Foreground = TextMuted, Margin = new Thickness(0, 3, 0, 8), TextWrapping = TextWrapping.Wrap };
         var stepProgress = new System.Windows.Controls.ProgressBar
         {
@@ -335,10 +346,13 @@ public static partial class PersonalAccountDialogs
         var footer = new DockPanel { Margin = new Thickness(0, 14, 0, 0) };
         DockPanel.SetDock(footer, Dock.Bottom);
         var btnSkip = CreateButton(L("Omitir asistente", "Skip wizard"), BtnNeutralBg, BorderSubtle, new Thickness(0));
+        AutomationProperties.SetAutomationId(btnSkip, "BtnWizardSkip");
         DockPanel.SetDock(btnSkip, Dock.Left);
         var navRight = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         var btnBack = CreateButton(L("← Anterior", "← Back"), BtnNeutralBg, BorderSubtle, new Thickness(0, 0, 8, 0));
         var btnNext = CreateButton(L("Siguiente →", "Next →"), BtnPrimaryBg, BtnPrimaryBorder, new Thickness(0));
+        AutomationProperties.SetAutomationId(btnBack, "BtnWizardBack");
+        AutomationProperties.SetAutomationId(btnNext, "BtnWizardNext");
         navRight.Children.Add(btnBack);
         navRight.Children.Add(btnNext);
         footer.Children.Add(btnSkip);
@@ -351,6 +365,7 @@ public static partial class PersonalAccountDialogs
         var s1Body = new StackPanel();
         s1Body.Children.Add(CreateFieldLabel(L("Tu Nombre / Tag en el Coach:", "Display Name / Gamertag:")));
         var txtName = CreateTextBox(activeProfile.DisplayName);
+        AutomationProperties.SetAutomationId(txtName, "TxtWizardDisplayName");
         s1Body.Children.Add(txtName);
 
         var rowPickers = new Grid { Margin = new Thickness(0, 10, 0, 0) };
@@ -408,6 +423,7 @@ public static partial class PersonalAccountDialogs
             FontWeight = FontWeights.SemiBold,
             Margin = new Thickness(0, 0, 0, 10)
         };
+        AutomationProperties.SetAutomationId(lblAiStatus, "LblWizardAiStatus");
         step2.Children.Add(lblAiStatus);
 
         var s2Card1 = CreateCardBorder();
@@ -427,8 +443,10 @@ public static partial class PersonalAccountDialogs
         s2GroqStack.Children.Add(CreateFieldLabel(L("¿Copiaste una API Key de Groq (gsk_...)? Pegala directo acá:", "Copied a Groq API Key (gsk_...)? Paste it right here:")));
         var groqRow = new DockPanel { Margin = new Thickness(0, 4, 0, 0) };
         var btnSaveGroq = CreateButton(L("+ Guardar Groq", "+ Save Groq"), FreezeBrush("#059669"), FreezeBrush("#10B981"), new Thickness(8, 0, 0, 0));
+        AutomationProperties.SetAutomationId(btnSaveGroq, "BtnWizardSaveGroq");
         DockPanel.SetDock(btnSaveGroq, Dock.Right);
         var pwdGroq = CreatePasswordBox();
+        AutomationProperties.SetAutomationId(pwdGroq, "PwdWizardGroqKey");
         groqRow.Children.Add(btnSaveGroq);
         groqRow.Children.Add(pwdGroq);
         s2GroqStack.Children.Add(groqRow);
@@ -451,6 +469,7 @@ public static partial class PersonalAccountDialogs
         var testRow = new StackPanel { Orientation = Orientation.Horizontal };
         var btnTestMic = CreateButton(L("🎤 Probar Micrófono (1s)", "🎤 Test Microphone (1s)"), BtnNeutralBg, BtnPrimaryBorder, new Thickness(0, 0, 8, 0));
         var btnTestHud = CreateButton(L("👁 Probar Overlay + Voz", "👁 Test Overlay + Voice"), BtnPrimaryBg, BtnPrimaryBorder, new Thickness(0));
+        AutomationProperties.SetAutomationId(btnTestHud, "BtnWizardTestHud");
         testRow.Children.Add(btnTestMic);
         testRow.Children.Add(btnTestHud);
         s3Body.Children.Add(testRow);

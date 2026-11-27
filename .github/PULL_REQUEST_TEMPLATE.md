@@ -48,6 +48,7 @@
 - [ ] `dotnet build native/HUDMind.sln -c Release` → `0 warnings, 0 errors`
 - [ ] `dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build` → `___ passed, 0 failed`
 - [ ] `dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build` → `___ passed, 0 failed`
+- [ ] `dotnet run --project native/HUDMind.UiTests/HUDMind.UiTests.csproj -c Release --no-build` → `___ passed, 0 failed`
 - [ ] `HUDMind.Native.exe --smoke-startup` → `exit code 0`
 - [ ] Capturas / logs adjuntos si toca UI WPF u Overlay *(sin exponer API keys)*
 

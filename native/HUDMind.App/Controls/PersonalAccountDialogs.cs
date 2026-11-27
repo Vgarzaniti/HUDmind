@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -192,6 +193,7 @@ public static partial class PersonalAccountDialogs
     {
         var result = new PersonalProfileDialogResult(PersonalProfileDialogOutcome.None);
         var win = CreateModalWindow(owner, L("HUDMind · Mi Cuenta y Perfiles Locales ($0 Privado)", "HUDMind · Local Accounts & Profiles ($0 Private)"), width: 730, height: 625);
+        AutomationProperties.SetAutomationId(win, "HUDMindProfileManagerDialog");
 
         var mainGrid = new Grid { Margin = new Thickness(16) };
         mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -323,6 +325,7 @@ public static partial class PersonalAccountDialogs
         idRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
         idRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var txtUniqueId = CreateTextBox(activeProfile.UniqueUserId);
+        AutomationProperties.SetAutomationId(txtUniqueId, "TxtProfileManagerUniqueId");
         txtUniqueId.IsReadOnly = true;
         txtUniqueId.FontFamily = new System.Windows.Media.FontFamily("Consolas");
         txtUniqueId.Foreground = FreezeBrush("#67E8F9");
@@ -344,6 +347,7 @@ public static partial class PersonalAccountDialogs
 
         rightStack.Children.Add(CreateFieldLabel(L("Nombre / Nickname:", "Display Name / Nickname:")));
         var txtName = CreateTextBox(activeProfile.DisplayName);
+        AutomationProperties.SetAutomationId(txtName, "TxtProfileManagerName");
         rightStack.Children.Add(txtName);
 
         var avatarAccentRow = new Grid { Margin = new Thickness(0, 8, 0, 0) };
@@ -406,6 +410,7 @@ public static partial class PersonalAccountDialogs
         var formBtns = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
         var btnSaveActive = CreateButton(L("💾 Guardar en perfil activo", "💾 Save Active Profile"), BtnNeutralBg, BorderSubtle, new Thickness(0, 0, 6, 6));
         var btnCreateNew = CreateButton(L("➕ Crear y Entrar como Nueva Cuenta", "➕ Create & Switch to New Profile"), BtnPrimaryBg, BtnPrimaryBorder, new Thickness(0, 0, 0, 6));
+        AutomationProperties.SetAutomationId(btnCreateNew, "BtnProfileManagerCreate");
         formBtns.Children.Add(btnSaveActive);
         formBtns.Children.Add(btnCreateNew);
         rightStack.Children.Add(formBtns);
@@ -456,6 +461,7 @@ public static partial class PersonalAccountDialogs
             bottomClose.Children.Add(btnLockNow);
         }
         var btnClose = CreateButton(L("Cerrar", "Close"), BtnNeutralBg, BorderSubtle, new Thickness(0));
+        AutomationProperties.SetAutomationId(btnClose, "BtnProfileManagerClose");
         btnClose.Click += (_, _) => win.Close();
         bottomClose.Children.Add(btnClose);
         Grid.SetRow(bottomClose, 3);
@@ -706,6 +712,7 @@ public static partial class PersonalAccountDialogs
             isExport ? L("HUDMind · Cifrar Backup (.hudmind)", "HUDMind · Encrypt Backup (.hudmind)") : L("HUDMind · Descifrar Backup (.hudmind)", "HUDMind · Decrypt Backup (.hudmind)"),
             width: 460,
             height: 290);
+        AutomationProperties.SetAutomationId(win, "HUDMindPassphraseDialog");
 
         var root = new StackPanel { Margin = new Thickness(18) };
         root.Children.Add(new TextBlock
@@ -720,6 +727,7 @@ public static partial class PersonalAccountDialogs
         });
 
         var pwd1 = CreatePasswordBox();
+        AutomationProperties.SetAutomationId(pwd1, "PwdArchivePassphrase");
         root.Children.Add(pwd1);
 
         var chkIncludeKeys = new CheckBox
@@ -732,6 +740,7 @@ public static partial class PersonalAccountDialogs
             Margin = new Thickness(0, 10, 0, 0),
             IsChecked = false
         };
+        AutomationProperties.SetAutomationId(chkIncludeKeys, "ChkArchiveIncludeKeys");
         root.Children.Add(chkIncludeKeys);
 
         var err = new TextBlock
@@ -750,8 +759,10 @@ public static partial class PersonalAccountDialogs
             Margin = new Thickness(0, 14, 0, 0)
         };
         var cancel = CreateButton(L("Cancelar", "Cancel"), BtnNeutralBg, BorderSubtle, new Thickness(0, 0, 8, 0));
+        AutomationProperties.SetAutomationId(cancel, "BtnArchivePassphraseCancel");
         cancel.Click += (_, _) => { win.DialogResult = false; win.Close(); };
         var ok = CreateButton(isExport ? L("📦 Exportar", "📦 Export") : L("📥 Importar", "📥 Import"), BtnPrimaryBg, BtnPrimaryBorder, new Thickness(0));
+        AutomationProperties.SetAutomationId(ok, "BtnArchivePassphraseOk");
         void TrySubmit()
         {
             if (string.IsNullOrWhiteSpace(pwd1.Password) || pwd1.Password.Length < 4)

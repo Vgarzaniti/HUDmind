@@ -50,7 +50,7 @@
 | **REQ-NFR-02** | Baja Latencia / Frescura | Descarte de frames obsoletos mediante `Channel` acotado (`DropOldest`), *Freshness Deadline* en modo automático y priorización de `F10` sin esperar ciclo. | Pruebas Core `07`, `09`, `12` |
 | **REQ-NFR-03** | Fiabilidad y Tolerancia a Fallos | Recuperación atómica de `accounts.json` corrupto (con backup redactado), *Circuit Breaker* por cuenta y rotación transparente multi-proveedor o Live→Clásico. | Pruebas Core `06`, `08`, `20`, `21`, `24` |
 | **REQ-NFR-04** | Portabilidad / Zero-Bloat | Cero paquetes NuGet externos; binario distribuible *single-file* `win-x64` (`Standalone` y framework-dependent) publicado automáticamente en Releases. | `HUDMind.App.csproj`, `.github/workflows/release.yml` |
-| **REQ-NFR-05** | Mantenibilidad y Modularidad | Separación estricta en `HUDMind.Core` (multiplataforma `net9.0`), `HUDMind.Windows` (Win32/Sensores/Audio) y `HUDMind.App` (WPF). Validación continua por CI en Linux + Windows. | `.github/workflows/ci.yml`, `HUDMind.Tests`, `HUDMind.Windows.Tests` |
+| **REQ-NFR-05** | Mantenibilidad y Modularidad | Separación estricta en `HUDMind.Core` (multiplataforma `net9.0`), `HUDMind.Windows` (Win32/Sensores/Audio) y `HUDMind.App` (WPF). Validación continua por CI en Linux + Windows (incluyendo pruebas UI E2E). | `.github/workflows/ci.yml`, `HUDMind.Tests`, `HUDMind.Windows.Tests`, `HUDMind.UiTests` |
 
 ---
 
