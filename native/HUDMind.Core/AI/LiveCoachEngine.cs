@@ -183,7 +183,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         ITemporalStoryboardComposer? storyboardComposer = null,
         ICoachSafetyPipeline? safetyPipeline = null,
         IAudioSceneMonitor? audioMonitor = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        Action<string, string>? onLeakDetected = null)
     {
         _backend = backend;
         _config = config;
@@ -211,7 +212,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             forcedGameId,
             onLog,
             onMatchCompleted,
-            resolveContextForProfile);
+            resolveContextForProfile,
+            onLeakDetected);
         _micEnabled = config.IsMicActive;
         _activeInputDeviceName = (config.AudioInputDeviceName ?? string.Empty).Trim();
         _activeOutputDeviceName = (config.AudioOutputDeviceName ?? string.Empty).Trim();
@@ -1648,7 +1650,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         bool postSpeechReady = lastSpeechDoneTicks == 0 ||
                             (nowTicks - lastSpeechDoneTicks) >= TimeSpan.FromSeconds(minPostSpeechGapSec).Ticks;
 
-                        bool regularDue = canVoiceTurn && postSpeechReady &&
+                        bool regularDue = canVoiceTurn && postSpeechReady && !_config.IsEventFirstMode &&
                             (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(scaledAutoSec).Ticks);
                         double eventFloorSec = visualSpike ? Math.Max(4.2, autoSec * 0.60) : Math.Max(3.5, autoSec * 0.50);
                         bool eventDue = canVoiceTurn && postSpeechReady && (tactical.TriggerImmediate || visualSpike || followUpTopic is not null) &&

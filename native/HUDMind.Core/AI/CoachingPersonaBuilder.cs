@@ -76,8 +76,28 @@ public static class CoachingPersonaBuilder
             (true, _) => "Tone: warm, enjoyable, supportive Discord coach; celebrate good plays too."
         };
 
-        var sb = new StringBuilder(tierGuidance.Length + toneGuidance.Length + 240);
+        var sb = new StringBuilder(tierGuidance.Length + toneGuidance.Length + 320);
         sb.Append(tierGuidance).Append(' ').Append(toneGuidance);
+        var cleanRole = SanitizeField(config.PlayerRoleTag, 48);
+        if (!string.IsNullOrWhiteSpace(cleanRole) && !cleanRole.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            sb.Append(isEn
+                ? $" Active role/playlist focus: {cleanRole}."
+                : $" Rol/modo específico en partida: {cleanRole}.");
+        }
+        if (config.IsEventFirstMode)
+        {
+            sb.Append(isEn
+                ? " Pacing=EVENT-FIRST IGL: stay silent during routine play; speak ONLY on decisive threats, openings, or player questions."
+                : " Ritmo=SOLO EVENTOS CLAVE (IGL): mantené silencio durante rotaciones de rutina y hablá SOLO ante amenazas o aperturas reales.");
+        }
+        var cleanLeaks = SanitizeField(config.RuntimeLeakFocus, 220);
+        if (!string.IsNullOrWhiteSpace(cleanLeaks))
+        {
+            sb.Append(isEn
+                ? $" Tracked recurring player leaks: {cleanLeaks}."
+                : $" Fugas repetidas detectadas del jugador: {cleanLeaks}.");
+        }
         if (config.RuntimeTiltRisk)
             sb.Append(' ').Append(CoachContextAssembler.BuildAntiTiltDirective(isEn));
         return sb.ToString();
@@ -95,10 +115,10 @@ public static class CoachingPersonaBuilder
         string sessionMode = (config.CoachMode ?? "auto").Trim().ToLowerInvariant();
         string modeGuidance = (isEn, sessionMode) switch
         {
-            (true, "training") => "Session focus: TRAINING (mechanics, spacing, control & consistency).",
+            (true, "training") => "Session focus: TRAINING BY ATTEMPTS (stay quiet mid-attempt during setup/air control; give 1 crisp technical fix right after each attempt lands or resets).",
             (true, "match") => "Session focus: COMPETITIVE MATCH (only coach active play & openings; stay quiet on menus/replays).",
             (true, _) => "Session focus: AUTO (adapt automatically between kickoff, active play & training; quiet on menus/replays).",
-            (false, "training") => "Foco de sesión: ENTRENAMIENTO (guiá mecánicas, control y consistencia).",
+            (false, "training") => "Foco de sesión: ENTRENAMIENTO POR INTENTOS (guardá silencio mientras ejecuta la mecánica y da 1 corrección técnica puntual apenas termina o reinicia el intento).",
             (false, "match") => "Foco de sesión: PARTIDA COMPETITIVA (solo jugada viva y saques; silencio en menús/replays).",
             (false, _) => "Foco de sesión: AUTOMÁTICO (adaptate entre saque, jugada en vivo o práctica; silencio en menús/replays)."
         };

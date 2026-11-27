@@ -109,7 +109,8 @@ public sealed class CoachOrchestrator : ICoachEngine
         Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null,
         ITemporalStoryboardComposer? storyboardComposer = null,
         ICoachSafetyPipeline? safetyPipeline = null,
-        IAudioSceneMonitor? audioMonitor = null)
+        IAudioSceneMonitor? audioMonitor = null,
+        Action<string, string>? onLeakDetected = null)
     {
         _config = config;
         _profilesCount = profiles.Count;
@@ -142,7 +143,8 @@ public sealed class CoachOrchestrator : ICoachEngine
             forcedGameId,
             onLog,
             onMatchCompleted,
-            resolveContextForProfile);
+            resolveContextForProfile,
+            onLeakDetected);
     }
 
     public async Task StartAsync()
@@ -707,6 +709,30 @@ public sealed class CoachOrchestrator : ICoachEngine
                     }
                     else
                     {
+                        if (_config.IsEventFirstMode)
+                        {
+                            // Event-First IGL mode: skip periodic timer turns completely; keep RAM clip buffer fresh until an event/spike/F10 fires.
+                            bool efMacroDue = _session.FrameRingBuffer.NeedsMacroKeyframe(DateTimeOffset.UtcNow);
+                            var (efFrame, efSkipped) = _capture.CaptureIfChanged(
+                                _config.CaptureMonitor,
+                                region,
+                                w,
+                                h,
+                                Math.Min(q, 78),
+                                Interlocked.Increment(ref frameCounter),
+                                _lastRingHash,
+                                efMacroDue ? 0 : Math.Min(profile.Manifest.PhashThreshold, 4),
+                                isForced: false);
+                            _session.ObserveCaptureHealth(_config);
+                            if (!efSkipped && efFrame is not null)
+                            {
+                                _lastRingHash = efFrame.PerceptualHash;
+                                _session.FrameRingBuffer.Record(efFrame);
+                            }
+                            await WaitInterruptibleAsync(TimeSpan.FromMilliseconds(120), ct);
+                            continue;
+                        }
+
                         var waitRem = _stateMachine.GetWaitUntilReady(
                             scaledCd,
                             _config.MinInferenceIntervalSeconds);

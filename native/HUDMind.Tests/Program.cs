@@ -3187,6 +3187,235 @@ await RunTest("58. EnsureRconConfigEnabled, generic hudmind:telemetry JSON & Use
     return Task.CompletedTask;
 });
 
+// 59. UserProfileStore multi-profile isolation/PIN + ProfileArchiveCodec AES-256-GCM bundle round-trip
+await RunTest("59. UserProfileStore isolation/PBKDF2 PIN + ProfileArchiveCodec AES-256-GCM export/import", () =>
+{
+    var tmpRoot = Path.Combine(Path.GetTempPath(), $"hudmind_profiles_t59_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmpRoot);
+    try
+    {
+        var store = new UserProfileStore(tmpRoot);
+        var idx = store.LoadOrInitialize();
+        Assert(idx.ActiveProfileId == "default" && idx.Profiles.Count == 1, "Initial store must seed default profile");
+        Assert(store.ResolveWorkspaceRoot("default") == Path.GetFullPath(tmpRoot), "Default profile must preserve root workspace compatibility");
+        Assert(!UserProfileStore.IsValidProfileId("../etc") && !store.DeleteProfile("default"), "CWE-22 ID check & default delete guard failed");
+
+        var mati = store.CreateProfile("Mati Pro", "🦊", "#A78BFA", "rocket_league", pin: "2026");
+        Assert(mati.HasPin && UserProfileStore.VerifyPin(mati.PinHash, "2026") && !UserProfileStore.VerifyPin(mati.PinHash, "9999"),
+            "PBKDF2-SHA256 PIN verification mismatch");
+
+        var repoDefault = new ConfigRepository(store.ResolveWorkspaceRoot("default"));
+        var repoMati = new ConfigRepository(store.ResolveWorkspaceRoot(mati.ProfileId));
+        Assert(!string.Equals(repoDefault.WorkspaceRoot, repoMati.WorkspaceRoot, StringComparison.OrdinalIgnoreCase),
+            "Created personal profile must use isolated workspace directory");
+
+        repoDefault.SaveUserConfig(new UserConfig { CoachingPacingMode = "balanced", PlayerRoleTag = "auto" });
+        repoMati.SaveUserConfig(new UserConfig { CoachingPacingMode = "event_first", PlayerRoleTag = "rl_1v1" });
+        repoMati.SaveCustomRules(
+            new GameProfile { DirectoryPath = Path.Combine(repoMati.ProfilesDir, "rocket_league"), Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League" } },
+            "Priorizar 1v1 kickoffs");
+        repoMati.SaveAccounts([new ProviderAccount { Label = "SecretKey", Provider = "groq", ApiKey = "gsk_super_secret_123456" }]);
+        repoMati.RecordPlayerLeak("rocket_league", "rl_low_boost");
+
+        Assert(repoDefault.LoadUserConfig().CoachingPacingMode == "balanced" &&
+               repoMati.LoadUserConfig().CoachingPacingMode == "event_first" &&
+               repoMati.LoadUserConfig().PlayerRoleTag == "rl_1v1",
+            "Per-profile UserConfig settings leaked across profiles");
+
+        // Export portable .hudmind archive without API accounts
+        byte[] bundle = ProfileArchiveCodec.ExportBundle(repoMati, "StrongPass#2026", includeApiAccounts: false);
+        Assert(bundle.Length > 32, "Exported bundle must produce encrypted payload");
+
+        var importRoot = Path.Combine(tmpRoot, "import_target");
+        Directory.CreateDirectory(importRoot);
+        var repoImport = new ConfigRepository(importRoot);
+        bool wrongPassThrew = false;
+        try { ProfileArchiveCodec.ImportBundle(bundle, repoImport, "WrongPass", importApiAccounts: false); }
+        catch (CryptographicException) { wrongPassThrew = true; }
+        Assert(wrongPassThrew, "Wrong passphrase must fail AES-256-GCM authentication tag");
+
+        int imported = ProfileArchiveCodec.ImportBundle(bundle, repoImport, "StrongPass#2026", importApiAccounts: false);
+        Assert(imported >= 3 &&
+               repoImport.LoadUserConfig().CoachingPacingMode == "event_first" &&
+               repoImport.LoadUserConfig().PlayerRoleTag == "rl_1v1" &&
+               !File.Exists(repoImport.AccountsPath) &&
+               repoImport.LoadPlayerLeaks().Games["rocket_league"].Today["rl_low_boost"] == 1,
+            $"Imported archive state mismatch (files={imported})");
+
+        Assert(store.DeleteProfile(mati.ProfileId), "Non-default profile delete must succeed");
+        Assert(!Directory.Exists(repoMati.WorkspaceRoot), "Deleted profile workspace must be cleaned");
+    }
+    finally
+    {
+        try { Directory.Delete(tmpRoot, recursive: true); } catch { }
+    }
+    return Task.CompletedTask;
+});
+
+// 60. OpenRouterOAuthPkceClient real loopback RFC 8252 callback + S256 verification + code exchange
+await RunTest("60. OpenRouterOAuthPkceClient loopback callback, S256 PKCE check & token exchange", async () =>
+{
+    var (v, c) = OpenRouterOAuthPkceClient.GeneratePkcePair();
+    string expectedChallenge = Convert.ToBase64String(SHA256.HashData(Encoding.ASCII.GetBytes(v)))
+        .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    Assert(c == expectedChallenge && v.Length >= 43, "PKCE S256 challenge mismatch");
+
+    string capturedVerifier = string.Empty;
+    string capturedCode = string.Empty;
+    using var fakeExchangeHandler = new FakeHttpHandler(async req =>
+    {
+        var body = await req.Content!.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(body);
+        capturedCode = doc.RootElement.GetProperty("code").GetString() ?? "";
+        capturedVerifier = doc.RootElement.GetProperty("code_verifier").GetString() ?? "";
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"key\":\"sk-or-v1-pkce-test-secret-012345\"}", Encoding.UTF8, "application/json")
+        };
+    });
+
+    Task? callbackSender = null;
+    var (ok, apiKey, err) = await OpenRouterOAuthPkceClient.AuthenticateAsync(
+        authUri =>
+        {
+            var q = System.Web.HttpUtility.ParseQueryString(authUri.Query);
+            string cbUrl = q["callback_url"] ?? throw new Exception("Missing callback_url");
+            string method = q["code_challenge_method"] ?? "";
+            Assert(method == "S256" && cbUrl.StartsWith("http://127.0.0.1:", StringComparison.Ordinal),
+                $"Auth URI must enforce S256 and loopback callback: {authUri}");
+
+            callbackSender = Task.Run(async () =>
+            {
+                using var http = new HttpClient();
+                var notFound = await http.GetAsync(cbUrl.Replace("/callback", "/invalid"));
+                Assert(notFound.StatusCode == HttpStatusCode.NotFound, "Non-callback path must return 404");
+
+                var okResp = await http.GetAsync($"{cbUrl}?code=OR_AUTH_CODE_777");
+                Assert(okResp.IsSuccessStatusCode &&
+                       okResp.Headers.TryGetValues("Content-Security-Policy", out _),
+                    "Valid loopback OAuth callback must return 200 OK with CSP");
+            });
+        },
+        httpHandler: fakeExchangeHandler,
+        exchangeEndpointOverride: "http://127.0.0.1/exchange",
+        timeout: TimeSpan.FromSeconds(5));
+
+    if (callbackSender is not null)
+        await callbackSender;
+
+    Assert(ok && apiKey == "sk-or-v1-pkce-test-secret-012345" &&
+           capturedCode == "OR_AUTH_CODE_777" && capturedVerifier.Length >= 43,
+        $"PKCE exchange failed (ok={ok}, err={err}, key={apiKey})");
+});
+
+// 61. Event-First pacing suppression, <5ms InstantLocalAlert + BriefingNote, Role/Training prompt & PlayerLeakTracker
+await RunTest("61. Event-First pacing, <5ms local alerts, dead-time briefing, role/training cadence & PlayerLeakTracker", async () =>
+{
+    // A. Event-first pacing suppresses timer nudges in both CoachOrchestrator and RealtimeLiveCoachOrchestrator
+    var rlProf = new GameProfile
+    {
+        DirectoryPath = ".",
+        Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League", CooldownSeconds = 0.2, CaptureFps = 4.0, ProcessNames = ["RocketLeague.exe"] }
+    };
+    var acct = new ProviderAccount { Id = "p1", Provider = "groq", Label = "G", Model = "llama-4", ApiKey = "gsk_test123", Priority = 1, Enabled = true };
+    var efCfg = new UserConfig
+    {
+        CoachMode = "training",
+        CoachingPacingMode = "event_first",
+        PlayerRoleTag = "rl_1v1",
+        RuntimeLeakFocus = "Rotaciones con <=15% boost: 2 hoy vs 4 anterior",
+        MinInferenceIntervalSeconds = 0.2,
+        EnableOverlay = true
+    };
+    efCfg.SetCommunicationMode("text_only");
+
+    int aiCalls = 0;
+    var provider = new CountingAnalyzeProvider(acct, () => Interlocked.Increment(ref aiCalls));
+    var router = new ProviderFailoverRouter([acct], factory: _ => provider, textOnlySensor: new MutablePhaseTelemetrySensor("GAME_LOG: freeplay"));
+    var efOverlay = new RecordingOverlay();
+    await using (var orch = new CoachOrchestrator(
+        efCfg, [rlProf], router, new StubWindowDetector("RocketLeague.exe"),
+        new ConstantHashStaticCapture(0x1020304050UL, 0.1), new RecordingVoice(), efOverlay,
+        testMode: true, forcedGameId: "rocket_league", storyboardComposer: new StubStoryboardComposer()))
+    {
+        await orch.StartAsync();
+        await Task.Delay(650);
+        Assert(Volatile.Read(ref aiCalls) == 0, $"Event-first pacing must suppress idle timer calls (got {aiCalls})");
+
+        orch.TriggerOnDemandAnalysis();
+        for (int i = 0; i < 40 && Volatile.Read(ref aiCalls) == 0; i++) await Task.Delay(25);
+        Assert(Volatile.Read(ref aiCalls) == 1, "Manual F10 TriggerOnDemandAnalysis must still fire immediately in event_first mode");
+        await orch.StopAsync();
+    }
+
+    var liveStub = new StubLiveBackend();
+    efCfg.LiveAutoCoachSeconds = 0.3;
+    await using (var live = new RealtimeLiveCoachOrchestrator(
+        liveStub, efCfg, [rlProf], new StubWindowDetector("RocketLeague.exe"),
+        new ConstantHashStaticCapture(0x1020304050UL, 0.1), new StubStreamingPlayer(), new StubStreamingMic(),
+        new RecordingOverlay(), testMode: true, forcedGameId: "rocket_league"))
+    {
+        await live.StartAsync();
+        await Task.Delay(650);
+        Assert(liveStub.SentTextTurns == 0, $"Live event_first must silence timer turns (got {liveStub.SentTextTurns})");
+        await live.StopAsync();
+    }
+
+    // B. InstantLocalAlert (<5ms) + Dead-time BriefingNote + Leak emission via MatchSessionCoordinator
+    var coordOv = new RecordingOverlay();
+    var leaksCaptured = new List<(string Game, string Key)>();
+    var csProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "Counter-Strike 2" } };
+    var coord = new MatchSessionCoordinator(
+        [csProf, rlProf], new StubWindowDetector("cs2.exe"), new StubCapture(), coordOv,
+        testMode: true, forcedGameId: "cs2", onLeakDetected: (g, k) => leaksCaptured.Add((g, k)));
+    var csCfg = new UserConfig { EnableOverlay = true, VoiceLanguage = "es", TextLanguage = "es" };
+    coord.InitializeOnStart(csCfg, predetectInNonTestMode: true);
+    var eval = coord.EvaluateTacticalSignal("CS2_GSI: round=freezetime HP=100 Armor=0 $2400 side=CT", csProf, csCfg, isEn: false);
+    Assert(!string.IsNullOrEmpty(eval.InstantLocalAlert) &&
+           !string.IsNullOrEmpty(eval.BriefingNote) &&
+           eval.LeakCategoryKey == "cs2_no_armor" &&
+           coordOv.Shown.Any(s => s.Contains("chaleco", StringComparison.OrdinalIgnoreCase)) &&
+           leaksCaptured.Any(l => l.Game == "cs2" && l.Key == "cs2_no_armor"),
+        $"Coordinator must dispatch InstantLocalAlert, BriefingNote & leak callback cleanly (shown={string.Join("|", coordOv.Shown)})");
+
+    // C. Prompt persona injects Role Tag, Event-First rule, Attempt-based training rule & Leak focus
+    var sysPrompt = CoachingPersonaBuilder.BuildLiveSystemInstruction(efCfg, rlProf);
+    var turnPrompt = CompactWireProtocol.BuildRealtimePrompt(rlProf, efCfg, "", forceAdvice: false);
+    Assert(sysPrompt.Contains("rl_1v1", StringComparison.Ordinal) &&
+           sysPrompt.Contains("SOLO EVENTOS CLAVE (IGL)", StringComparison.Ordinal) &&
+           sysPrompt.Contains("ENTRENAMIENTO POR INTENTOS", StringComparison.Ordinal) &&
+           sysPrompt.Contains("2 hoy vs 4 anterior", StringComparison.Ordinal) &&
+           turnPrompt.Contains("Rol/modo del jugador: rl_1v1", StringComparison.Ordinal) &&
+           turnPrompt.Contains("Fugas repetidas detectadas:", StringComparison.Ordinal),
+        $"Prompts must inject role, event-first directive, attempt training rule & leak focus\nSYS={sysPrompt}\nTURN={turnPrompt}");
+
+    // D. PlayerLeakTracker Today vs Previous roll & persistence
+    var leakTmp = Path.Combine(Path.GetTempPath(), $"hudmind_leaks_t61_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(leakTmp);
+    try
+    {
+        var report = new PlayerLeakReport();
+        var day1 = new DateOnly(2026, 11, 20);
+        var day2 = new DateOnly(2026, 11, 21);
+        PlayerLeakTracker.RecordLeak(report, "cs2", "cs2_no_armor", todayOverride: day1);
+        PlayerLeakTracker.RecordLeak(report, "cs2", "cs2_no_armor", todayOverride: day1);
+        PlayerLeakTracker.RecordLeak(report, "cs2", "cs2_no_armor", todayOverride: day2);
+        var summary = PlayerLeakTracker.FormatComparisonSummary(report, "cs2", isEn: false, todayOverride: day2);
+        Assert(summary.Contains("1 hoy (ant 2)", StringComparison.Ordinal),
+            $"Leak comparison must compare Today vs Previous cleanly: '{summary}'");
+
+        var leakRepo = new ConfigRepository(leakTmp);
+        leakRepo.RecordPlayerLeak("rl", "rl_low_boost");
+        Assert(leakRepo.LoadPlayerLeaks().Games["rl"].Today["rl_low_boost"] == 1, "Leak JSON persistence failed");
+        leakRepo.ResetPlayerLeaks("rl");
+        Assert(!leakRepo.LoadPlayerLeaks().Games.ContainsKey("rl"), "ResetPlayerLeaks must clear game entry");
+    }
+    finally
+    {
+        try { Directory.Delete(leakTmp, recursive: true); } catch { }
+    }
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
