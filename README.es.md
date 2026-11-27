@@ -20,7 +20,7 @@
   - `🔊 Solo voz del coach`: micrófono apagado, el coach te habla y podés escribir por chat.
   - `💬 Solo texto`: 100% silencioso, solo chat escrito y overlay.
 - **Calibración por Nivel / Rango y Estándar Pro:** adapta profundidad, vocabulario y criterio táctico desde *Principiante* hasta *Pro / GC / Radiant / Faceit 10* en Español o Inglés.
-- **Audio Hardware Flexible & Tray:** selector de micrófono y salida de audio WinMM, prueba de micrófono con medición RMS, minimización a **Bandeja del Sistema (Win32 `Shell_NotifyIconW`)**, inicio opcional con Windows (`--minimized`, **desactivado por defecto**), overlay **PerMonitorV2** transparente estilo Discord (3 modos: *Solo texto flotante*, *Cápsula* y *Tarjeta*, opacidad `0%–95%` con texto nítido 0% GPU, mini-feed `1–3` mensajes, indicador PTT/ondas en vivo y Quick-Chat `F7` sin Alt-Tab) y botón **`📊 Resumen Partida`** al finalizar.
+- **Audio Hardware Flexible, Tray y Sistema Overlay Híbrido (0% GPU):** selector de micrófono y salida de audio WinMM, prueba de micrófono con medición RMS, minimización a **Bandeja del Sistema (Win32 `Shell_NotifyIconW`)**, inicio opcional con Windows (`--minimized`, **desactivado por defecto**), overlay **PerMonitorV2** transparente estilo Discord con re-assert `WS_EX_TOPMOST` y auto-seguimiento del monitor activo (3 modos: *Solo texto flotante*, *Cápsula* y *Tarjeta*, opacidad `0%–95%` con texto nítido 0% GPU, mini-feed `1–3` mensajes, indicador PTT/ondas en vivo y Quick-Chat `F7` sin Alt-Tab), **Companion Web HUD** por HTTP SSE (2º monitor, **QR en 0% GPU** para abrir en celular por Wi-Fi LAN con token `?k=` o URL transparente **`?mode=obs`** para OBS Browser Source), **puente HUD RCON local** asistido (`127.0.0.1`) para pantalla completa exclusiva, y botón **`📊 Resumen Partida`** al finalizar.
 
 ---
 
@@ -28,26 +28,59 @@
 
 | Perfil (`game_id`) | Juego | Ejecutable Detectado | Sensores Pasivos Opcionales |
 | :--- | :--- | :--- | :--- |
-| `universal` | **Cualquier Juego (Universal)** | Cualquier juego en foreground | WinRT OCR + detección automática de fase |
-| `rocket_league` | **Rocket League** | `RocketLeague.exe` | Log oficial `Launch.log` (`Freeplay`, `GoalScored`, `LoadMap`) |
-| `cs2` | **Counter-Strike 2** | `cs2.exe` | **Valve GSI oficial** (`127.0.0.1:47315`) + WinRT OCR |
-| `valorant` | **VALORANT** | `VALORANT-Win64-Shipping.exe` | Log oficial `ShooterGame.log` (`MENU`, `PREGAME`, `INGAME`) |
-| `league_of_legends` | **League of Legends** | `League of Legends.exe` | API oficial **Riot Live Client** (`https://127.0.0.1:2999`) |
-| `dota2` | **Dota 2** | `dota2.exe` | **Valve GSI oficial** (`127.0.0.1:47315`) |
-| `aoe2_de` | **Age of Empires II: DE** | `AoE2DE_s.exe`, `AoE2DE.exe` | WinRT OCR |
-| `rob_run` | **ROB RUN** | `ROB RUN.exe` | WinRT OCR |
+| `universal` | **Cualquier Juego (Universal)** | Cualquier juego en foreground | WinRT OCR + detección automática de fase + WebSocket loopback (`ws://127.0.0.1:49122`, configurable) |
+| `rocket_league` | **Rocket League** | `RocketLeague.exe` | Log oficial `Launch.log` (`Freeplay`, `GoalScored`, `LoadMap`) + WebSocket loopback (`ws://127.0.0.1:49122`) + puente toast RCON local |
+| `cs2` | **Counter-Strike 2** | `cs2.exe` | **Valve GSI oficial** (`127.0.0.1:47315`) + WinRT OCR + WebSocket loopback (`hudmind:telemetry`) |
+| `valorant` | **VALORANT** | `VALORANT-Win64-Shipping.exe` | Log oficial `ShooterGame.log` (`MENU`, `PREGAME`, `INGAME`) + WebSocket loopback (`hudmind:telemetry`) |
+| `league_of_legends` | **League of Legends** | `League of Legends.exe` | API oficial **Riot Live Client** (`https://127.0.0.1:2999`) + WebSocket loopback |
+| `dota2` | **Dota 2** | `dota2.exe` | **Valve GSI oficial** (`127.0.0.1:47315`) + WebSocket loopback |
+| `aoe2_de` | **Age of Empires II: DE** | `AoE2DE_s.exe`, `AoE2DE.exe` | WinRT OCR + WebSocket loopback |
+| `rob_run` | **ROB RUN** | `ROB RUN.exe` | WinRT OCR + WebSocket loopback |
 
 *(Para CS2 / Dota 2 GSI, podés instalar `gamestate_integration_hudmind.cfg` en 1 clic desde **🎙 Voz y Ajustes → 🎮 Activar conexión CS2 / Dota 2**).*
 
-- **Gestión completa sin tocar JSON:** agregá o **editá** cuentas IA (con `BaseUrl` HTTPS custom y selector de modo `Visión` vs `Solo Texto`), creá o editá **perfiles de juegos** (`EXEs`, `Cooldown`, `pHash` y reglas personales), activá tonos sutiles Win32, abrí tus resúmenes Markdown (`logs/reviews/`) en **`📂 Resúmenes`** y aprovechá diagnóstico automático ante pantallas negras de Fullscreen Exclusivo.
+- **Gestión completa sin tocar JSON:** agregá o **editá** cuentas IA (con `BaseUrl` HTTPS custom y selector de modo `Visión` vs `Solo Texto`), creá o editá **perfiles de juegos** (`EXEs`, `Cooldown`, `pHash` y reglas personales), configurá puerto WebSocket local de telemetría (`49122`), activá el puente HUD local en 1 clic, usá tonos sutiles Win32, abrí tus resúmenes Markdown (`logs/reviews/`) en **`📂 Resúmenes`** y aprovechá diagnóstico automático ante pantallas negras de Fullscreen Exclusivo.
 - **100% Portable, Cifrado y Auto-Actualizable:** tus API keys locales se cifran por usuario con **Windows DPAPI (`crypt32.dll`)**, los 7 perfiles y las reglas base vienen sellados en `HUDMind.Vault.bin` (AES-256-GCM) dentro del binario `ReadyToRun` single-file, y al abrir el `.exe` (o cada 60 min en reposo) HUDMind consulta **GitHub Releases** para descargar con **SHA-256** e instalar en 1 clic si usás el Setup.
 
 ---
 
-## Descarga Rápida (Releases)
+## Descarga e Instalación (Windows 10/11 x64)
 
-1. Descargá el instalador **`HUDMind-Setup-win-x64.exe`** desde **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** *(recomendado: instala en tu usuario sin Admin y agrega acceso directo con ícono en el Menú Inicio)* — o usá el portable **`HUDMind.Native-Standalone-win-x64.exe`** / **`HUDMind.Native-win-x64.exe`** (~26 MB con .NET 9 Desktop Runtime).
-2. Abrí **HUDMind** y pegá una API Key gratuita de **Groq** o **Gemini** en **🤖 Proveedores IA**.
+### 1. ¿Qué archivo descargar de Releases? *(Solo necesitás uno)*
+
+En la página de **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** vas a ver 4 archivos. **No hace falta bajar todos**: elegí **un solo `.exe`** según cómo quieras usarlo:
+
+| Archivo | Para quién es / Cuándo elegirlo | ¿Necesita instalar .NET 9? |
+| :--- | :--- | :--- |
+| **`HUDMind-Setup-win-x64.exe`** ⭐ *(Recomendado)* | **Instalador clásico de Windows:** se instala para tu usuario (sin permisos de Admin), crea acceso directo en Menú Inicio, desinstalador limpio y permite actualizar en 1 clic desde la app. | ❌ **No** *(ya viene incluido)* |
+| **`HUDMind.Native-Standalone-win-x64.exe`** | **Portable 100% sin instalación:** doble clic y abre directo sin crear accesos directos ni registro en Windows. Ideal para probar o llevar en pendrive. | ❌ **No** *(ya viene incluido)* |
+| **`HUDMind.Native-win-x64.exe`** | **Versión liviana (~26 MB):** mismo programa, pero pensada solo para PCs que **ya** tengan instalado [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0). | ✅ **Sí** *(requiere .NET 9)* |
+| **`SHA256SUMS.txt`** | Archivo de verificación de firmas `SHA-256` que lee automáticamente el actualizador interno. **No hace falta descargarlo ni abrirlo manualmente.** | — |
+
+### 2. Paso a paso para instalar y arrancar
+
+1. Descargá **`HUDMind-Setup-win-x64.exe`** desde **[Latest Release](https://github.com/Vgarzaniti/HUDmind/releases/latest)** y hacé doble clic.
+2. *(Opcional — Windows SmartScreen):* como es un proyecto open-source sin certificado comercial pago, si Windows muestra *"Windows protegió su PC"*, tocá **Más información → Ejecutar de todas formas**.
+3. Elegí el idioma del instalador (**Español** o **English**), confirmá la carpeta y tildá si querés un ícono extra en el Escritorio. Al finalizar se abre **HUDMind**.
+4. En la app, abrí **🤖 Proveedores IA** y pegá una API Key gratuita de **Groq** o **Gemini** (o configurá **Ollama** local), elegí tu micrófono/audio y listo.
+
+### 3. ¿Qué instala exactamente en tu PC (y qué NO)?
+
+- **Programa y desinstalador:** `%LOCALAPPDATA%\Programs\HUDMind\HUDMind.Native.exe` y `unins000.exe` (instalación por usuario vía `PrivilegesRequired=lowest`, sin tocar `Program Files` salvo que elijas modo Admin manualmente).
+- **Accesos directos y desinstalación:** acceso directo en el **Menú Inicio** (`HUDMind` con `AppUserModelID = HUDMind.Native.Desktop`), acceso directo opcional en el **Escritorio** y entrada estándar en *Configuración → Aplicaciones* de Windows.
+- **Datos, configuración y reseñas locales (`%LOCALAPPDATA%\HUDMind\`):**
+  - `config\accounts.json` *(API keys cifradas por usuario con **Windows DPAPI** / `crypt32.dll`)*
+  - `config\user_config.json` y `config\telemetry.json`
+  - `profiles\` *(7 perfiles base extraídos del vault sellado + tus reglas/perfiles propios)* y `logs\reviews\` *(logs redactados y resúmenes Markdown post-partida)*
+  - *(Si ejecutás una versión portable junto a una carpeta `profiles\` propia o definís `HUDMIND_HOME`, los datos se leen/guardan en esa carpeta).*
+- **Qué NO instala ni modifica:**
+  - **Cero** drivers de kernel, **cero** servicios en segundo plano, **cero** inyección DLL o lectura de memoria en juegos, y **cero** modificación en carpetas de tus videojuegos.
+  - **Inicio automático con Windows desactivado por defecto:** solo se registra bajo `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\HUDMind` (`--minimized`) si activás explícitamente el checkbox en la app.
+
+### 4. Cómo actualizar y desinstalar
+
+- **Actualizar en 1 clic:** HUDMind verifica GitHub Releases al abrir (y cada 60 min en reposo), descarga la nueva versión en la carpeta que elijas *(por defecto tu carpeta de Descargas)*, valida el hash contra **`SHA256SUMS.txt`** y, si usás la versión instalada con Setup (`unins000.exe`), aplica la actualización silenciosa y reabre la app automáticamente (`⚡ Instalar y Reiniciar`).
+- **Desinstalar:** desde **Configuración de Windows → Aplicaciones → HUDMind → Desinstalar** (o ejecutando `%LOCALAPPDATA%\Programs\HUDMind\unins000.exe`). Para borrar también tu configuración guardada y reseñas, eliminá `%LOCALAPPDATA%\HUDMind\`.
 
 ---
 
@@ -57,7 +90,7 @@
 # 1. Compilar solución completa (0 warnings / 0 errors)
 dotnet build native\HUDMind.sln -c Release
 
-# 2. Suite Core multiplataforma (56 pruebas) + suite nativa Windows (18 pruebas) + smoke WPF
+# 2. Suite Core multiplataforma (58 pruebas) + suite nativa Windows (19 pruebas) + smoke WPF
 dotnet run --project native\HUDMind.Tests\HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native\HUDMind.Windows.Tests\HUDMind.Windows.Tests.csproj -c Release --no-build
 .\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe --smoke-startup
@@ -111,8 +144,8 @@ También podés iniciar directamente con [HUDMind.bat](HUDMind.bat).
 │   ├── HUDMind.Windows/            # GDI Capture, WinMM Audio/Devices, WinRT Natural TTS + OneCore, GSI, OCR, KnownFolders
 │   ├── HUDMind.App/                # UI WPF (0% GPU), PerMonitorV2 Overlay, Tray Icon Win32 y Banner de Updates
 │   ├── HUDMind.Packer/             # Compilador build-time del vault AES-256-GCM (Perfiles + ProtectedAssets -> Vault.bin)
-│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (56 casos)
-│   └── HUDMind.Windows.Tests/      # Suite Win32, WASAPI, GSI, puente RCON, TLS, DPAPI, Startup, Audio & KnownFolders (18 casos)
+│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (58 casos)
+│   └── HUDMind.Windows.Tests/      # Suite Win32, WASAPI, GSI, puente RCON, WS, TLS, DPAPI, Startup, Audio & KnownFolders (19 casos)
 ├── profiles/                       # Perfiles de juegos y prompts tácticos
 ├── docs/                           # Documentación técnica bilingüe (*.es.md y *.en.md)
 └── archive/legacy_python/          # Código Python legado archivado tras la migración a .NET 9

@@ -7,11 +7,11 @@ This file provides immediate architectural, security, testing, and workflow cont
 ## Project Summary
 - **What:** Real-time tactical eSports AI coach for Windows 10/11 (x64) built with **.NET 9 + WPF + pure Win32**, zero external NuGet dependencies, 0% GPU (`RenderMode.SoftwareOnly`), and 100% passive anti-cheat safe observation.
 - **Layers (`native/HUDMind.sln`):**
-  - `HUDMind.Core` (`net9.0` cross-platform): models, config/SSRF/redaction, AES-256-GCM sealed vault profiles (`ProfileVaultReader`/`ProfileVaultCodec`), AI adapters/live backends, `ICoachSafetyPipeline` / `MatchSessionCoordinator`, orchestrators, wire protocol, pipelines (`ConversationalSpeechCoordinator`, `ExternalTelemetryParser`), `Overlay/` (`CompanionHudServer` SSE/HTTP, `CompositeOverlayService`, `InGameOverlayBridgeProtocol`), and `GitHubReleaseUpdateService`.
+  - `HUDMind.Core` (`net9.0` cross-platform): models, config/SSRF/redaction, AES-256-GCM sealed vault profiles (`ProfileVaultReader`/`ProfileVaultCodec`), AI adapters/live backends, `ICoachSafetyPipeline` / `MatchSessionCoordinator`, orchestrators, wire protocol, pipelines (`ConversationalSpeechCoordinator`, `ExternalTelemetryParser`), `Overlay/` (`CompanionHudServer` SSE/HTTP + `?mode=obs`, `QrMatrixEncoder`, `CompositeOverlayService`, `InGameOverlayBridgeProtocol`), and `GitHubReleaseUpdateService`.
   - `HUDMind.Windows` (`net9.0-windows10.0.19041.0`): GDI `StretchBlt` capture, Win32 foreground/hotkeys/PTT, WinMM streaming audio, WinRT TTS/OCR, passive `WasapiAudioSceneMonitor`, `Overlay/` (`LoopbackRconToastBridge`, `InGameOverlayBridgeSetup`), `Sensors/` (`LoopbackWebSocketTelemetrySensor`, GSI TCP, Riot TLS, log tailers), `RuntimeHardeningGuard`, and `KnownFolders`.
-  - `HUDMind.App` (`net9.0-windows10.0.19041.0` WPF): `MainWindow` (with in-app GitHub Releases `UpdateBanner`), click-through `OverlayWindow` (`HWND_TOPMOST` re-assert + active monitor tracking), `Win32TrayIcon`, and `CoachEngineCoordinator`.
+  - `HUDMind.App` (`net9.0-windows10.0.19041.0` WPF): `MainWindow` (with in-app GitHub Releases `UpdateBanner`, 0% GPU LAN QR & OBS URL copy, configurable WS telemetry port), click-through `OverlayWindow` (`HWND_TOPMOST` re-assert + active monitor tracking), `Win32TrayIcon`, and `CoachEngineCoordinator`.
   - `HUDMind.Packer` (`net9.0` build tool, `IsPublishable=false`): compiles `profiles/**/*` and `ProtectedAssets/` into authenticated `HUDMind.Vault.bin` at build time.
-  - `HUDMind.Tests` (`net9.0`, 56 tests) & `HUDMind.Windows.Tests` (`net9.0-windows`, 18 tests).
+  - `HUDMind.Tests` (`net9.0`, 58 tests) & `HUDMind.Windows.Tests` (`net9.0-windows`, 19 tests).
   - `profiles/`: 7 game cartridges compiled into sealed `HUDMind.Vault.bin` (`profiles/*/*.md` filenames are runtime resources—never rename them).
   - `docs/`: All developer/project documentation in bilingual pairs (`*.es.md` and `*.en.md`).
 

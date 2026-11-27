@@ -86,7 +86,10 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
             {
                 try
                 {
-                    var sensor = new TextOnlySensorService(_gsiService);
+                    var sensor = new TextOnlySensorService(
+                        _gsiService,
+                        telemetryWsPort: config.ExternalTelemetryWsPort,
+                        telemetryWsEnabled: config.ExternalTelemetryWsEnabled);
                     if (!sensor.HasOcrEngine)
                         onLog("ℹ️ Windows OCR sin packs de idioma instalados (filtro local de menús por OCR desactivado).");
 
@@ -131,7 +134,10 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                 if (fallbackToClassic)
                     onLog("ℹ️ Tu cuenta prioritaria usa HTTP REST Multi-IA (sin WebSocket Live) — cambiando UI a Turnos Multi-IA.");
 
-                var textOnlySensor = new TextOnlySensorService(_gsiService);
+                var textOnlySensor = new TextOnlySensorService(
+                    _gsiService,
+                    telemetryWsPort: config.ExternalTelemetryWsPort,
+                    telemetryWsEnabled: config.ExternalTelemetryWsEnabled);
                 if (accounts.Any(a => a.IsReady() && !a.SupportsVision) && !textOnlySensor.HasOcrEngine)
                     onLog("⚠ Tu cuenta prioritaria es ciego-texto pero falta el pack OCR de Windows (solo usarán logs si existen).");
 

@@ -54,7 +54,7 @@
                     <DockPanel>
                         <Button x:Name="BtnVersionCheck"
                                 DockPanel.Dock="Left"
-                                Content="v1.3.0"
+                                Content="v1.4.0"
                                 FontSize="10.5"
                                 Padding="9,4"
                                 Background="#09121C"
@@ -829,14 +829,23 @@
                                             <CheckBox x:Name="ChkOverlayFollowMonitor" Content="Seguir monitor activo del juego" Margin="0,0,20,6" ToolTip="Reubica automáticamente el cartel al monitor donde estés jugando." />
                                             <CheckBox x:Name="ChkEnableCompanionHud" Content="Companion Web HUD (Pantalla Completa / 2º monitor)" Margin="0,0,20,6" Checked="CompanionHudSettingChanged" Unchecked="CompanionHudSettingChanged" ToolTip="Inicia un mini HUD web local (0% GPU, 0% riesgo anti-cheat) para verlo en otro monitor, OBS Browser Source o el celular." />
                                             <CheckBox x:Name="ChkCompanionLan" Content="Permitir celular en Wi-Fi (LAN)" Margin="0,0,20,6" Checked="CompanionHudSettingChanged" Unchecked="CompanionHudSettingChanged" ToolTip="Habilita acceso por red Wi-Fi local usando una URL con clave temporal de sesión." />
-                                            <CheckBox x:Name="ChkEnableInGameOverlayBridge" Content="Puente HUD externo en juego (Pantalla Completa)" Margin="0,0,0,6" ToolTip="Reenvía callouts finales vía WebSocket local (127.0.0.1 RCON) a puentes/mods compatibles del propio juego para ver avisos dentro de pantalla completa exclusiva sin hooks." />
+                                            <CheckBox x:Name="ChkEnableInGameOverlayBridge" Content="Puente HUD externo en juego (Pantalla Completa)" Margin="0,0,0,6" Checked="InGameOverlayBridgeSettingChanged" Unchecked="InGameOverlayBridgeSettingChanged" ToolTip="Reenvía callouts finales vía WebSocket local (127.0.0.1 RCON) a puentes/mods compatibles del propio juego para ver avisos dentro de pantalla completa exclusiva sin hooks." />
                                         </WrapPanel>
-                                        <Border x:Name="CompanionUrlBar" Visibility="Collapsed" Background="#07101B" BorderBrush="#1E3A5F" BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,0,0,10">
+                                        <Border x:Name="CompanionUrlBar" Visibility="Collapsed" Background="#07101B" BorderBrush="#1E3A5F" BorderThickness="1" CornerRadius="6" Padding="10,8" Margin="0,0,0,10">
                                             <DockPanel LastChildFill="True">
-                                                <Button DockPanel.Dock="Right" Content="🌐 Abrir" Padding="10,4" Margin="6,0,0,0" Click="BtnOpenCompanionUrl_Click" ToolTip="Abre el HUD Companion en tu navegador (ideal también para OBS Browser Source)" />
-                                                <Button DockPanel.Dock="Right" Content="📋 Copiar URL" Padding="10,4" Margin="8,0,0,0" Click="BtnCopyCompanionUrl_Click" />
-                                                <TextBlock DockPanel.Dock="Left" Text="URL Companion:" Foreground="#94A3B8" FontSize="11.5" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0" />
-                                                <TextBox x:Name="TxtCompanionUrl" IsReadOnly="True" BorderThickness="0" Background="Transparent" Foreground="#22D3EE" FontFamily="Consolas" FontSize="11.5" VerticalAlignment="Center" />
+                                                <Border x:Name="BorderCompanionQr" DockPanel.Dock="Right" Visibility="Collapsed" Background="#FFFFFF" CornerRadius="4" Padding="4" Margin="10,0,0,0" ToolTip="Escaneá este QR con tu celular en la misma Wi-Fi para abrir el Companion HUD sin tipear nada">
+                                                    <Image x:Name="ImgCompanionQr" Width="92" Height="92" RenderOptions.BitmapScalingMode="NearestNeighbor" SnapsToDevicePixels="True" />
+                                                </Border>
+                                                <StackPanel VerticalAlignment="Center">
+                                                    <DockPanel LastChildFill="True">
+                                                        <Button DockPanel.Dock="Right" Content="🌐 Abrir" Padding="9,4" Margin="6,0,0,0" Click="BtnOpenCompanionUrl_Click" ToolTip="Abre el HUD Companion en tu navegador" />
+                                                        <Button DockPanel.Dock="Right" Content="📺 URL OBS" Padding="9,4" Margin="6,0,0,0" Click="BtnCopyCompanionObsUrl_Click" ToolTip="Copia la URL transparente (?mode=obs) ideal para OBS Browser Source" />
+                                                        <Button DockPanel.Dock="Right" Content="📋 Copiar" Padding="9,4" Margin="6,0,0,0" Click="BtnCopyCompanionUrl_Click" />
+                                                        <TextBlock DockPanel.Dock="Left" Text="URL Companion:" Foreground="#94A3B8" FontSize="11.5" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                                        <TextBox x:Name="TxtCompanionUrl" IsReadOnly="True" BorderThickness="0" Background="Transparent" Foreground="#22D3EE" FontFamily="Consolas" FontSize="11.5" VerticalAlignment="Center" />
+                                                    </DockPanel>
+                                                    <TextBlock x:Name="TxtCompanionQrHint" Visibility="Collapsed" Text="📱 Escaneá el QR con tu celular (misma Wi-Fi) o usá '📺 URL OBS' para overlay transparente en OBS." Foreground="#64748B" FontSize="10.5" Margin="0,5,0,0" TextWrapping="Wrap" />
+                                                </StackPanel>
                                             </DockPanel>
                                         </Border>
                                         <Grid>
@@ -899,7 +908,8 @@
                                             <CheckBox x:Name="ChkEnableHotkeys" Content="Activar teclas rápidas dentro del juego" Margin="0,0,20,6" />
                                             <CheckBox x:Name="ChkMinimizeToTray" Content="Minimizar junto al reloj (Bandeja)" Margin="0,0,20,6" />
                                             <CheckBox x:Name="ChkLaunchWithWindows" Content="Iniciar con Windows minimizado junto al reloj" IsChecked="False" Margin="0,0,20,6" ToolTip="Desactivado por defecto: marcalo solo si querés que HUDMind arranque en segundo plano al encender la PC." />
-                                            <CheckBox x:Name="ChkCheckUpdatesOnStartup" Content="Avisar nuevas versiones disponibles" Margin="0,0,0,6" ToolTip="Busca actualizaciones en GitHub Releases al abrir y cada 60 min en reposo." />
+                                            <CheckBox x:Name="ChkCheckUpdatesOnStartup" Content="Avisar nuevas versiones disponibles" Margin="0,0,20,6" ToolTip="Busca actualizaciones en GitHub Releases al abrir y cada 60 min en reposo." />
+                                            <CheckBox x:Name="ChkExternalTelemetryWs" Content="Telemetría WebSocket local (ws://127.0.0.1)" Margin="0,0,0,6" ToolTip="Escucha eventos pasivos JSON en loopback (replays, clock, boost, score, hudmind:telemetry). 0 ms de impacto si no hay relay." />
                                         </WrapPanel>
                                         <Grid Margin="0,0,0,10">
                                             <Grid.ColumnDefinitions>
@@ -907,6 +917,7 @@
                                                 <ColumnDefinition Width="360" />
                                             </Grid.ColumnDefinitions>
                                             <Grid.RowDefinitions>
+                                                <RowDefinition Height="36" />
                                                 <RowDefinition Height="36" />
                                                 <RowDefinition Height="36" />
                                                 <RowDefinition Height="36" />
@@ -924,6 +935,9 @@
 
                                             <TextBlock Grid.Row="3" Grid.Column="0" Text="Tecla Chat Rápido en Juego:" VerticalAlignment="Center" />
                                             <TextBox x:Name="TxtQuickChatKey" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" ToolTip="Abre un chat rápido flotante sin salir del juego (ej: F7, Alt+Q, Insert)" />
+
+                                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Puerto WS Telemetría Local:" VerticalAlignment="Center" />
+                                            <TextBox x:Name="TxtTelemetryWsPort" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" ToolTip="Puerto loopback ws://127.0.0.1 (por defecto 49122, rango 1024-65535)" />
                                         </Grid>
                                         <WrapPanel>
                                             <Button Content="🎮 Activar conexión CS2 / Dota 2" Click="BtnInstallGsi_Click" Margin="0,0,10,4" ToolTip="Instala el archivo oficial de lectura de partida en Steam (100% seguro, sin tocar memoria)" />

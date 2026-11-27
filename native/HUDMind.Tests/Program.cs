@@ -3097,6 +3097,96 @@ await RunTest("56. InGameOverlayBridgeProtocol CWE-77 sanitization, ExternalTele
     return Task.CompletedTask;
 });
 
+// 57. QrMatrixEncoder (ISO Level-L versions, finder/timing invariants, RS syndrome) & CompanionHudServer OBS ticker mode
+await RunTest("57. QrMatrixEncoder ISO patterns/RS syndrome & CompanionHudServer OBS ticker mode", async () =>
+{
+    Assert(QrMatrixEncoder.TryEncode("") is null, "Empty QR input must return null");
+    Assert(QrMatrixEncoder.TryEncode(new string('A', QrMatrixEncoder.MaxPayloadBytes + 1)) is null,
+        "Oversized payload >106 bytes must return null cleanly");
+
+    string url = "http://192.168.1.42:17890/?k=a1b2c3d4e5f6";
+    var qr = QrMatrixEncoder.TryEncode(url);
+    Assert(qr is not null, "Valid LAN Companion URL must encode to QR matrix");
+    int size = qr!.GetLength(0);
+    Assert(size == qr.GetLength(1) && size == 29, $"42-char LAN URL should select V3 29x29 QR (got {size}x{qr.GetLength(1)})");
+
+    // Verify top-left, top-right & bottom-left 7x7 finder cores + dark module (size-8, 8)
+    Assert(qr[0, 0] && !qr[1, 1] && qr[3, 3] && !qr[1, 5] && qr[6, 6], "Top-left finder pattern mismatch");
+    Assert(qr[0, size - 7] && qr[3, size - 4] && !qr[1, size - 2], "Top-right finder pattern mismatch");
+    Assert(qr[size - 7, 0] && qr[size - 4, 3] && !qr[size - 2, 1], "Bottom-left finder pattern mismatch");
+    Assert(qr[size - 8, 8], "Mandatory dark module (4V+9, 8) must be set");
+
+    // Timing patterns alternating along row 6 and col 6
+    for (int i = 8; i < size - 8; i++)
+    {
+        bool expected = (i & 1) == 0;
+        Assert(qr[6, i] == expected && qr[i, 6] == expected, $"Timing pattern bit mismatch at index {i}");
+    }
+
+    // Verify Reed-Solomon error-correction syndrome == 0 across random data payload
+    byte[] sampleData = [0x42, 0xA7, 0x19, 0x00, 0xFE, 0x55, 0x11, 0x89, 0x3C, 0xD0];
+    byte[] ec = QrMatrixEncoder.ComputeReedSolomonEc(sampleData, 10);
+    Assert(ec.Length == 10 && QrMatrixEncoder.VerifyReedSolomonSyndrome(sampleData, ec),
+        "Reed-Solomon EC syndrome check failed");
+
+    // CompanionHudServer exposes ?mode=obs URL & transparent OBS mode styling inside CSP-hardened HTML
+    await using var hud = new CompanionHudServer();
+    var (started, _, _) = await hud.EnsureStartedAsync(preferredPort: 0, allowLan: false, maxMessages: 3);
+    Assert(started && hud.ObsLocalUrl.EndsWith("/?mode=obs", StringComparison.Ordinal),
+        $"Expected OBS local URL ending with /?mode=obs (got '{hud.ObsLocalUrl}')");
+    using var tcp = new System.Net.Sockets.TcpClient("127.0.0.1", hud.BoundPort);
+    using var ns = tcp.GetStream();
+    await ns.WriteAsync(Encoding.ASCII.GetBytes("GET /?mode=obs HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"));
+    using var reader = new StreamReader(ns, Encoding.UTF8);
+    string htmlResp = await reader.ReadToEndAsync();
+    Assert(htmlResp.Contains("200 OK", StringComparison.Ordinal) &&
+           htmlResp.Contains("obs-mode", StringComparison.Ordinal) &&
+           htmlResp.Contains("Content-Security-Policy: default-src 'none'", StringComparison.Ordinal),
+        "Companion HUD OBS HTML response must preserve CSP and .obs-mode support");
+});
+
+// 58. InGameOverlayBridgeProtocol.EnsureRconConfigEnabled, generic hudmind:telemetry normalization & UserConfig WS port persistence
+await RunTest("58. EnsureRconConfigEnabled, generic hudmind:telemetry JSON & UserConfig WS port", () =>
+{
+    const string existingCfg = "// User settings\nrcon_port \"9005\"\nrcon_enabled \"0\"\n";
+    var (upd1, changed1, hasSec1) = InGameOverlayBridgeProtocol.EnsureRconConfigEnabled(existingCfg, "AutoSecret99");
+    Assert(changed1 && hasSec1, "EnsureRconConfigEnabled must flip rcon_enabled 0->1 and append missing secret");
+    var parsed1 = InGameOverlayBridgeProtocol.ParseRconBridgeConfig(upd1);
+    Assert(parsed1.Enabled && parsed1.Port == 9005 && parsed1.SecretToken == "AutoSecret99",
+        $"Parsed updated config mismatch: {parsed1}");
+
+    // Running again must be idempotent and never overwrite existing rcon_password
+    var (upd2, changed2, _) = InGameOverlayBridgeProtocol.EnsureRconConfigEnabled(upd1, "ShouldNotReplace");
+    Assert(!changed2 && upd2.Contains("AutoSecret99", StringComparison.Ordinal) && !upd2.Contains("ShouldNotReplace", StringComparison.Ordinal),
+        "EnsureRconConfigEnabled must be idempotent and preserve existing secret");
+
+    // Generic hudmind:telemetry JSON parsing with prompt-injection char stripping -> TacticalSignalEvaluator
+    string genericPlay = "{\"event\":\"hudmind:telemetry\",\"phase\":\"play\",\"resource\":14,\"clock\":\"01:12\",\"score\":\"5-6\",\"fact\":\"Low<script> boost, play safe|rot\"}";
+    Assert(ExternalTelemetryParser.TryParseStateEventJson(genericPlay, out var playSummary) &&
+           playSummary.StartsWith("LOCAL_WS_TELEMETRY:", StringComparison.Ordinal) &&
+           playSummary.Contains("Resource=14%", StringComparison.Ordinal) &&
+           !playSummary.Contains('<') && !playSummary.Contains('|'),
+        $"Generic hudmind:telemetry sanitize/parse failed: {playSummary}");
+
+    var tracker = new TacticalSignalTracker();
+    var prof = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "valorant", DisplayName = "VALORANT" } };
+    var evalPlay = TacticalSignalEvaluator.Evaluate(playSummary, prof, tracker, isEn: true);
+    Assert(evalPlay.TriggerImmediate && !evalPlay.ShouldSilence && !string.IsNullOrEmpty(evalPlay.DeterministicFact),
+        $"Generic WS urgent fact should trigger immediate coaching: {evalPlay}");
+
+    string genericMenu = "{\"event\":\"hudmind:telemetry\",\"phase\":\"menu\"}";
+    Assert(ExternalTelemetryParser.TryParseStateEventJson(genericMenu, out var menuSummary), "Generic MENU parse failed");
+    var evalMenu = TacticalSignalEvaluator.Evaluate(menuSummary, prof, tracker, isEn: true);
+    Assert(evalMenu.ShouldSilence && evalMenu.PhaseTag == "MENU", $"Generic MENU phase must silence coach: {evalMenu}");
+
+    var src = new UserConfig { ExternalTelemetryWsEnabled = false, ExternalTelemetryWsPort = 49999 };
+    var dst = new UserConfig();
+    dst.CopyRuntimePreferencesFrom(src);
+    Assert(!dst.ExternalTelemetryWsEnabled && dst.ExternalTelemetryWsPort == 49999,
+        "CopyRuntimePreferencesFrom must preserve ExternalTelemetryWsEnabled & ExternalTelemetryWsPort");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

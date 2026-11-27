@@ -31,11 +31,13 @@ public sealed class TextOnlySensorService : ITextOnlySensorService, IDisposable
 
     public TextOnlySensorService(
         LoopbackGsiService? gsiService = null,
-        IEnumerable<IGameTelemetrySensor>? additionalSensors = null)
+        IEnumerable<IGameTelemetrySensor>? additionalSensors = null,
+        int telemetryWsPort = HUDMind.Core.Overlay.InGameOverlayBridgeProtocol.DefaultTelemetryWsPort,
+        bool telemetryWsEnabled = true)
     {
         _sensors =
         [
-            new LoopbackWebSocketTelemetrySensor(),
+            new LoopbackWebSocketTelemetrySensor(telemetryWsPort, telemetryWsEnabled),
             new RocketLeagueLogSensor(),
             new ValorantLogSensor(),
             new LeagueLiveClientSensor()

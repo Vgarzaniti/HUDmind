@@ -15,6 +15,7 @@ namespace HUDMind.Windows;
 public sealed class LoopbackWebSocketTelemetrySensor : IGameTelemetrySensor, IDisposable
 {
     private readonly int _port;
+    private readonly bool _enabled;
     private readonly object _sync = new();
     private CancellationTokenSource? _cts;
     private Task? _listenerTask;
@@ -24,15 +25,21 @@ public sealed class LoopbackWebSocketTelemetrySensor : IGameTelemetrySensor, IDi
     private bool _disposed;
 
     public string SensorId => "loopback_ws_telemetry";
+    public int Port => _port;
+    public bool IsEnabled => _enabled;
 
-    public LoopbackWebSocketTelemetrySensor(int port = InGameOverlayBridgeProtocol.DefaultTelemetryWsPort)
+    public LoopbackWebSocketTelemetrySensor(
+        int port = InGameOverlayBridgeProtocol.DefaultTelemetryWsPort,
+        bool enabled = true)
     {
-        _port = Math.Clamp(port, 1024, 65535);
+        _port = Math.Clamp(port <= 0 ? InGameOverlayBridgeProtocol.DefaultTelemetryWsPort : port, 1024, 65535);
+        _enabled = enabled;
     }
 
     public bool Supports(GameProfile profile) =>
-        profile.Manifest.GameId.Equals("rocket_league", StringComparison.OrdinalIgnoreCase) ||
-        profile.MatchesProcess("RocketLeague.exe");
+        _enabled &&
+        profile is not null &&
+        !profile.Manifest.GameId.Equals("desktop", StringComparison.OrdinalIgnoreCase);
 
     public Task<string> ReadAsync(GameProfile profile, CancellationToken ct = default)
     {

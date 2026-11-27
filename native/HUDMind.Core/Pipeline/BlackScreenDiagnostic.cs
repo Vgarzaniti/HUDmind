@@ -39,10 +39,10 @@ public sealed class BlackScreenDiagnostic
         {
             _warnedForStreak = true;
             var name = activeProfile.Manifest.DisplayName;
-            onLog?.Invoke($"⚠ Captura en negro consecutiva detectada en '{name}': si jugás en Pantalla Completa Exclusiva, cambialo a 'Ventana sin bordes' (Borderless) para que HUDMind vea el HUD.");
+            onLog?.Invoke($"⚠ Captura en negro consecutiva en '{name}': si jugás en Pantalla Completa Exclusiva, cambialo a 'Ventana sin bordes' (Borderless) o usá Companion Web HUD / Puente HUD local para verlo sin perder pantalla completa.");
             if (enableOverlay)
                 overlay?.ShowMessage(new OverlayCalloutMessage(
-                    "⚠ Captura negra: usá Ventana sin bordes (Borderless)",
+                    "⚠ Pantalla negra: usá Borderless o Companion HUD",
                     UrgencyLevel.Medium,
                     name,
                     4.5,
