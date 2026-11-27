@@ -72,6 +72,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private int _disposeOnce;
 
     private ulong? _lastSentHash;
+    private ulong? _lastPassiveWsHash;
     private long _framesSent;
     private long _interventions;
     private double _lastCaptureMs;
@@ -83,11 +84,15 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private long _lastOverlayAudioTick;
     private int _lastPttActiveState;
     private long _lastAutoNudgeUtcTicks;
+    private long _lastSpeechCompletedUtcTicks;
     private long _lastMicVoiceUtcTicks;
     private long _lastPttHeldUtcTicks;
     private long _lastWebSocketFrameTick;
     private long _lastMicVisualBurstTick;
     private int _proactiveTurnInFlight;
+    private int _sessionCompletedTurns;
+    private int _suppressNextConnectedOverlay;
+    private int _pendingMatchEndReset;
 
     public bool IsRunning => Volatile.Read(ref _runCts) is { IsCancellationRequested: false };
     public bool IsPaused => _userPaused;
@@ -291,6 +296,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             _bargeInMuted = false;
             _suppressCurrentTurnAudio = false;
             Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, 0);
+            Interlocked.Exchange(ref _lastSpeechCompletedUtcTicks, 0);
             Interlocked.Exchange(ref _lastPttHeldUtcTicks, 0);
             Interlocked.Exchange(ref _lastWebSocketFrameTick, 0);
             Interlocked.Exchange(ref _lastMicVisualBurstTick, 0);
@@ -302,6 +308,9 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             Interlocked.Exchange(ref _proactiveTurnSeq, 0);
             Interlocked.Exchange(ref _proactiveRetryAfterUtcTicks, 0);
             Interlocked.Exchange(ref _proactiveTurnInFlight, 0);
+            Interlocked.Exchange(ref _sessionCompletedTurns, 0);
+            Interlocked.Exchange(ref _suppressNextConnectedOverlay, 0);
+            Interlocked.Exchange(ref _pendingMatchEndReset, 0);
             lock (_followUpLock) _pendingLiveFollowUpTopic = null;
             lock (_hashLock) _lastSentHash = null;
 
@@ -516,7 +525,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         {
             _onLog?.Invoke($"💬 Vos: \"{msg}\"");
             _onLog?.Invoke($"🛡️ Coach [safety-guard]: \"{inputGuard.SafeRedirectReply}\"");
-            if (_config.EnableOverlay && !_userPaused)
+            if (_config.IsAnyOverlayEnabled && !_userPaused)
             {
                 _overlay.ShowMessage(new OverlayCalloutMessage(
                     inputGuard.SafeRedirectReply,
@@ -556,7 +565,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 try
                 {
                     _onLog?.Invoke($"💬 Vos: \"{msg}\"");
-                    if (_config.EnableOverlay && !_userPaused)
+                    if (_config.IsAnyOverlayEnabled && !_userPaused)
                     {
                         _overlay.ShowMessage(new OverlayCalloutMessage(
                             msg,
@@ -575,8 +584,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         ? _session.FrameRingBuffer.BuildVisualClipPayload(
                             _storyboardComposer,
                             freshFrame,
-                            maxFrames: 6,
-                            maxAgeSeconds: 8.0,
+                            maxFrames: 4,
+                            maxAgeSeconds: 4.5,
                             jpegQuality: Math.Max(cfgQuality, 84),
                             isEn: isEn)
                         : null;
@@ -692,14 +701,14 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         if (pausedNow)
         {
             _onLog?.Invoke($"Coach Live PAUSADO ({_config.HotkeyTogglePause} para reanudar).");
-            if (_config.EnableOverlay)
+            if (_config.IsAnyOverlayEnabled)
                 _overlay.ShowMessage(new OverlayCalloutMessage($"Coach Live PAUSADO — {_config.HotkeyTogglePause}", UrgencyLevel.Low, title, 2.5, OverlayEntryKind.Status, "HUD"));
         }
         else
         {
             WakeNow();
             _onLog?.Invoke("Coach Live REANUDADO.");
-            if (_config.EnableOverlay)
+            if (_config.IsAnyOverlayEnabled)
             {
                 _overlay.ShowMessage(new OverlayCalloutMessage(
                     textOnlyNow ? "Coach Live ACTIVO — solo texto" : micNow ? "Coach Live ACTIVO — charla en vivo" : "Coach Live ACTIVO — solo voz del coach",
@@ -757,8 +766,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
                 _storyboardComposer,
                 freshFrame,
-                maxFrames: 6,
-                maxAgeSeconds: 8.0,
+                maxFrames: 4,
+                maxAgeSeconds: 4.5,
                 jpegQuality: Math.Max(cfgQuality, 84),
                 isEn: isEn);
 
@@ -844,6 +853,9 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             return;
                         hadValidSession = true;
                         rapidFailures = 0;
+                        Interlocked.Exchange(ref _sessionCompletedTurns, 0);
+                        Interlocked.Exchange(ref _pendingMatchEndReset, 0);
+                        bool quietRefresh = Interlocked.Exchange(ref _suppressNextConnectedOverlay, 0) == 1;
                         var voiceName = _backend.ResolveVoiceName(_config.VoiceGender);
                         string modeDesc = _config.IsTextOnlyMode
                             ? $"💬 SOLO TEXTO (silencioso — escribí abajo o tocá {_config.HotkeyAnalyzeNow})"
@@ -851,8 +863,9 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                 ? $"🔊 SOLO VOZ COACH ({voiceName} · mic apagado)"
                                 : $"🎙 CHARLA ({voiceName} · hablale por mic o escribí)";
 
-                        _onLog?.Invoke($"LIVE LISTO [{_backend.ProviderName} · {_backend.ActiveModelLabel}] · {modeDesc}");
-                        if (_config.EnableOverlay && !_userPaused)
+                        if (!quietRefresh)
+                            _onLog?.Invoke($"LIVE LISTO [{_backend.ProviderName} · {_backend.ActiveModelLabel}] · {modeDesc}");
+                        if (_config.IsAnyOverlayEnabled && !_userPaused && !quietRefresh)
                         {
                             _overlay.ShowMessage(new OverlayCalloutMessage(
                                 _config.IsTextOnlyMode
@@ -969,7 +982,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         double coachLevel01,
         bool force = false)
     {
-        if (!_config.EnableOverlay)
+        if (!_config.IsAnyOverlayEnabled)
             return;
         long prev = Interlocked.Read(ref _lastOverlayAudioTick);
         if (!force && prev != 0 && Stopwatch.GetElapsedTime(prev).TotalMilliseconds < 65.0)
@@ -992,7 +1005,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 _modelSpeaking = false;
                 _pcmPlayer.InterruptAndClear();
             }
-            if (_config.EnableOverlay && !_userPaused)
+            if (_config.IsAnyOverlayEnabled && !_userPaused)
             {
                 var title = (sessionProfile ?? _session.ActiveProfile)?.Manifest.DisplayName ?? "HUDMind Live";
                 _overlay.ShowMessage(new OverlayCalloutMessage(outGuard.FallbackReplacement, UrgencyLevel.Low, title, 3.0, OverlayEntryKind.Status, "HUD"));
@@ -1007,9 +1020,11 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 Volatile.Write(ref _lastTtfaMs, Stopwatch.GetElapsedTime(reqTick).TotalMilliseconds);
         }
 
-        // Coalesce partial overlay updates (~90ms) to keep 0% GPU CPU rasterization ultra-light!
-        bool isNoneMarker = currentLine.Trim().Trim('.', '!', ' ').Equals("NONE", StringComparison.OrdinalIgnoreCase);
-        if (!isNoneMarker && _config.EnableOverlay && !_userPaused && currentLine.Length >= 5)
+        // Coalesce partial overlay updates (~90ms) while suppressing overlay noise for silent-marker prefixes.
+        // Keep buffering PCM cleanly until HandleTurnComplete decides suppression on the finished transcript
+        // so valid turns starting with "Nada..." or "None..." never lose opening audio.
+        bool isSilentPartial = CompactWireProtocol.IsSilentMarker(currentLine, includeAmbiguousNo: false);
+        if (!isSilentPartial && _config.IsAnyOverlayEnabled && !_userPaused && currentLine.Length >= 5)
         {
             long prevTick = Interlocked.Read(ref _lastOverlayPartialTick);
             if (prevTick == 0 || Stopwatch.GetElapsedTime(prevTick).TotalMilliseconds >= 90.0)
@@ -1031,12 +1046,14 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     {
         bool staleEpoch = _session.CurrentEpoch != sessionEpoch;
         bool isEnOut = CoachingPersonaBuilder.IsEnglish(_config);
+        bool effectiveSilent = string.IsNullOrWhiteSpace(spoken) ||
+            CompactWireProtocol.IsSilentMarker(spoken, includeAmbiguousNo: true);
         var outGuard = _safety.InspectAndCleanModelOutput(spoken, isEnOut);
 
         bool allowFlush;
         lock (_audioStateLock)
         {
-            allowFlush = !staleEpoch && outGuard.IsSafe && _config.IsCoachVoiceActive && !_userPaused && !_bargeInMuted && !_suppressCurrentTurnAudio;
+            allowFlush = !staleEpoch && !effectiveSilent && outGuard.IsSafe && _config.IsCoachVoiceActive && !_userPaused && !_bargeInMuted && !_suppressCurrentTurnAudio;
             if (allowFlush)
                 _pcmPlayer.FlushBuffered();
             else
@@ -1058,8 +1075,6 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             coachLevel01: 0,
             force: true);
 
-        bool effectiveSilent = string.IsNullOrWhiteSpace(spoken) ||
-            spoken.Trim().Trim('.', '!', ' ').Equals("NONE", StringComparison.OrdinalIgnoreCase);
         if (!staleEpoch && effectiveSilent)
         {
             // Proactive turn returned empty/NONE -> enforce dedicated <=2.5s retry delay (immune to spike/multiplier bypass)
@@ -1082,7 +1097,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             var prof = sessionProfile ?? _session.ActiveProfile;
             if (!outGuard.IsSafe)
             {
-                if (_config.EnableOverlay && !_userPaused)
+                if (_config.IsAnyOverlayEnabled && !_userPaused)
                 {
                     _overlay.ShowMessage(new OverlayCalloutMessage(
                         outGuard.FallbackReplacement,
@@ -1099,15 +1114,20 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 return;
             }
 
-            _session.Memory.RecordObservation("LIVE", spoken);
-            _session.Memory.RecordMatchEvent(
-                prof?.Manifest.GameId ?? string.Empty,
-                prof?.Manifest.DisplayName ?? "HUDMind Live",
-                "LIVE",
-                string.Empty,
-                spoken);
+            Interlocked.Increment(ref _sessionCompletedTurns);
+            Interlocked.Exchange(ref _lastSpeechCompletedUtcTicks, _timeProvider.GetUtcNow().UtcTicks);
+            if (!IsSafetyDeflectionBoilerplate(spoken))
+            {
+                _session.Memory.RecordObservation("LIVE", spoken);
+                _session.Memory.RecordMatchEvent(
+                    prof?.Manifest.GameId ?? string.Empty,
+                    prof?.Manifest.DisplayName ?? "HUDMind Live",
+                    "LIVE",
+                    string.Empty,
+                    spoken);
+            }
 
-            if (_config.EnableOverlay && !_userPaused)
+            if (_config.IsAnyOverlayEnabled && !_userPaused)
             {
                 _overlay.ShowMessage(new OverlayCalloutMessage(
                     spoken,
@@ -1323,7 +1343,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     }
                     else
                     {
-                        if (rms >= 460.0)
+                        if (rms >= 540.0)
                         {
                             Interlocked.Exchange(ref _lastMicVoiceUtcTicks, nowTicks);
                             Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
@@ -1505,11 +1525,19 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         if (switchOutcome.Switched)
                         {
                             Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, 0);
+                            Interlocked.Exchange(ref _lastSpeechCompletedUtcTicks, 0);
                             Interlocked.Exchange(ref _proactiveRetryAfterUtcTicks, 0);
                             Interlocked.Exchange(ref _proactiveTurnInFlight, 0);
+                            Interlocked.Exchange(ref _sessionCompletedTurns, 0);
+                            Interlocked.Exchange(ref _suppressNextConnectedOverlay, 0);
+                            Interlocked.Exchange(ref _pendingMatchEndReset, 0);
                             Interlocked.Exchange(ref _proactiveTurnSeq, 0);
                             lock (_followUpLock) _pendingLiveFollowUpTopic = null;
-                            lock (_hashLock) _lastSentHash = null;
+                            lock (_hashLock)
+                            {
+                                _lastSentHash = null;
+                                _lastPassiveWsHash = null;
+                            }
                             _localPhaseGate?.Reset();
                             EmitStats();
 
@@ -1535,11 +1563,14 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             ? await _localPhaseGate.ReadTelemetryAsync(activeProf, ct)
                             : string.Empty;
                         var tactical = _session.EvaluateTacticalSignal(rawTelemetry, activeProf, _config, isEnEval);
+                        if (!_testMode && tactical.MatchEnded)
+                            Interlocked.Exchange(ref _pendingMatchEndReset, 1);
 
                         double autoSec = _config.LiveAutoCoachSeconds;
                         long nowTicks = _timeProvider.GetUtcNow().UtcTicks;
                         long lastMicTicks = Interlocked.Read(ref _lastMicVoiceUtcTicks);
                         long lastNudgeTicks = Interlocked.Read(ref _lastAutoNudgeUtcTicks);
+                        long lastSpeechDoneTicks = Interlocked.Read(ref _lastSpeechCompletedUtcTicks);
                         long retryAfterTicks = Interlocked.Read(ref _proactiveRetryAfterUtcTicks);
                         bool inRetryBackoff = retryAfterTicks > 0 && nowTicks < retryAfterTicks;
 
@@ -1552,20 +1583,39 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             && Stopwatch.GetElapsedTime(reqTick).TotalSeconds < pendingShieldSec;
                         bool canVoiceTurn = autoSec > 0 && !_modelSpeaking && !_pcmPlayer.IsPlayingAudio && !waitingPending && !userRecentlySpoke && !inRetryBackoff;
 
-                        double motionEnergy = _session.FrameRingBuffer.ComputeRecentMotionEnergy();
-                        bool visualSpike = motionEnergy >= 0.42 && _session.FrameRingBuffer.MacroCount >= 2;
+                        if (!_testMode && Volatile.Read(ref _pendingMatchEndReset) == 1 &&
+                            !_modelSpeaking && !_pcmPlayer.IsPlayingAudio && !waitingPending && !userRecentlySpoke)
+                        {
+                            Interlocked.Exchange(ref _pendingMatchEndReset, 0);
+                            _onLog?.Invoke("Partida finalizada — limpiando contexto Live para la próxima.");
+                            _ = _backend.ResetSessionStateAsync();
+                            RefreshLivePersona("nueva partida");
+                            break;
+                        }
 
-                        // If an urgent signal or spike occurs while coach is still speaking, queue natural follow-up rather than skipping or interrupting!
-                        if ((tactical.TriggerImmediate || visualSpike) && autoSec > 0 && !tactical.ShouldSilence &&
+                        if (!_testMode && Volatile.Read(ref _sessionCompletedTurns) >= 18 &&
+                            !_modelSpeaking && !_pcmPlayer.IsPlayingAudio && !waitingPending && !userRecentlySpoke)
+                        {
+                            Interlocked.Exchange(ref _suppressNextConnectedOverlay, 1);
+                            _ = _backend.ResetSessionStateAsync();
+                            RefreshLivePersona("contexto fresco");
+                            break;
+                        }
+
+                        double motionEnergy = _session.FrameRingBuffer.ComputeRecentMotionEnergy();
+                        bool visualSpike = motionEnergy >= 0.58 && _session.FrameRingBuffer.MacroCount >= 2;
+
+                        // Queue natural follow-up strictly for verified tactical alerts occurring mid-utterance (never generic camera pans)
+                        if (tactical.TriggerImmediate && autoSec > 0 && !tactical.ShouldSilence &&
                             (_modelSpeaking || _pcmPlayer.IsPlayingAudio || waitingPending))
                         {
                             lock (_followUpLock)
                             {
                                 _pendingLiveFollowUpTopic = !string.IsNullOrWhiteSpace(tactical.DeterministicFact)
                                     ? tactical.DeterministicFact
-                                    : (visualSpike ? (isEnEval ? "high-action play transition" : "cambio rápido de jugada") : "tactical shift");
-                                _pendingLiveFollowUpUrgent = tactical.TriggerImmediate;
-                                _pendingLiveFollowUpExpiresUtc = _timeProvider.GetUtcNow().AddSeconds(4.0);
+                                    : (isEnEval ? "tactical shift" : "cambio táctico");
+                                _pendingLiveFollowUpUrgent = true;
+                                _pendingLiveFollowUpExpiresUtc = _timeProvider.GetUtcNow().AddSeconds(2.0);
                             }
                         }
 
@@ -1592,15 +1642,22 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         }
 
                         double scaledAutoSec = autoSec * tactical.CooldownMultiplier;
-                        bool regularDue = canVoiceTurn &&
+                        double minPostSpeechGapSec = followUpTopic is not null
+                            ? 1.0
+                            : Math.Min(3.5, Math.Max(1.8, scaledAutoSec * 0.45));
+                        bool postSpeechReady = lastSpeechDoneTicks == 0 ||
+                            (nowTicks - lastSpeechDoneTicks) >= TimeSpan.FromSeconds(minPostSpeechGapSec).Ticks;
+
+                        bool regularDue = canVoiceTurn && postSpeechReady &&
                             (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(scaledAutoSec).Ticks);
-                        double eventFloorSec = visualSpike ? Math.Max(3.2, autoSec * 0.55) : Math.Max(3.0, autoSec * 0.45);
-                        bool eventDue = canVoiceTurn && (tactical.TriggerImmediate || visualSpike || followUpTopic is not null) &&
+                        double eventFloorSec = visualSpike ? Math.Max(4.2, autoSec * 0.60) : Math.Max(3.5, autoSec * 0.50);
+                        bool eventDue = canVoiceTurn && postSpeechReady && (tactical.TriggerImmediate || visualSpike || followUpTopic is not null) &&
                             (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(followUpTopic is not null ? 1.2 : eventFloorSec).Ticks);
                         bool retryDue = canVoiceTurn && retryAfterTicks > 0 && nowTicks >= retryAfterTicks;
                         bool shouldNudge = (regularDue || eventDue || retryDue) && !tactical.ShouldSilence;
 
                         bool sentAsTurn = false;
+                        bool skipPassiveWs = false;
                         if (shouldNudge)
                         {
                             Interlocked.Exchange(ref _lastAutoNudgeUtcTicks, nowTicks);
@@ -1615,17 +1672,9 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             }
 
                             byte[] currentJpeg = captured?.JpegBytes ?? evalJpeg;
-                            bool skipProactive = false;
-                            if (_localPhaseGate is not null && activeProf is not null)
-                            {
-                                var snap = await _localPhaseGate.ExtractAsync(currentJpeg, activeProf, ct);
-                                if (snap.Phase is "MENU" or "REPLAY" or "LOADING" or "DESKTOP")
-                                {
-                                    skipProactive = true;
-                                    lock (_followUpLock) _pendingLiveFollowUpTopic = null;
-                                    _onLog?.Invoke($"Silencio local [{snap.Phase}] (sin molestar en menú/replay).");
-                                }
-                            }
+                            bool skipProactive = await ShouldSkipSilentPhaseAsync(currentJpeg, activeProf, ct);
+                            if (skipProactive)
+                                skipPassiveWs = true;
 
                             if (!skipProactive)
                             {
@@ -1633,7 +1682,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                 double audioBusyThreshold = isUrgentTurn ? 0.72 : 0.42;
                                 if (_config.IsCoachVoiceActive && _audioMonitor.SampleOtherAudio().OtherSessionsPeak01 >= audioBusyThreshold)
                                 {
-                                    double maxWaitMs = isUrgentTurn ? 180.0 : 480.0;
+                                    double maxWaitMs = isUrgentTurn ? 140.0 : 220.0;
                                     var gapSw = Stopwatch.StartNew();
                                     while (!ct.IsCancellationRequested && gapSw.Elapsed.TotalMilliseconds < maxWaitMs)
                                     {
@@ -1644,14 +1693,6 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                 }
 
                                 var (_, _, cfgQuality) = ResolveTargetResolution();
-                                var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
-                                    _storyboardComposer,
-                                    captured,
-                                    maxFrames: 6,
-                                    maxAgeSeconds: 15.0,
-                                    jpegQuality: Math.Max(cfgQuality, 82),
-                                    isEn: isEnEval);
-
                                 await _turnGate.WaitAsync(ct);
                                 try
                                 {
@@ -1669,47 +1710,81 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                     }
                                     else
                                     {
-                                        sentAsTurn = true;
-                                        lock (_followUpLock)
+                                        // Re-capture [NOW] right before sending if OCR/gap wait aged the frame (>140ms),
+                                        // and verify the replacement frame still represents live play before overwriting or submitting.
+                                        bool postRecaptureSilent = false;
+                                        if ((_timeProvider.GetUtcNow() - (captured?.CapturedAtUtc ?? DateTimeOffset.MinValue)).TotalMilliseconds >= 140.0)
                                         {
-                                            if (_pendingLiveFollowUpTopic is not null && _timeProvider.GetUtcNow() <= _pendingLiveFollowUpExpiresUtc)
-                                                followUpTopic = _pendingLiveFollowUpTopic;
-                                            _pendingLiveFollowUpTopic = null;
+                                            var freshestNow = CaptureSharpFrame(force: true, frameId: Interlocked.Increment(ref _captureSeq));
+                                            if (freshestNow is not null)
+                                            {
+                                                if (await ShouldSkipSilentPhaseAsync(freshestNow.JpegBytes, activeProf, ct))
+                                                {
+                                                    postRecaptureSilent = true;
+                                                    skipPassiveWs = true;
+                                                }
+                                                else
+                                                {
+                                                    captured = freshestNow;
+                                                    currentJpeg = freshestNow.JpegBytes;
+                                                }
+                                            }
                                         }
-                                        long turnSeq = Interlocked.Increment(ref _turnSeq);
-                                        Interlocked.Exchange(ref _proactiveTurnSeq, turnSeq);
-                                        Interlocked.Exchange(ref _proactiveTurnInFlight, 1);
-                                        Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
-                                        Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
 
-                                        string factNote = string.IsNullOrWhiteSpace(tactical.DeterministicFact)
-                                            ? string.Empty
-                                            : (isEnEval
-                                                ? $" Verified fact: {tactical.DeterministicFact}."
-                                                : $" Dato real: {tactical.DeterministicFact}.");
-                                        string timelineNote = _session.Memory.FormatVisualTimeline(isEn: isEnEval);
-                                        string ctxNote = string.IsNullOrWhiteSpace(timelineNote) ? string.Empty
-                                            : (isEnEval ? $" Match context: {timelineNote}." : $" Contexto: {timelineNote}.");
-                                        string motionNote = visualSpike
-                                            ? (isEnEval ? " High-action play burst detected." : " Pico de acción detectado en pantalla.")
-                                            : string.Empty;
-                                        string followUpNote = followUpTopic is not null
-                                            ? (isEnEval
-                                                ? $" Continue naturally right after your last tip using a brief conversational connector ('and watch out...', 'and also...') focused on {followUpTopic}."
-                                                : $" Continuá natural justo después de tu comentario anterior usando un conector corto ('y ojo que...', 'y aparte...') sobre {followUpTopic}.")
-                                            : string.Empty;
-                                        string seqPrefix = clip.PanelCount >= 2 && !string.IsNullOrWhiteSpace(clip.SequenceNote)
-                                            ? $"{clip.SequenceNote} "
-                                            : string.Empty;
-                                        string prompt = isEnEval
-                                            ? $"{seqPrefix}{factNote}{ctxNote}{motionNote}{followUpNote} Continuous OBS observation active even while player is silent. Give 1 crisp predictive callout (8-13 words) for the next 1-3s on clear live play (or output NONE cleanly if menu/replay/unclear)."
-                                            : $"{seqPrefix}{factNote}{ctxNote}{motionNote}{followUpNote} Observación continua tipo OBS activa aunque no te hayan hablado. Tirate 1 consejo predictivo concreto (8 a 13 palabras) para los próximos 1-3s sobre gameplay claro (o devolvé NONE si es menú/replay/borroso).";
+                                        if (!postRecaptureSilent)
+                                        {
+                                            int proactiveMaxFrames = _config.TokenEfficiencyMode.Equals("eco", StringComparison.OrdinalIgnoreCase) ? 2 : 3;
+                                            var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
+                                                _storyboardComposer,
+                                                captured,
+                                                maxFrames: proactiveMaxFrames,
+                                                maxAgeSeconds: 2.0,
+                                                jpegQuality: Math.Max(cfgQuality, 82),
+                                                isEn: isEnEval);
 
-                                        Interlocked.Increment(ref _framesSent);
-                                        if (_backend.SupportsMultiFrameTurn && clip.Frames.Count > 1)
-                                            await _backend.SendFrameSequenceAndPromptTurnAsync(clip.Frames, prompt, ct);
-                                        else
-                                            await _backend.SendImageAndPromptTurnAsync(clip.FallbackSingleJpeg ?? currentJpeg, prompt, ct);
+                                            sentAsTurn = true;
+                                            lock (_followUpLock)
+                                            {
+                                                if (_pendingLiveFollowUpTopic is not null && _timeProvider.GetUtcNow() <= _pendingLiveFollowUpExpiresUtc)
+                                                    followUpTopic = _pendingLiveFollowUpTopic;
+                                                _pendingLiveFollowUpTopic = null;
+                                            }
+                                            long turnSeq = Interlocked.Increment(ref _turnSeq);
+                                            Interlocked.Exchange(ref _proactiveTurnSeq, turnSeq);
+                                            Interlocked.Exchange(ref _proactiveTurnInFlight, 1);
+                                            Interlocked.Exchange(ref _lastTurnRequestTick, Stopwatch.GetTimestamp());
+                                            Interlocked.Exchange(ref _waitingFirstAudioInt, 1);
+
+                                            string factNote = string.IsNullOrWhiteSpace(tactical.DeterministicFact)
+                                                ? string.Empty
+                                                : (isEnEval
+                                                    ? $" Verified fact: {tactical.DeterministicFact}."
+                                                    : $" Dato real: {tactical.DeterministicFact}.");
+                                            string timelineNote = _session.Memory.FormatVisualTimeline(isEn: isEnEval);
+                                            string ctxNote = string.IsNullOrWhiteSpace(timelineNote) ? string.Empty
+                                                : (isEnEval ? $" Match context: {timelineNote}." : $" Contexto: {timelineNote}.");
+                                            string motionNote = visualSpike
+                                                ? (isEnEval ? " High-action play burst detected." : " Pico de acción detectado en pantalla.")
+                                                : string.Empty;
+                                            string followUpNote = followUpTopic is not null
+                                                ? (isEnEval
+                                                    ? $" Continue naturally right after your last tip using a brief conversational connector ('and watch out...', 'and also...') focused on {followUpTopic}."
+                                                    : $" Continuá natural justo después de tu comentario anterior usando un conector corto ('y ojo que...', 'y aparte...') sobre {followUpTopic}.")
+                                                : string.Empty;
+                                            string seqPrefix = clip.PanelCount >= 2 && !string.IsNullOrWhiteSpace(clip.SequenceNote)
+                                                ? $"{clip.SequenceNote} "
+                                                : string.Empty;
+                                            string prompt = isEnEval
+                                                ? $"{seqPrefix}{factNote}{ctxNote}{motionNote}{followUpNote} Live OBS play active. Focus strictly on [NOW] and speak 1 ultra-short predictive adjustment (5-9 words) for the next 1-2s; never narrate old finished plays and never speak 'NONE' aloud."
+                                                : $"{seqPrefix}{factNote}{ctxNote}{motionNote}{followUpNote} Jugada en vivo activa. Mirá [AHORA] y tirá 1 ajuste táctico bien corto (5 a 9 palabras) para los próximos 1-2s; no relates jugadas pasadas ni digas 'NONE'.";
+
+                                            _lastPassiveWsHash = captured?.PerceptualHash;
+                                            Interlocked.Increment(ref _framesSent);
+                                            if (_backend.SupportsMultiFrameTurn && clip.Frames.Count > 1)
+                                                await _backend.SendFrameSequenceAndPromptTurnAsync(clip.Frames, prompt, ct);
+                                            else
+                                                await _backend.SendImageAndPromptTurnAsync(clip.FallbackSingleJpeg ?? currentJpeg, prompt, ct);
+                                        }
                                     }
                                 }
                                 catch
@@ -1725,14 +1800,20 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             }
                         }
 
-                        // Throttle passive WebSocket JPEG streaming to profile FPS while pausing during active speech or DMA playback
+                        // Throttle passive WebSocket JPEG streaming to ~1 FPS max while pausing during active speech or DMA playback
                         double fps = _session.ActiveProfile?.Manifest.CaptureFps ?? 1.5;
-                        int wsPeriodMs = Math.Clamp((int)Math.Round(1000.0 / Math.Clamp(fps, 0.5, 3.0)), 330, 1500);
+                        int wsPeriodMs = Math.Clamp((int)Math.Round(1000.0 / Math.Clamp(fps, 0.5, 1.5)), 850, 1800);
                         long prevWsTick = Interlocked.Read(ref _lastWebSocketFrameTick);
                         double sinceWsMs = prevWsTick == 0 ? double.MaxValue : Stopwatch.GetElapsedTime(prevWsTick).TotalMilliseconds;
                         bool wsDue = prevWsTick == 0 || sinceWsMs >= wsPeriodMs;
-                        if (!sentAsTurn && !_modelSpeaking && !_pcmPlayer.IsPlayingAudio && wsDue && captured is not null)
+                        bool staticDuplicateWs = _lastPassiveWsHash is ulong prevWsHash &&
+                            captured is not null &&
+                            PerceptualHasher.HammingDistance(captured.PerceptualHash, prevWsHash) <= 1 &&
+                            captured.SparseLumaDelta is >= 0.0 and < 1.0 &&
+                            sinceWsMs < 4000.0;
+                        if (!sentAsTurn && !skipPassiveWs && !staticDuplicateWs && !_modelSpeaking && !_pcmPlayer.IsPlayingAudio && wsDue && captured is not null)
                         {
+                            _lastPassiveWsHash = captured.PerceptualHash;
                             Interlocked.Exchange(ref _lastWebSocketFrameTick, Stopwatch.GetTimestamp());
                             Interlocked.Increment(ref _framesSent);
                             await _backend.SendVideoFrameAsync(captured.JpegBytes, ct);
@@ -1780,6 +1861,27 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         ));
     }
 
+    private async Task<bool> ShouldSkipSilentPhaseAsync(byte[]? jpegBytes, GameProfile? activeProf, CancellationToken ct)
+    {
+        if (_localPhaseGate is null || activeProf is null || jpegBytes is not { Length: > 0 })
+            return false;
+
+        var snap = await _localPhaseGate.ExtractAsync(jpegBytes, activeProf, ct);
+        if (snap.Phase is not ("MENU" or "REPLAY" or "LOADING" or "DESKTOP"))
+            return false;
+
+        lock (_followUpLock) _pendingLiveFollowUpTopic = null;
+        _onLog?.Invoke($"Silencio local [{snap.Phase}] (sin molestar en menú/replay).");
+        return true;
+    }
+
+    private static bool IsSafetyDeflectionBoilerplate(string spoken) =>
+        spoken.Contains("me concentro en el", StringComparison.OrdinalIgnoreCase) ||
+        spoken.Contains("focus on the match", StringComparison.OrdinalIgnoreCase) ||
+        spoken.Contains("no hablo ", StringComparison.OrdinalIgnoreCase) ||
+        spoken.Contains("soy un coach de", StringComparison.OrdinalIgnoreCase) ||
+        spoken.Contains("only here to coach", StringComparison.OrdinalIgnoreCase);
+
     public async Task StopAsync()
     {
         await _lifecycleGate.WaitAsync();
@@ -1823,6 +1925,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         await _backend.DisposeAsync();
         _mic.Dispose();
         _pcmPlayer.Dispose();
+        (_localPhaseGate as IDisposable)?.Dispose();
         _capture.Dispose();
         _wakeSignal.Dispose();
         _turnGate.Dispose();

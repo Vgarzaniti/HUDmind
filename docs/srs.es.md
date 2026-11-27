@@ -3,7 +3,7 @@
 # Especificación de Requisitos de Software (SRS) — ISO/IEC/IEEE 29148
 
 **Proyecto:** HUDMind Native (.NET 9) — Coach Táctico de Videojuegos en Tiempo Real  
-**Versión:** 1.2.2 (`HUDMind.Native`)  
+**Versión:** 1.3.0 (`HUDMind.Native`)  
 **Estándares de Referencia:** ISO/IEC/IEEE 29148 (Ingeniería de Requisitos), ISO/IEC 25010 (Calidad de Producto de Software), ISO/IEC 27001 (Seguridad de la Información), ISO/IEC/IEEE 42010 (Descripción de Arquitectura), ISO/IEC/IEEE 29119 (Pruebas de Software).
 
 ---

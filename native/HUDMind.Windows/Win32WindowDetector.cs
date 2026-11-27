@@ -222,10 +222,39 @@ public static class Win32DisplayHelper
     }
 
     [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    private const uint MonitorDefaultToNearest = 2;
+
+    [DllImport("user32.dll")]
     private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr lprcClip, EnumMonitorsDelegate lpfnEnum, IntPtr dwData);
 
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFOEX lpmi);
+
+    public static int? TryGetMonitorIndexForWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero)
+            return null;
+        IntPtr targetMon = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
+        if (targetMon == IntPtr.Zero)
+            return null;
+
+        int matchedIndex = 0;
+        int currentIndex = 0;
+        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr hMon, IntPtr _, ref RECT _, IntPtr _) =>
+        {
+            currentIndex++;
+            if (hMon == targetMon)
+            {
+                matchedIndex = currentIndex;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        return matchedIndex > 0 ? matchedIndex : null;
+    }
 
     public static MonitorBoundsRect[] GetAllWorkingAreas()
     {

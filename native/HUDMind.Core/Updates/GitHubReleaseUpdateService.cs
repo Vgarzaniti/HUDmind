@@ -601,7 +601,7 @@ public sealed partial class GitHubReleaseUpdateService
             req.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
         }
         if (_http.DefaultRequestHeaders.UserAgent.Count == 0)
-            req.Headers.UserAgent.ParseAdd("HUDMind-Native/1.2.2");
+            req.Headers.UserAgent.ParseAdd("HUDMind-Native/1.3.0");
         return req;
     }
 

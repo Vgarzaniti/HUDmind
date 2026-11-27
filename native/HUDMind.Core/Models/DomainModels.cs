@@ -304,6 +304,24 @@ public sealed class UserConfig
     [JsonPropertyName("overlay_max_messages")]
     public int OverlayMaxMessages { get; set; } = 3;
 
+    [JsonPropertyName("overlay_follow_active_monitor")]
+    public bool OverlayFollowActiveMonitor { get; set; } = true;
+
+    [JsonPropertyName("enable_companion_hud")]
+    public bool EnableCompanionHud { get; set; }
+
+    [JsonPropertyName("companion_hud_port")]
+    public int CompanionHudPort { get; set; } = 17890;
+
+    [JsonPropertyName("companion_hud_lan")]
+    public bool CompanionHudAllowLan { get; set; }
+
+    [JsonPropertyName("enable_ingame_overlay_bridge")]
+    public bool EnableInGameOverlayBridge { get; set; }
+
+    [JsonIgnore]
+    public bool IsAnyOverlayEnabled => EnableOverlay || EnableCompanionHud || EnableInGameOverlayBridge;
+
     public static string NormalizeOverlayStyle(string? style, bool compactFallback = true)
     {
         var norm = (style ?? string.Empty).Trim().ToLowerInvariant();
@@ -386,6 +404,11 @@ public sealed class UserConfig
         OverlayCompact = source.OverlayCompact;
         OverlayStyle = source.OverlayStyle;
         OverlayMaxMessages = source.OverlayMaxMessages;
+        OverlayFollowActiveMonitor = source.OverlayFollowActiveMonitor;
+        EnableCompanionHud = source.EnableCompanionHud;
+        CompanionHudPort = Math.Clamp(source.CompanionHudPort <= 0 ? 17890 : source.CompanionHudPort, 1024, 65535);
+        CompanionHudAllowLan = source.CompanionHudAllowLan;
+        EnableInGameOverlayBridge = source.EnableInGameOverlayBridge;
         CaptureMonitor = source.CaptureMonitor;
         MinInferenceIntervalSeconds = source.MinInferenceIntervalSeconds;
         ImageCompressionQuality = source.ImageCompressionQuality;
@@ -496,7 +519,8 @@ public sealed record CapturedFrameData(
     bool IsForced = false,
     string SpatialTelemetry = "",
     double? TargetCooldownSeconds = null,
-    long SessionEpoch = 0
+    long SessionEpoch = 0,
+    double SparseLumaDelta = -1.0
 );
 
 public sealed record HudSensorSnapshot(

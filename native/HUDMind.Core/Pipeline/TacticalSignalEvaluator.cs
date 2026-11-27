@@ -202,6 +202,9 @@ public static partial class TacticalSignalEvaluator
         if (text.Contains("DOTA2_GSI:", StringComparison.OrdinalIgnoreCase))
             return EvaluateDota(text, tracker, isEn);
 
+        if (text.Contains(ExternalTelemetryParser.TelemetryPrefix, StringComparison.OrdinalIgnoreCase))
+            return EvaluateLocalWebSocketTelemetry(text, tracker, isEn);
+
         if (text.Contains("RL_LOG:", StringComparison.OrdinalIgnoreCase))
             return EvaluateRocketLeague(text, tracker, isEn);
 
@@ -520,6 +523,59 @@ public static partial class TacticalSignalEvaluator
                 DeterministicFact: timingHint);
         });
 
+    [GeneratedRegex(@"\bResource=(\d+)%", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    private static partial Regex LocalWsResourceRegex();
+
+    private static TacticalEvaluation EvaluateLocalWebSocketTelemetry(string text, TacticalSignalTracker tracker, bool isEn) =>
+        tracker.WithLock(s =>
+        {
+            if (text.Contains("MatchEnded=1", StringComparison.OrdinalIgnoreCase))
+            {
+                bool emitEnd = s.MatchActiveSeen && !s.MatchEndEmittedForCurrentRun;
+                s.MatchEndEmittedForCurrentRun = true;
+                s.MatchActiveSeen = false;
+                return new TacticalEvaluation("MATCH_ENDED", ShouldSilence: true, false, false, emitEnd, 1.0, string.Empty);
+            }
+
+            if (text.Contains("InReplay=1", StringComparison.OrdinalIgnoreCase) ||
+                text.Contains("GoalScored=1", StringComparison.OrdinalIgnoreCase))
+            {
+                s.MatchActiveSeen = true;
+                s.MatchEndEmittedForCurrentRun = false;
+                return new TacticalEvaluation(
+                    "REPLAY_GOAL",
+                    ShouldSilence: true,
+                    ShouldDelayNonUrgent: true,
+                    TriggerImmediate: false,
+                    MatchEnded: false,
+                    CooldownMultiplier: 1.35,
+                    DeterministicFact: isEn ? "Replay active" : "Replay activo");
+            }
+
+            s.MatchActiveSeen = true;
+            s.MatchEndEmittedForCurrentRun = false;
+
+            bool isOt = text.Contains("OT=1", StringComparison.OrdinalIgnoreCase);
+            bool otStart = isOt && !string.Equals(s.LastRoundPhase, "OT", StringComparison.Ordinal);
+            s.LastRoundPhase = isOt ? "OT" : "PLAY";
+
+            int resPct = TryInt(LocalWsResourceRegex(), text, -1);
+            string fact = otStart
+                ? (isEn ? "Overtime sudden death — zero overcommits" : "Overtime — muerte súbita, rotación segura")
+                : (resPct is >= 0 and <= 15
+                    ? (isEn ? $"Critical resource ({resPct}%) — recover safely" : $"Recurso crítico ({resPct}%) — recuperá sin arriesgar")
+                    : text.Replace(ExternalTelemetryParser.TelemetryPrefix, string.Empty, StringComparison.OrdinalIgnoreCase).Trim());
+
+            return new TacticalEvaluation(
+                isOt ? "OVERTIME" : "PLAY",
+                ShouldSilence: false,
+                ShouldDelayNonUrgent: false,
+                TriggerImmediate: otStart,
+                MatchEnded: false,
+                CooldownMultiplier: (resPct is >= 0 and <= 15 || isOt) ? 0.75 : 1.0,
+                DeterministicFact: fact);
+        });
+
     private static TacticalEvaluation EvaluateRocketLeague(string text, TacticalSignalTracker tracker, bool isEn) =>
         tracker.WithLock(s =>
         {
@@ -549,11 +605,11 @@ public static partial class TacticalSignalEvaluator
                 return new TacticalEvaluation(
                     "REPLAY_GOAL",
                     ShouldSilence: false,
-                    ShouldDelayNonUrgent: false,
-                    TriggerImmediate: newGoal,
+                    ShouldDelayNonUrgent: newGoal,
+                    TriggerImmediate: false,
                     MatchEnded: false,
-                    CooldownMultiplier: 0.75,
-                    DeterministicFact: isEn ? "Goal scored recently — kickoff role reminder" : "Gol reciente — recordá rol de saque");
+                    CooldownMultiplier: newGoal ? 1.25 : 1.0,
+                    DeterministicFact: isEn ? "Goal replay — prep next kickoff role" : "Replay de gol — prepará tu rol para el saque");
             }
 
             return TacticalEvaluation.Neutral;

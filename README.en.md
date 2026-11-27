@@ -57,7 +57,7 @@
 # 1. Build entire solution (0 warnings / 0 errors)
 dotnet build native\HUDMind.sln -c Release
 
-# 2. Cross-platform Core suite (52 tests) + Native Windows suite (16 tests) + WPF smoke
+# 2. Cross-platform Core suite (56 tests) + Native Windows suite (18 tests) + WPF smoke
 dotnet run --project native\HUDMind.Tests\HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native\HUDMind.Windows.Tests\HUDMind.Windows.Tests.csproj -c Release --no-build
 .\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe --smoke-startup
@@ -111,8 +111,8 @@ You can also launch directly via [HUDMind.bat](HUDMind.bat).
 │   ├── HUDMind.Windows/            # GDI Capture, WinMM Audio/Devices, WinRT Natural TTS + OneCore, GSI, OCR, KnownFolders
 │   ├── HUDMind.App/                # WPF UI (0% GPU), PerMonitorV2 Overlay, Win32 Tray Icon & Update Banner
 │   ├── HUDMind.Packer/             # Build-time AES-256-GCM vault compiler (Profiles + ProtectedAssets -> Vault.bin)
-│   ├── HUDMind.Tests/              # Cross-platform Core test suite (52 tests)
-│   └── HUDMind.Windows.Tests/      # Win32, WASAPI, GSI, TLS, DPAPI, Startup, Audio & KnownFolders test suite (16 tests)
+│   ├── HUDMind.Tests/              # Cross-platform Core test suite (56 tests)
+│   └── HUDMind.Windows.Tests/      # Win32, WASAPI, GSI, RCON bridge, TLS, DPAPI, Startup, Audio & KnownFolders test suite (18 tests)
 ├── profiles/                       # Game profiles and tactical prompts
 ├── docs/                           # Bilingual technical documentation (*.es.md and *.en.md)
 └── archive/legacy_python/          # Archived legacy Python code after the .NET 9 migration

@@ -1,6 +1,6 @@
 > 🌐 **Idioma / Language:** **[🇪🇸 Español](architecture.es.md)** | [🇺🇸 English](architecture.en.md)
 
-# Arquitectura Técnica — HUDMind Native v1.2.2 (ISO/IEC/IEEE 42010)
+# Arquitectura Técnica — HUDMind Native v1.3.0 (ISO/IEC/IEEE 42010)
 
 Este documento describe la arquitectura modular de **HUDMind Native** sobre **.NET 9**, su separación estricta entre lógica pura, capa Win32 y UI WPF, sus motores polimórficos y sus Registros de Decisión de Arquitectura (ADRs).
 
