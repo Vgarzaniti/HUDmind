@@ -3605,6 +3605,53 @@ await RunTest("63. DiagnosticsFormatter redacts secrets, ConfigRepository guards
     return Task.CompletedTask;
 });
 
+// 64. AppReleaseHighlights upgrade detection, .hudmind CLI path guard & LastSeenAppVersion persistence
+await RunTest("64. AppReleaseHighlights detects upgrades, guards .hudmind paths & persists LastSeenAppVersion", () =>
+{
+    var v170 = new Version(1, 7, 0);
+    Assert(!AppReleaseHighlights.ShouldShowWhatsNew(null, v170) &&
+           !AppReleaseHighlights.ShouldShowWhatsNew("", v170) &&
+           !AppReleaseHighlights.ShouldShowWhatsNew("1.7.0", v170) &&
+           !AppReleaseHighlights.ShouldShowWhatsNew("1.8.0", v170) &&
+           AppReleaseHighlights.ShouldShowWhatsNew("1.6.0", v170) &&
+           AppReleaseHighlights.ShouldShowWhatsNew("v1.5.2", v170),
+        "ShouldShowWhatsNew must trigger strictly on upgrades from prior non-zero versions");
+
+    var (titleEs, bodyEs) = AppReleaseHighlights.GetReleaseNotes(v170, isEnglish: false);
+    var (titleEn, bodyEn) = AppReleaseHighlights.GetReleaseNotes(v170, isEnglish: true);
+    Assert(titleEs.Contains("1.7.0", StringComparison.Ordinal) && bodyEs.Contains(".hudmind", StringComparison.Ordinal) &&
+           titleEn.Contains("1.7.0", StringComparison.Ordinal) && bodyEn.Contains(".hudmind", StringComparison.Ordinal),
+        "GetReleaseNotes must provide bilingual changelog details");
+
+    Assert(AppReleaseHighlights.IsValidBackupArchivePath(@"C:\Users\Player\Downloads\my-profile.hudmind") &&
+           AppReleaseHighlights.IsValidBackupArchivePath("\"/tmp/backup.HUDMIND\"") &&
+           !AppReleaseHighlights.IsValidBackupArchivePath(@"\\attacker\share\backup.hudmind") &&
+           !AppReleaseHighlights.IsValidBackupArchivePath(@"C:\Users\Player\Downloads\malware.exe") &&
+           !AppReleaseHighlights.IsValidBackupArchivePath(""),
+        "IsValidBackupArchivePath must allow .hudmind local files and block UNC shares or non-.hudmind files");
+
+    var tmpRoot = Path.Combine(Path.GetTempPath(), $"hudmind_ver_t64_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmpRoot);
+    try
+    {
+        var repo = new ConfigRepository(tmpRoot);
+        var cfg = new UserConfig { HasCompletedOnboarding = true, LastSeenAppVersion = "1.6.0" };
+        repo.SaveUserConfig(cfg);
+        var loaded = repo.LoadUserConfig();
+        Assert(loaded.LastSeenAppVersion == "1.6.0", "LastSeenAppVersion must round-trip cleanly");
+
+        loaded.ResetPreferencesToDefaults();
+        Assert(loaded.LastSeenAppVersion == "1.6.0" && loaded.HasCompletedOnboarding,
+            "ResetPreferencesToDefaults must preserve LastSeenAppVersion");
+    }
+    finally
+    {
+        try { Directory.Delete(tmpRoot, recursive: true); } catch { }
+    }
+
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

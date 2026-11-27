@@ -27,6 +27,7 @@ public partial class App : System.Windows.Application
 
         bool smokeMode = e.Args.Any(a => string.Equals(a, "--smoke-startup", StringComparison.OrdinalIgnoreCase));
         bool startMinimized = !smokeMode && e.Args.Any(a => string.Equals(a, "--minimized", StringComparison.OrdinalIgnoreCase));
+        string? pendingArchivePath = smokeMode ? null : TryExtractBackupArchiveArg(e.Args);
         ProfileVaultReader.RegisterRuntimeIntegrityProbe(() => RuntimeHardeningGuard.IsExternalDebuggerAttached(smokeMode));
 
         if (!smokeMode)
@@ -34,10 +35,13 @@ public partial class App : System.Windows.Application
             _singleInstanceMutex = new Mutex(true, "HUDMind_Native_SingleInstance_Mutex", out bool createdNew);
             if (!createdNew)
             {
+                string pipeCmd = pendingArchivePath is not null
+                    ? $"IMPORT:{pendingArchivePath}"
+                    : (startMinimized ? "PING" : "SHOW");
                 bool signaled = SingleInstancePipeServer.TrySignalExistingInstance(
                     SingleInstancePipeServer.DefaultPipeName,
-                    startMinimized ? "PING" : "SHOW",
-                    timeoutMs: 500);
+                    pipeCmd,
+                    timeoutMs: 650);
 
                 if (!startMinimized && !signaled)
                 {
@@ -54,11 +58,7 @@ public partial class App : System.Windows.Application
             RegisterGlobalCrashHandlers();
             _singleInstancePipe = new SingleInstancePipeServer(
                 SingleInstancePipeServer.DefaultPipeName,
-                command =>
-                {
-                    if (string.Equals(command, "SHOW", StringComparison.OrdinalIgnoreCase))
-                        Dispatcher.BeginInvoke(() => (MainWindow as MainWindow)?.BringToFrontFromPipe());
-                });
+                command => Dispatcher.BeginInvoke(() => (MainWindow as MainWindow)?.HandlePipeCommand(command)));
         }
 
         // NOTE: Keep process PriorityClass Normal so Win32 audio/mic/hotkey threads never stutter in CPU-bound games!
@@ -66,7 +66,7 @@ public partial class App : System.Windows.Application
 
         try
         {
-            var win = new MainWindow(smokeMode, startMinimized);
+            var win = new MainWindow(smokeMode, startMinimized, pendingArchivePath);
             MainWindow = win;
             win.Show();
         }
@@ -144,6 +144,33 @@ public partial class App : System.Windows.Application
             // Keep UI recovery functional even if logs directory is read-only
         }
         return (report, writtenPath);
+    }
+
+    private static string? TryExtractBackupArchiveArg(string[] args)
+    {
+        foreach (var raw in args)
+        {
+            if (string.IsNullOrWhiteSpace(raw) || raw.StartsWith("--", StringComparison.Ordinal))
+                continue;
+            if (!AppReleaseHighlights.IsValidBackupArchivePath(raw))
+                continue;
+            try
+            {
+                var full = Path.GetFullPath(raw.Trim().Trim('"'));
+                if (!File.Exists(full))
+                    continue;
+                if ((File.GetAttributes(full) & FileAttributes.ReparsePoint) != 0)
+                    continue;
+                var info = new FileInfo(full);
+                if (info.Length is > 0 and <= AppReleaseHighlights.MaxArchiveBytes)
+                    return full;
+            }
+            catch
+            {
+                // Ignore invalid shell paths
+            }
+        }
+        return null;
     }
 
     public void ReleaseSingleInstanceMutex()

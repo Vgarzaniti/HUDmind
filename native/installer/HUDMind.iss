@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.6.0"
+  #define MyAppVersion "1.7.0"
 #endif
 #ifndef InputExe
   #define InputExe "..\dist\standalone-win-x64\HUDMind.Native.exe"
@@ -30,6 +30,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+ChangesAssociations=yes
 ShowLanguageDialog=auto
 
 [Languages]
@@ -45,6 +46,12 @@ Source: "{#InputExe}"; DestDir: "{app}"; DestName: "HUDMind.Native.exe"; Flags: 
 [Icons]
 Name: "{userprograms}\HUDMind"; Filename: "{app}\HUDMind.Native.exe"; AppUserModelID: "HUDMind.Native.Desktop"; Comment: "HUDMind AI eSports Coach (0% GPU)"
 Name: "{userdesktop}\HUDMind"; Filename: "{app}\HUDMind.Native.exe"; AppUserModelID: "HUDMind.Native.Desktop"; Tasks: desktopicon
+
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\.hudmind"; ValueType: string; ValueName: ""; ValueData: "HUDMind.BackupArchive"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\HUDMind.BackupArchive"; ValueType: string; ValueName: ""; ValueData: "HUDMind Encrypted Profile Backup"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\HUDMind.BackupArchive\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\HUDMind.Native.exe,0"
+Root: HKCU; Subkey: "Software\Classes\HUDMind.BackupArchive\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\HUDMind.Native.exe"" ""%1"""
 
 [Run]
 Filename: "{app}\HUDMind.Native.exe"; Description: "{cm:LaunchProgram,HUDMind}"; Flags: nowait postinstall skipifsilent
