@@ -18,13 +18,15 @@ public enum PersonalProfileDialogOutcome
     UpdatedActiveMetadata,
     PinChanged,
     ExportArchive,
-    ImportArchive
+    ImportArchive,
+    LockSession
 }
 
 public sealed record PersonalProfileDialogResult(
     PersonalProfileDialogOutcome Outcome,
     UserProfileRecord? TargetProfile = null,
-    string StatusMessage = "");
+    string StatusMessage = "",
+    bool CopySettingsFromCurrent = false);
 
 /// <summary>
 /// Pure-WPF 0% GPU dark-theme dialogs for personal local profiles, PBKDF2 PIN unlock,
@@ -185,7 +187,7 @@ public static class PersonalAccountDialogs
         IReadOnlyList<GameProfile> games)
     {
         var result = new PersonalProfileDialogResult(PersonalProfileDialogOutcome.None);
-        var win = CreateModalWindow(owner, "HUDMind · Mi Cuenta y Perfiles Locales ($0 Privado)", width: 730, height: 600);
+        var win = CreateModalWindow(owner, "HUDMind · Mi Cuenta y Perfiles Locales ($0 Privado)", width: 730, height: 625);
 
         var mainGrid = new Grid { Margin = new Thickness(16) };
         mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -270,15 +272,27 @@ public static class PersonalAccountDialogs
                 profileList.SelectedIndex = 0;
         }
 
-        var leftActions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+        var selectedInfo = new TextBlock
+        {
+            Text = $"Seleccionado: {activeProfile.AvatarBadge} {activeProfile.DisplayName} · [{activeProfile.UniqueUserId}]",
+            Foreground = TextMuted,
+            FontSize = 10.5,
+            FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(0, 6, 0, 2)
+        };
+
+        var leftActions = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
         DockPanel.SetDock(leftActions, Dock.Bottom);
+        DockPanel.SetDock(selectedInfo, Dock.Bottom);
         var btnEnterProfile = CreateButton("✅ Entrar / Activar", BtnPrimaryBg, BtnPrimaryBorder, new Thickness(0, 0, 6, 6));
-        var btnTogglePin = CreateButton("🔒 PIN perfil", BtnNeutralBg, BorderSubtle, new Thickness(0, 0, 6, 6));
+        var btnTogglePin = CreateButton("🔒 Activar PIN", BtnNeutralBg, BorderSubtle, new Thickness(0, 0, 6, 6));
         var btnDeleteProfile = CreateButton("🗑 Eliminar", BtnDangerBg, BtnDangerBorder, new Thickness(0, 0, 0, 6));
         leftActions.Children.Add(btnEnterProfile);
         leftActions.Children.Add(btnTogglePin);
         leftActions.Children.Add(btnDeleteProfile);
         leftDock.Children.Add(leftActions);
+        leftDock.Children.Add(selectedInfo);
         leftDock.Children.Add(profileList);
         leftCard.Child = leftDock;
         Grid.SetColumn(leftCard, 0);
@@ -373,7 +387,17 @@ public static class PersonalAccountDialogs
         };
         rightStack.Children.Add(rightError);
 
-        var formBtns = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+        var chkCopyFromCurrent = new CheckBox
+        {
+            Content = $"Copiar claves IA y ajustes de '{activeProfile.DisplayName}' al crear",
+            Foreground = TextMuted,
+            FontSize = 11,
+            Margin = new Thickness(0, 8, 0, 0),
+            IsChecked = false
+        };
+        rightStack.Children.Add(chkCopyFromCurrent);
+
+        var formBtns = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
         var btnSaveActive = CreateButton("💾 Guardar en perfil activo", BtnNeutralBg, BorderSubtle, new Thickness(0, 0, 6, 6));
         var btnCreateNew = CreateButton("➕ Crear y Entrar como Nueva Cuenta", BtnPrimaryBg, BtnPrimaryBorder, new Thickness(0, 0, 0, 6));
         formBtns.Children.Add(btnSaveActive);
@@ -413,6 +437,16 @@ public static class PersonalAccountDialogs
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 10, 0, 0)
         };
+        if (activeProfile.HasPin)
+        {
+            var btnLockNow = CreateButton("🔒 Bloquear sesión", BtnNeutralBg, BtnPrimaryBorder, new Thickness(0, 0, 8, 0));
+            btnLockNow.Click += (_, _) =>
+            {
+                result = new PersonalProfileDialogResult(PersonalProfileDialogOutcome.LockSession, activeProfile);
+                win.Close();
+            };
+            bottomClose.Children.Add(btnLockNow);
+        }
         var btnClose = CreateButton("Cerrar", BtnNeutralBg, BorderSubtle, new Thickness(0));
         btnClose.Click += (_, _) => win.Close();
         bottomClose.Children.Add(btnClose);
@@ -420,11 +454,23 @@ public static class PersonalAccountDialogs
         mainGrid.Children.Add(bottomClose);
 
         // Wire handlers
-        ReloadProfilesList();
-
         UserProfileRecord? SelectedRecord() => (profileList.SelectedItem as ListBoxItem)?.Tag as UserProfileRecord;
 
-        btnEnterProfile.Click += (_, _) =>
+        void UpdateSelectionUi()
+        {
+            var sel = SelectedRecord();
+            if (sel is null)
+            {
+                selectedInfo.Text = "Seleccioná una cuenta";
+                btnDeleteProfile.IsEnabled = false;
+                return;
+            }
+            selectedInfo.Text = $"Seleccionado: {sel.AvatarBadge} {sel.DisplayName} · [{sel.UniqueUserId}]";
+            btnDeleteProfile.IsEnabled = !sel.ProfileId.Equals("default", StringComparison.OrdinalIgnoreCase);
+            btnTogglePin.Content = sel.HasPin ? "🔓 Quitar PIN" : "🔒 Activar PIN";
+        }
+
+        void ActivateSelectedProfile()
         {
             var sel = SelectedRecord();
             if (sel is null) return;
@@ -444,7 +490,15 @@ public static class PersonalAccountDialogs
                 switched,
                 $"Sesión cambiada a {switched.AvatarBadge} {switched.DisplayName}.");
             win.Close();
-        };
+        }
+
+        profileList.SelectionChanged += (_, _) => UpdateSelectionUi();
+        profileList.MouseDoubleClick += (_, _) => ActivateSelectedProfile();
+
+        ReloadProfilesList();
+        UpdateSelectionUi();
+
+        btnEnterProfile.Click += (_, _) => ActivateSelectedProfile();
 
         btnTogglePin.Click += (_, _) =>
         {
@@ -537,10 +591,20 @@ public static class PersonalAccountDialogs
         btnCreateNew.Click += (_, _) =>
         {
             var name = txtName.Text.Trim();
-            if (string.IsNullOrWhiteSpace(name) ||
-                string.Equals(name, activeProfile.DisplayName, StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(pwdNewPin.Password))
+            if (string.IsNullOrWhiteSpace(name))
             {
-                name = string.IsNullOrWhiteSpace(name) ? "Jugador 2" : name;
+                rightError.Text = "Escribí un nombre para tu nueva cuenta.";
+                rightError.Visibility = Visibility.Visible;
+                txtName.Focus();
+                return;
+            }
+            if (string.Equals(name, activeProfile.DisplayName, StringComparison.OrdinalIgnoreCase))
+            {
+                rightError.Text = "Escribí un nombre distinto al perfil actual para crear una cuenta nueva.";
+                rightError.Visibility = Visibility.Visible;
+                txtName.SelectAll();
+                txtName.Focus();
+                return;
             }
             var pin = pwdNewPin.Password.Trim();
             if (!string.IsNullOrEmpty(pin) && (pin.Length < 4 || pin.Length > 16))
@@ -559,7 +623,8 @@ public static class PersonalAccountDialogs
             result = new PersonalProfileDialogResult(
                 PersonalProfileDialogOutcome.SwitchProfile,
                 created,
-                $"Cuenta personal creada: {created.AvatarBadge} {created.DisplayName}.");
+                $"Cuenta personal creada: {created.AvatarBadge} {created.DisplayName}.",
+                CopySettingsFromCurrent: chkCopyFromCurrent.IsChecked == true);
             win.Close();
         };
 
@@ -580,6 +645,44 @@ public static class PersonalAccountDialogs
         return result;
     }
 
+    public static PersonalProfileDialogOutcome ShowQuickBackupDialog(Window? owner, UserProfileRecord activeProfile)
+    {
+        var chosen = PersonalProfileDialogOutcome.None;
+        var win = CreateModalWindow(owner, "HUDMind · Backup Portable Cifrado (.hudmind)", width: 455, height: 215);
+        var root = new StackPanel { Margin = new Thickness(18) };
+        root.Children.Add(new TextBlock
+        {
+            Text = $"{activeProfile.AvatarBadge}  {activeProfile.DisplayName}  ·  {activeProfile.UniqueUserId}",
+            FontWeight = FontWeights.Bold,
+            FontSize = 13.5,
+            Foreground = ParseHexBrush(activeProfile.AccentHex)
+        });
+        root.Children.Add(new TextBlock
+        {
+            Text = "Guardá o restaurá preferencias, reglas por juego, memoria y seguimiento de fugas en un archivo AES-256-GCM ($0 sin servidor).",
+            Foreground = TextMuted,
+            FontSize = 11.5,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 14)
+        });
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var btnExport = CreateButton("📦 Exportar .hudmind", BtnPrimaryBg, BtnPrimaryBorder, new Thickness(0, 0, 8, 0));
+        var btnImport = CreateButton("📥 Importar .hudmind", BtnNeutralBg, BtnPrimaryBorder, new Thickness(0, 0, 8, 0));
+        var btnCancel = CreateButton("Cancelar", BtnNeutralBg, BorderSubtle, new Thickness(0));
+        btnExport.Click += (_, _) => { chosen = PersonalProfileDialogOutcome.ExportArchive; win.Close(); };
+        btnImport.Click += (_, _) => { chosen = PersonalProfileDialogOutcome.ImportArchive; win.Close(); };
+        btnCancel.Click += (_, _) => { chosen = PersonalProfileDialogOutcome.None; win.Close(); };
+        actions.Children.Add(btnExport);
+        actions.Children.Add(btnImport);
+        actions.Children.Add(btnCancel);
+        root.Children.Add(actions);
+
+        win.Content = root;
+        win.ShowDialog();
+        return chosen;
+    }
+
     public static (bool Confirmed, string Passphrase, bool IncludeApiAccounts) ShowPassphraseDialog(
         Window? owner,
         bool isExport)
@@ -591,8 +694,8 @@ public static class PersonalAccountDialogs
         var win = CreateModalWindow(
             owner,
             isExport ? "HUDMind · Cifrar Backup (.hudmind)" : "HUDMind · Descifrar Backup (.hudmind)",
-            width: 440,
-            height: isExport ? 290 : 230);
+            width: 460,
+            height: 290);
 
         var root = new StackPanel { Margin = new Thickness(18) };
         root.Children.Add(new TextBlock
@@ -609,19 +712,17 @@ public static class PersonalAccountDialogs
         var pwd1 = CreatePasswordBox();
         root.Children.Add(pwd1);
 
-        CheckBox? chkIncludeKeys = null;
-        if (isExport)
+        var chkIncludeKeys = new CheckBox
         {
-            chkIncludeKeys = new CheckBox
-            {
-                Content = "Incluir cuentas IA (solo útil para restaurar en el mismo Windows/PC)",
-                Foreground = TextMuted,
-                FontSize = 11.5,
-                Margin = new Thickness(0, 10, 0, 0),
-                IsChecked = false
-            };
-            root.Children.Add(chkIncludeKeys);
-        }
+            Content = isExport
+                ? "Incluir cuentas IA (solo útil para restaurar en el mismo Windows/PC)"
+                : "Restaurar también cuentas IA incluidas en este backup (mismo Windows)",
+            Foreground = TextMuted,
+            FontSize = 11.5,
+            Margin = new Thickness(0, 10, 0, 0),
+            IsChecked = false
+        };
+        root.Children.Add(chkIncludeKeys);
 
         var err = new TextBlock
         {
@@ -641,7 +742,7 @@ public static class PersonalAccountDialogs
         var cancel = CreateButton("Cancelar", BtnNeutralBg, BorderSubtle, new Thickness(0, 0, 8, 0));
         cancel.Click += (_, _) => { win.DialogResult = false; win.Close(); };
         var ok = CreateButton(isExport ? "📦 Exportar" : "📥 Importar", BtnPrimaryBg, BtnPrimaryBorder, new Thickness(0));
-        ok.Click += (_, _) =>
+        void TrySubmit()
         {
             if (string.IsNullOrWhiteSpace(pwd1.Password) || pwd1.Password.Length < 4)
             {
@@ -651,9 +752,18 @@ public static class PersonalAccountDialogs
             }
             confirmed = true;
             phrase = pwd1.Password;
-            includeKeys = chkIncludeKeys?.IsChecked == true;
+            includeKeys = chkIncludeKeys.IsChecked == true;
             win.DialogResult = true;
             win.Close();
+        }
+        ok.Click += (_, _) => TrySubmit();
+        pwd1.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                e.Handled = true;
+                TrySubmit();
+            }
         };
         btns.Children.Add(cancel);
         btns.Children.Add(ok);

@@ -871,19 +871,27 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         var visual = HudVisualPalette.ResolveUrgency(entry.Urgency);
         bool isUser = entry.Kind == OverlayEntryKind.UserMessage;
         bool isStatus = entry.Kind == OverlayEntryKind.Status;
+        bool isTactic = string.Equals(entry.Speaker, "TACTIC", StringComparison.OrdinalIgnoreCase);
+        bool isBrief = string.Equals(entry.Speaker, "BRIEF", StringComparison.OrdinalIgnoreCase);
 
         vm.Kind = entry.Kind;
         vm.Urgency = entry.Urgency;
-        vm.SpeakerLabel = entry.Speaker.ToUpperInvariant();
+        vm.SpeakerLabel = isTactic
+            ? "⚡ TACTIC"
+            : isBrief
+                ? "📋 BRIEF"
+                : entry.Speaker.ToUpperInvariant();
         vm.Text = entry.Text;
-        vm.SpeakerVisibility = showSpeakerTag ? Visibility.Visible : Visibility.Collapsed;
+        vm.SpeakerVisibility = (showSpeakerTag || isTactic || isBrief) ? Visibility.Visible : Visibility.Collapsed;
         vm.AccentBrush = isUser ? HudVisualPalette.HeaderCyan : visual.AccentBarBrush;
         vm.SpeakerBrush = isUser
             ? HudVisualPalette.SpeakerUserCyan
-            : isStatus
-                ? HudVisualPalette.SpeakerStatusCyan
-                : visual.TagForegroundBrush;
-        vm.MessageBrush = isUser
+            : isTactic
+                ? visual.TagForegroundBrush
+                : isStatus
+                    ? HudVisualPalette.SpeakerStatusCyan
+                    : visual.TagForegroundBrush;
+        vm.MessageBrush = isUser || isBrief
             ? HudVisualPalette.TextUserCyan
             : isStatus
                 ? HudVisualPalette.TextStatusMuted

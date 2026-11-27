@@ -49,7 +49,7 @@ Leé este documento primero antes de modificar código, pruebas, documentación,
 | `native/HUDMind.Windows/Audio/` | Audio nativo WinMM / WinRT / WASAPI | `Win32AudioDevices`, `Win32StreamingMicCapture` (16kHz), `Win32StreamingPcmPlayer` (24kHz), `WasapiAudioSceneMonitor` (medidor COM pasivo), `WinRtNaturalVoiceService`, `Win32AudioCue`, `AudioDiagnosticsService` |
 | `native/HUDMind.App/` | UI WPF (`HUDMind.Native.exe`) | `App.xaml.cs` (SoftwareOnly + mutex + probe `RuntimeHardeningGuard`), `MainWindow.xaml/.cs` (perfiles locales/PIN, OpenRouter PKCE 1-clic, asistente Gemini 2 clics, backups `.hudmind`, pacing `event_first`, roles y fugas Hoy vs Anterior, `UpdateBanner`, QR LAN, `?mode=obs`), `OverlayWindow.xaml/.cs`, `Controls/` (`PersonalAccountDialogs`), `Services/` (`CoachEngineCoordinator`), `Win32TrayIcon.cs` |
 | `native/HUDMind.Packer/` | Herramienta build (`net9.0`) | Sella `profiles/**/*` y `ProtectedAssets/` en `HUDMind.Vault.bin` (`IsPublishable=false`, cero NuGet) |
-| `native/HUDMind.Tests/` | Suite `net9.0` | 61 pruebas unitarias/integración multiplataforma (`Program.cs`) |
+| `native/HUDMind.Tests/` | Suite `net9.0` | 62 pruebas unitarias/integración multiplataforma (`Program.cs`) |
 | `native/HUDMind.Windows.Tests/` | Suite `net9.0-windows` | 20 pruebas nativas de WinMM, WASAPI, GSI, puente RCON loopback, WS telemetry, TLS pinning, DPAPI multi-perfil (`crypt32.dll`), HKCU startup, logs, captura, voz, hardening y `KnownFolders` (`Program.cs`) |
 | `profiles/` | Cartuchos de juegos | 7 perfiles incluidos (`aoe2_de`, `cs2`, `dota2`, `league_of_legends`, `rob_run`, `rocket_league`, `valorant`) sellados en `HUDMind.Vault.bin` |
 | `docs/` | Documentación bilingüe | Todos los docs tienen par `.es.md` y `.en.md` (`architecture`, `srs`, `test_plan_ieee29119`, `game_profiles_guide`, `versioning_and_releases`, `pull_request_guide`) |
@@ -74,7 +74,7 @@ Leé este documento primero antes de modificar código, pruebas, documentación,
 # 1. Compilar solución completa (debe pasar con 0 warnings / 0 errors)
 dotnet build native/HUDMind.sln -c Release
 
-# 2. Correr suite Core multiplataforma (61 pruebas) y suite nativa Windows (20 pruebas)
+# 2. Correr suite Core multiplataforma (62 pruebas) y suite nativa Windows (20 pruebas)
 dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
 

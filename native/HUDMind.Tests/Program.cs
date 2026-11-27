@@ -3441,6 +3441,97 @@ await RunTest("61. Event-First pacing, <5ms local alerts, dead-time briefing, ro
     }
 });
 
+// 62. Brief+Tactic overlay coexistence, ProfileArchiveCodec metadata+keys opt-in restore & universal leak aggregation
+await RunTest("62. BRIEF+TACTIC overlay coexistence, ProfileArchiveCodec metadata/accounts restore & universal leaks", () =>
+{
+    // A. BriefingNote & InstantLocalAlert coexist when MaxMessages >= 2; TACTIC wins when MaxMessages == 1; ephemeral HUD cleared by Coach
+    var t0 = DateTimeOffset.UtcNow;
+    var csProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "Counter-Strike 2" } };
+    var csCfg = new UserConfig { EnableOverlay = true, VoiceLanguage = "es", TextLanguage = "es" };
+
+    var bufMulti = new OverlayFeedBuffer { MaxMessages = 3 };
+    var sinkMulti = new OverlayFeedBufferSink(bufMulti, () => t0);
+    var coordMulti = new MatchSessionCoordinator(
+        [csProf], new StubWindowDetector("cs2.exe"), new StubCapture(), sinkMulti, testMode: true, forcedGameId: "cs2");
+    coordMulti.InitializeOnStart(csCfg, predetectInNonTestMode: true);
+    coordMulti.EvaluateTacticalSignal("CS2_GSI: round=freezetime HP=100 Armor=0 $2400 side=CT", csProf, csCfg, isEn: false);
+
+    var snapMulti = bufMulti.Snapshot();
+    Assert(snapMulti.Count == 2 &&
+           snapMulti.Any(e => e.Speaker == "BRIEF" && e.Kind == OverlayEntryKind.Status) &&
+           snapMulti.Any(e => e.Speaker == "TACTIC" && e.Kind == OverlayEntryKind.CoachFinal),
+        $"BRIEF & TACTIC must coexist in MaxMessages=3 feed (got {string.Join(" | ", snapMulti.Select(x => $"{x.Speaker}:{x.Kind}"))})");
+
+    // Ephemeral HUD status then Coach tip must keep BRIEF intact while clearing HUD status
+    bufMulti.Upsert(new OverlayCalloutMessage("Analizando jugada...", UrgencyLevel.Low, "Counter-Strike 2", 2.0, OverlayEntryKind.Status, "HUD"), t0.AddMilliseconds(200));
+    bufMulti.Upsert(new OverlayCalloutMessage("Jugá default lento", UrgencyLevel.Medium, "Counter-Strike 2", 5.0, OverlayEntryKind.CoachFinal, "Coach"), t0.AddMilliseconds(400));
+    var afterTip = bufMulti.Snapshot();
+    Assert(afterTip.Any(e => e.Speaker == "BRIEF") && !afterTip.Any(e => e.Speaker == "HUD"),
+        $"Coach tip must clear ephemeral HUD banner while keeping BRIEF card (got {string.Join(" | ", afterTip.Select(x => x.Speaker))})");
+
+    var bufSingle = new OverlayFeedBuffer { MaxMessages = 1 };
+    var sinkSingle = new OverlayFeedBufferSink(bufSingle, () => t0);
+    var coordSingle = new MatchSessionCoordinator(
+        [csProf], new StubWindowDetector("cs2.exe"), new StubCapture(), sinkSingle, testMode: true, forcedGameId: "cs2");
+    coordSingle.InitializeOnStart(csCfg, predetectInNonTestMode: true);
+    coordSingle.EvaluateTacticalSignal("CS2_GSI: round=freezetime HP=100 Armor=0 $2400 side=CT", csProf, csCfg, isEn: false);
+    var snapSingle = bufSingle.Snapshot();
+    Assert(snapSingle.Count == 1 && snapSingle[0].Speaker == "TACTIC",
+        $"In 1-line mode urgent TACTIC must win over BRIEF (got {string.Join(" | ", snapSingle.Select(x => x.Speaker))})");
+
+    // B. ProfileArchiveCodec metadata + opt-in accounts restore
+    var tmpArch = Path.Combine(Path.GetTempPath(), $"hudmind_arch_t62_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmpArch);
+    try
+    {
+        var srcRepo = new ConfigRepository(Path.Combine(tmpArch, "src"));
+        srcRepo.SaveUserConfig(new UserConfig { CoachingPacingMode = "event_first", PlayerRoleTag = "cs2_awp" });
+        srcRepo.SaveAccounts([new ProviderAccount { Label = "BackupAcc", Provider = "groq", ApiKey = "gsk_restore_test_key_999", Enabled = true }]);
+        var srcRec = new UserProfileRecord
+        {
+            ProfileId = "mati",
+            UniqueUserId = "HM-2A3B-4C5D-6E7F",
+            DisplayName = "Mati",
+            AvatarBadge = "🦊",
+            AccentHex = "#A78BFA",
+            FavoriteGameId = "cs2",
+            PinHash = "v1:secret_never_exported"
+        };
+
+        byte[] bundle = ProfileArchiveCodec.ExportBundle(srcRepo, "Pass#1234", includeApiAccounts: true, profileMetadata: srcRec);
+
+        var dstNoKeys = new ConfigRepository(Path.Combine(tmpArch, "dst_nokeys"));
+        var resNoKeys = ProfileArchiveCodec.ImportBundleDetailed(bundle, dstNoKeys, "Pass#1234", importApiAccounts: false);
+        Assert(resNoKeys.Metadata is { DisplayName: "Mati", AvatarBadge: "🦊", AccentHex: "#A78BFA", FavoriteGameId: "cs2" } &&
+               !resNoKeys.ImportedApiAccounts &&
+               !File.Exists(dstNoKeys.AccountsPath),
+            "ImportBundleDetailed with importApiAccounts=false must return metadata without writing accounts.json");
+
+        var dstWithKeys = new ConfigRepository(Path.Combine(tmpArch, "dst_keys"));
+        var resWithKeys = ProfileArchiveCodec.ImportBundleDetailed(bundle, dstWithKeys, "Pass#1234", importApiAccounts: true);
+        Assert(resWithKeys.ImportedApiAccounts &&
+               dstWithKeys.LoadAccounts().Any(a => a.ApiKey == "gsk_restore_test_key_999") &&
+               !File.Exists(Path.Combine(dstWithKeys.WorkspaceRoot, "config", "profile_meta.json")),
+            "ImportBundleDetailed with importApiAccounts=true must restore accounts without leaking profile_meta.json on disk");
+    }
+    finally
+    {
+        try { Directory.Delete(tmpArch, recursive: true); } catch { }
+    }
+
+    // C. Universal cross-game leak summary aggregation
+    var aggReport = new PlayerLeakReport();
+    var today = new DateOnly(2026, 11, 27);
+    PlayerLeakTracker.RecordLeak(aggReport, "cs2", "cs2_no_armor", today);
+    PlayerLeakTracker.RecordLeak(aggReport, "rocket_league", "rl_low_boost", today);
+    string aggSummary = PlayerLeakTracker.FormatComparisonSummary(aggReport, "universal", isEn: false, todayOverride: today);
+    Assert(aggSummary.Contains("chaleco", StringComparison.OrdinalIgnoreCase) &&
+           aggSummary.Contains("boost", StringComparison.OrdinalIgnoreCase),
+        $"Universal leak summary must aggregate game-specific leaks: '{aggSummary}'");
+
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -3890,4 +3981,13 @@ sealed class StubXorSecretProtector : ISecretProtector
         for (int i = 0; i < b.Length; i++) b[i] ^= 0x5A;
         return Encoding.UTF8.GetString(b);
     }
+}
+
+sealed class OverlayFeedBufferSink(OverlayFeedBuffer buffer, Func<DateTimeOffset> clock) : IOverlayOutputService
+{
+    public void ShowCallout(string text, UrgencyLevel urgency, string title, double durationSeconds) =>
+        buffer.Upsert(new OverlayCalloutMessage(text, urgency, title, durationSeconds, OverlayEntryKind.CoachFinal), clock());
+
+    public void ShowMessage(OverlayCalloutMessage message) =>
+        buffer.Upsert(message, clock());
 }

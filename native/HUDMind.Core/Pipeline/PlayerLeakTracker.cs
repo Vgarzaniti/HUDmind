@@ -105,11 +105,29 @@ public static class PlayerLeakTracker
             return string.Empty;
 
         string g = string.IsNullOrWhiteSpace(gameId) ? "universal" : gameId.Trim().ToLowerInvariant();
-        if (!report.Games.TryGetValue(g, out var counters))
-            return string.Empty;
-
         string todayIso = (todayOverride ?? DateOnly.FromDateTime(DateTime.Now)).ToString("yyyy-MM-dd");
-        RollDateIfNeeded(counters, todayIso);
+
+        report.Games.TryGetValue(g, out var counters);
+        if (counters is not null)
+            RollDateIfNeeded(counters, todayIso);
+
+        if (string.Equals(g, "universal", StringComparison.Ordinal) &&
+            (counters is null || (counters.Today.Count == 0 && counters.Previous.Count == 0)))
+        {
+            var aggregated = new GameLeakCounters { CurrentDate = todayIso };
+            foreach (var entry in report.Games.Values)
+            {
+                RollDateIfNeeded(entry, todayIso);
+                foreach (var kv in entry.Today)
+                    aggregated.Today[kv.Key] = aggregated.Today.GetValueOrDefault(kv.Key) + kv.Value;
+                foreach (var kv in entry.Previous)
+                    aggregated.Previous[kv.Key] = aggregated.Previous.GetValueOrDefault(kv.Key) + kv.Value;
+            }
+            counters = aggregated;
+        }
+
+        if (counters is null)
+            return string.Empty;
 
         var allKeys = counters.Today.Keys
             .Concat(counters.Previous.Keys)
