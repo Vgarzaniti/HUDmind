@@ -715,6 +715,81 @@ await RunTest("W18. LoopbackRconToastBridge WebSocket toast + RocketLeagueLogSen
     }
 });
 
+// W19. InGameOverlayBridgeSetup assisted rcon_enabled config + LoopbackWebSocketTelemetrySensor configurable multi-game WS feed
+await RunTest("W19. InGameOverlayBridgeSetup rcon_enabled automation & configurable multi-game WS sensor", async () =>
+{
+    var tmpBridge = Path.Combine(Path.GetTempPath(), $"hudmind_w19_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(Path.Combine(tmpBridge, "cfg"));
+    try
+    {
+        File.WriteAllText(Path.Combine(tmpBridge, "cfg", "config.cfg"), "rcon_port \"9004\"\nrcon_enabled \"0\"\n");
+        var (ok, _, msg) = await HUDMind.Windows.Overlay.InGameOverlayBridgeSetup.ConfigureDirectoryAsync(tmpBridge, attemptLiveVerify: false);
+        Assert(ok, $"ConfigureDirectoryAsync failed: {msg}");
+
+        var allowText = File.ReadAllText(Path.Combine(tmpBridge, "data", "rcon_commands.cfg"));
+        var cfgText = File.ReadAllText(Path.Combine(tmpBridge, "cfg", "config.cfg"));
+        var loaded = HUDMind.Windows.Overlay.InGameOverlayBridgeSetup.TryLoadBridgeSettings(tmpBridge);
+        Assert(allowText.Contains("toast", StringComparison.Ordinal) &&
+               loaded is { Enabled: true, Port: 9004 } &&
+               !string.IsNullOrWhiteSpace(loaded.SecretToken) &&
+               !cfgText.Contains("rcon_enabled \"0\"", StringComparison.Ordinal),
+            $"Assisted bridge setup must allowlist 'toast', enable rcon_enabled & keep port 9004 (cfg={cfgText})");
+    }
+    finally
+    {
+        try { Directory.Delete(tmpBridge, recursive: true); } catch { }
+    }
+
+    // Live loopback WebSocket server on dynamic port feeding generic hudmind:telemetry to another game profile (cs2)
+    using var wsListener = new TcpListener(IPAddress.Loopback, 0);
+    wsListener.Start();
+    int wsPort = ((IPEndPoint)wsListener.LocalEndpoint).Port;
+    using var wsCts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+
+    var wsServer = Task.Run(async () =>
+    {
+        using var tcp = await wsListener.AcceptTcpClientAsync(wsCts.Token);
+        await using var ns = tcp.GetStream();
+        using var reader = new StreamReader(ns, Encoding.ASCII, leaveOpen: true);
+        string? secKey = null;
+        string? line;
+        while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync(wsCts.Token)))
+        {
+            if (line.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase))
+                secKey = line["Sec-WebSocket-Key:".Length..].Trim();
+        }
+        byte[] acceptHash = System.Security.Cryptography.SHA1.HashData(
+            Encoding.ASCII.GetBytes($"{secKey}258EAFA5-E914-47DA-95CA-C5AB0DC85B11"));
+        await ns.WriteAsync(Encoding.ASCII.GetBytes(
+            "HTTP/1.1 101 Switching Protocols\r\n" +
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+            $"Sec-WebSocket-Accept: {Convert.ToBase64String(acceptHash)}\r\n\r\n"), wsCts.Token);
+
+        await WriteUnmaskedWsTextFrameAsync(ns,
+            "{\"event\":\"hudmind:telemetry\",\"phase\":\"play\",\"resource\":10,\"fact\":\"Eco buy round\"}",
+            wsCts.Token);
+        await Task.Delay(250, wsCts.Token);
+    });
+
+    using var sensor = new LoopbackWebSocketTelemetrySensor(port: wsPort, enabled: true);
+    var cs2Prof = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "cs2", DisplayName = "Counter-Strike 2" } };
+    Assert(sensor.Supports(cs2Prof), "Configurable LoopbackWebSocketTelemetrySensor must support non-desktop profiles");
+
+    string telemetry = string.Empty;
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    while (sw.Elapsed.TotalSeconds < 3.0)
+    {
+        telemetry = await sensor.ReadAsync(cs2Prof);
+        if (!string.IsNullOrEmpty(telemetry))
+            break;
+        await Task.Delay(60);
+    }
+    await wsServer;
+    Assert(telemetry.Contains("LOCAL_WS_TELEMETRY:", StringComparison.Ordinal) &&
+           telemetry.Contains("Eco buy round", StringComparison.Ordinal),
+        $"Expected live generic WS telemetry snapshot on custom port {wsPort} (got '{telemetry}')");
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

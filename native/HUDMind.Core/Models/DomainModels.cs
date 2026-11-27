@@ -319,6 +319,12 @@ public sealed class UserConfig
     [JsonPropertyName("enable_ingame_overlay_bridge")]
     public bool EnableInGameOverlayBridge { get; set; }
 
+    [JsonPropertyName("external_telemetry_ws_enabled")]
+    public bool ExternalTelemetryWsEnabled { get; set; } = true;
+
+    [JsonPropertyName("external_telemetry_ws_port")]
+    public int ExternalTelemetryWsPort { get; set; } = Overlay.InGameOverlayBridgeProtocol.DefaultTelemetryWsPort;
+
     [JsonIgnore]
     public bool IsAnyOverlayEnabled => EnableOverlay || EnableCompanionHud || EnableInGameOverlayBridge;
 
@@ -409,6 +415,11 @@ public sealed class UserConfig
         CompanionHudPort = Math.Clamp(source.CompanionHudPort <= 0 ? 17890 : source.CompanionHudPort, 1024, 65535);
         CompanionHudAllowLan = source.CompanionHudAllowLan;
         EnableInGameOverlayBridge = source.EnableInGameOverlayBridge;
+        ExternalTelemetryWsEnabled = source.ExternalTelemetryWsEnabled;
+        ExternalTelemetryWsPort = Math.Clamp(
+            source.ExternalTelemetryWsPort <= 0 ? Overlay.InGameOverlayBridgeProtocol.DefaultTelemetryWsPort : source.ExternalTelemetryWsPort,
+            1024,
+            65535);
         CaptureMonitor = source.CaptureMonitor;
         MinInferenceIntervalSeconds = source.MinInferenceIntervalSeconds;
         ImageCompressionQuality = source.ImageCompressionQuality;

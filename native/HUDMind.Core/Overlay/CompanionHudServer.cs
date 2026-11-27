@@ -81,6 +81,7 @@ public sealed class CompanionHudServer : IOverlayOutputService, IAsyncDisposable
     public bool AllowLan => _allowLan;
     public string SessionToken => _sessionToken;
     public string LocalUrl => _boundPort > 0 ? $"http://127.0.0.1:{_boundPort}/" : string.Empty;
+    public string ObsLocalUrl => _boundPort > 0 ? $"http://127.0.0.1:{_boundPort}/?mode=obs" : string.Empty;
 
     public int ConnectedClientCount
     {
@@ -701,6 +702,10 @@ public sealed class CompanionHudServer : IOverlayOutputService, IAsyncDisposable
 <style>
   :root { color-scheme: dark; }
   body { margin:0; background:#070d15; color:#f1f5f9; font-family:system-ui,-apple-system,Segoe UI,sans-serif; padding:12px; }
+  body.obs-mode { background:transparent; padding:8px; }
+  body.obs-mode .bar, body.obs-mode .empty { display:none; }
+  body.obs-mode .pill { background:rgba(7,13,21,.88); box-shadow:0 4px 14px rgba(0,0,0,.55); }
+  body.obs-mode .txt { text-shadow:0 1px 2px #000; }
   .bar { display:flex; justify-content:space-between; align-items:center; font-size:11px; opacity:.78; margin-bottom:10px; }
   .badge { padding:2px 8px; border-radius:999px; background:#0f172a; border:1px solid #22d3ee44; color:#22d3ee; font-weight:700; }
   .pill { border:1px solid #22d3ee55; border-left:4px solid #22d3ee; background:rgba(10,19,30,.94); border-radius:10px; padding:10px 12px; margin-bottom:8px; }
@@ -718,6 +723,8 @@ public sealed class CompanionHudServer : IOverlayOutputService, IAsyncDisposable
   </div>
   <div id="hud"><div class="empty">Esperando callouts en vivo...</div></div>
   <script>
+    const params = new URLSearchParams(location.search);
+    if (params.get('mode') === 'obs') { document.body.classList.add('obs-mode'); }
     const hud = document.getElementById('hud');
     const st = document.getElementById('status');
     const es = new EventSource('/events' + location.search);

@@ -60,5 +60,6 @@ Cuando el usuario esté en **Modo Entrenamiento** (*Free Play*, *Custom Training
 ## 5. Lectura Predictiva (Anticipar 1–3s Antes)
 - Evaluar dirección entre cuadros: si rival sube más rápido al aire -> avisar **antes** (*"Rival gana altura, bajá y cubrí arco"*); si compañero gira a esquina con pelota -> frenar *before commit* (*"Compa ataca esquina, cerrate al centro/segundo palo"*).
 
-## 6. Lista Negra de UI (En modo `match`)
-- Menú principal, garaje, tienda de objetos, repetición post-gol (*Goal Replay* — salvo un consejo breve de corrección sobre el gol recibido o kickoff entrante), tabla de puntuaciones final.
+## 6. Telemetría Local Verificada (`LOCAL_WS_TELEMETRY`) y Lista Negra de UI
+- Cuando esté presente un relay local pasivo de telemetría WebSocket (`LOCAL_WS_TELEMETRY:`), tomá `Resource=XX%` como valor exacto de boost (`<=15%` indica prioridad de mini-pads/recuperación), `Clock`/`Score` como estado exacto del reloj, `OT=1` como **Overtime (muerte súbita)** y `InReplay=1` como repetición de gol activa.
+- Lista Negra de UI (en modo `match`): Menú principal, garaje, tienda de objetos, repetición post-gol (*Goal Replay* — salvo un consejo breve de corrección sobre el gol recibido o kickoff entrante), tabla de puntuaciones final.

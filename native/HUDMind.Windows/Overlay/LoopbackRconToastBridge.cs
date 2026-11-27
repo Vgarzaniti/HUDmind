@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
 using HUDMind.Core.Engine;
@@ -31,13 +32,19 @@ public static class InGameOverlayBridgeSetup
         return null;
     }
 
-    public static LoopbackRconBridgeSettings? TryLoadBridgeSettings()
+    public static LoopbackRconBridgeSettings? TryLoadBridgeSettings(string? overrideBridgeDir = null)
     {
-        var dir = ResolveCompatibleBridgeDirectory();
+        var dir = string.IsNullOrWhiteSpace(overrideBridgeDir)
+            ? ResolveCompatibleBridgeDirectory()
+            : (LoopbackGsiService.IsSafeLocalDirectoryPath(overrideBridgeDir, out var safeDir) ? safeDir : null);
         if (dir is null)
             return null;
 
-        var cfgPath = Path.Combine(dir, "cfg", "config.cfg");
+        var cfgDir = Path.Combine(dir, "cfg");
+        if (!LoopbackGsiService.IsSafeLocalDirectoryPath(cfgDir, out var safeCfgDir))
+            return null;
+
+        var cfgPath = Path.Combine(safeCfgDir, "config.cfg");
         if (!File.Exists(cfgPath))
             return null;
 
@@ -55,37 +62,80 @@ public static class InGameOverlayBridgeSetup
         if (dir is null)
             return (false, false, "No se detectó ningún puente HUD compatible instalado en %APPDATA%.");
 
-        var dataDir = Path.Combine(dir, "data");
-        if (!LoopbackGsiService.IsSafeLocalDirectoryPath(dataDir, out var safeDataDir))
+        return await ConfigureDirectoryAsync(dir, attemptLiveVerify: true, ct).ConfigureAwait(false);
+    }
+
+    public static async Task<(bool Configured, bool LiveVerified, string Message)> ConfigureDirectoryAsync(
+        string bridgeDir,
+        bool attemptLiveVerify = false,
+        CancellationToken ct = default)
+    {
+        if (!LoopbackGsiService.IsSafeLocalDirectoryPath(bridgeDir, out var safeRoot) || !Directory.Exists(safeRoot))
+            return (false, false, "Ruta del puente HUD inválida o rechazada por seguridad.");
+
+        if (!EnsureSafeSubdirectory(safeRoot, "data", out var safeDataDir))
             return (false, false, "Ruta del puente HUD rechazada por seguridad (enlace simbólico).");
 
-        Directory.CreateDirectory(safeDataDir);
         var allowPath = Path.Combine(safeDataDir, "rcon_commands.cfg");
-        if (File.Exists(allowPath))
-        {
-            var allowInfo = new FileInfo(allowPath);
-            if ((allowInfo.Attributes & FileAttributes.ReparsePoint) != 0)
-                return (false, false, "El archivo de permisos locales es un enlace simbólico (bloqueado por seguridad).");
-        }
+        if (File.Exists(allowPath) && (new FileInfo(allowPath).Attributes & FileAttributes.ReparsePoint) != 0)
+            return (false, false, "El archivo de permisos locales es un enlace simbólico (bloqueado por seguridad).");
 
-        string existing = File.Exists(allowPath)
+        string existingAllow = File.Exists(allowPath)
             ? await File.ReadAllTextAsync(allowPath, Encoding.UTF8, ct).ConfigureAwait(false)
             : string.Empty;
-        var (updated, added) = InGameOverlayBridgeProtocol.EnsureCommandAllowlisted(existing, "toast");
-        if (added || !File.Exists(allowPath))
-            await File.WriteAllTextAsync(allowPath, updated, new UTF8Encoding(false), ct).ConfigureAwait(false);
+        var (updatedAllow, addedAllow) = InGameOverlayBridgeProtocol.EnsureCommandAllowlisted(existingAllow, "toast");
+        if (addedAllow || !File.Exists(allowPath))
+            await File.WriteAllTextAsync(allowPath, updatedAllow, new UTF8Encoding(false), ct).ConfigureAwait(false);
 
-        var settings = TryLoadBridgeSettings();
+        if (!EnsureSafeSubdirectory(safeRoot, "cfg", out var safeCfgDir))
+            return (false, false, "Carpeta cfg del puente HUD rechazada por seguridad (enlace simbólico).");
+
+        var cfgPath = Path.Combine(safeCfgDir, "config.cfg");
+        if (File.Exists(cfgPath) && (new FileInfo(cfgPath).Attributes & FileAttributes.ReparsePoint) != 0)
+            return (false, false, "El archivo config.cfg local es un enlace simbólico (bloqueado por seguridad).");
+
+        string existingCfg = File.Exists(cfgPath)
+            ? await File.ReadAllTextAsync(cfgPath, Encoding.UTF8, ct).ConfigureAwait(false)
+            : string.Empty;
+        string fallbackSecret = GenerateRandomToken();
+        var (updatedCfg, cfgChanged, _) = InGameOverlayBridgeProtocol.EnsureRconConfigEnabled(existingCfg, fallbackSecret);
+        if (cfgChanged)
+            await File.WriteAllTextAsync(cfgPath, updatedCfg, new UTF8Encoding(false), ct).ConfigureAwait(false);
+
+        var settings = TryLoadBridgeSettings(safeRoot);
         if (settings is null || !settings.Enabled)
         {
             return (true, false,
-                "Permiso 'toast' agregado en la configuración del puente local. Activá RCON local (rcon_enabled \"1\") y abrí el juego.");
+                "Permiso 'toast' y rcon_enabled aplicados en configuración local. Abrí o reiniciá el juego para activarlo.");
         }
 
-        bool liveOk = await LoopbackRconToastBridge.TrySendSetupVerificationAsync(settings, ct).ConfigureAwait(false);
-        return liveOk
-            ? (true, true, $"Puente HUD local listo (127.0.0.1:{settings.Port}) — aviso en pantalla completa verificado.")
-            : (true, false, $"Permiso 'toast' configurado (puerto local {settings.Port}). Abrí el juego con el puente activo para verlo en pantalla completa.");
+        bool liveOk = attemptLiveVerify &&
+            await LoopbackRconToastBridge.TrySendSetupVerificationAsync(settings, ct).ConfigureAwait(false);
+
+        if (liveOk)
+            return (true, true, $"Puente HUD local listo (127.0.0.1:{settings.Port}) — aviso en pantalla completa verificado.");
+
+        string restartNote = cfgChanged ? " Si el juego ya estaba abierto, reinicialo una vez para aplicar rcon_enabled." : string.Empty;
+        return (true, false,
+            $"Puente HUD configurado en puerto local {settings.Port} (config.cfg + rcon_commands.cfg).{restartNote}");
+    }
+
+    private static bool EnsureSafeSubdirectory(string safeRoot, string subName, out string safeSubDir)
+    {
+        safeSubDir = string.Empty;
+        var candidate = Path.Combine(safeRoot, subName);
+        if (File.Exists(candidate))
+            return false;
+        if (!Directory.Exists(candidate))
+            Directory.CreateDirectory(candidate);
+        return LoopbackGsiService.IsSafeLocalDirectoryPath(candidate, out safeSubDir);
+    }
+
+    private static string GenerateRandomToken()
+    {
+        Span<byte> raw = stackalloc byte[8];
+        RandomNumberGenerator.Fill(raw);
+        return Convert.ToHexString(raw).ToLowerInvariant();
     }
 }
 
@@ -120,7 +170,7 @@ public sealed class LoopbackRconToastBridge : IOverlayOutputService, IAsyncDispo
     {
         _isEnabled = isEnabled;
         _isSupportedGameActive = isSupportedGameActive;
-        _settingsResolver = settingsResolver ?? InGameOverlayBridgeSetup.TryLoadBridgeSettings;
+        _settingsResolver = settingsResolver ?? (() => InGameOverlayBridgeSetup.TryLoadBridgeSettings());
         _workerTask = Task.Run(() => WorkerLoopAsync(_cts.Token), _cts.Token);
     }
 

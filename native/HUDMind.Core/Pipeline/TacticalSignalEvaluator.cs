@@ -411,10 +411,11 @@ public static partial class TacticalSignalEvaluator
             if (totalMins - s.LastDeathClockMins >= 4.0)
                 s.ConsecutiveDeaths = 0;
 
-            // Early objective preparation windows (first dragon 5:00, voidgrubs 6:00, herald 14:00)
+            // Early objective preparation windows (first dragon 5:00, voidgrubs 6:00, herald 14:00, baron 20:00)
             string objWindow = string.Empty;
             if (mins == 4 && secs >= 15) objWindow = "drake5";
             else if (mins == 5 && secs >= 25) objWindow = "grubs6";
+            else if (mins == 13 && secs >= 25) objWindow = "herald14";
             else if (mins == 19 && secs >= 20) objWindow = "baron20";
 
             bool newObj = !string.IsNullOrEmpty(objWindow) && !string.Equals(s.LastObjectiveWindow, objWindow, StringComparison.Ordinal);
@@ -526,6 +527,12 @@ public static partial class TacticalSignalEvaluator
     [GeneratedRegex(@"\bResource=(\d+)%", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
     private static partial Regex LocalWsResourceRegex();
 
+    [GeneratedRegex(@"\bPhase=([A-Z0-9_]+)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    private static partial Regex LocalWsPhaseRegex();
+
+    [GeneratedRegex(@"\bFact=([^,]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
+    private static partial Regex LocalWsFactRegex();
+
     private static TacticalEvaluation EvaluateLocalWebSocketTelemetry(string text, TacticalSignalTracker tracker, bool isEn) =>
         tracker.WithLock(s =>
         {
@@ -537,8 +544,39 @@ public static partial class TacticalSignalEvaluator
                 return new TacticalEvaluation("MATCH_ENDED", ShouldSilence: true, false, false, emitEnd, 1.0, string.Empty);
             }
 
+            string explicitPhase = MatchGroup(LocalWsPhaseRegex(), text).ToUpperInvariant();
+            if (explicitPhase is "MENU" or "LOBBY")
+            {
+                bool emitEnd = s.MatchActiveSeen && !s.MatchEndEmittedForCurrentRun;
+                s.MatchEndEmittedForCurrentRun = true;
+                s.MatchActiveSeen = false;
+                return new TacticalEvaluation(explicitPhase, ShouldSilence: true, false, false, emitEnd, 1.0, string.Empty);
+            }
+
+            if (explicitPhase is "DEAD" or "DEAD_REVIEW")
+            {
+                s.MatchActiveSeen = true;
+                s.MatchEndEmittedForCurrentRun = false;
+                bool firstDeath = !s.DeadReviewTriggered;
+                s.DeadReviewTriggered = true;
+                string deathFact = MatchGroup(LocalWsFactRegex(), text).Trim();
+                return new TacticalEvaluation(
+                    "DEAD_REVIEW",
+                    ShouldSilence: !firstDeath,
+                    ShouldDelayNonUrgent: false,
+                    TriggerImmediate: firstDeath,
+                    MatchEnded: false,
+                    CooldownMultiplier: 0.80,
+                    DeterministicFact: string.IsNullOrEmpty(deathFact)
+                        ? (isEn ? "Eliminated — brief post-death review" : "Eliminado — ajuste breve post-muerte")
+                        : deathFact);
+            }
+
+            s.DeadReviewTriggered = false;
+
             if (text.Contains("InReplay=1", StringComparison.OrdinalIgnoreCase) ||
-                text.Contains("GoalScored=1", StringComparison.OrdinalIgnoreCase))
+                text.Contains("GoalScored=1", StringComparison.OrdinalIgnoreCase) ||
+                explicitPhase == "REPLAY")
             {
                 s.MatchActiveSeen = true;
                 s.MatchEndEmittedForCurrentRun = false;
@@ -560,19 +598,24 @@ public static partial class TacticalSignalEvaluator
             s.LastRoundPhase = isOt ? "OT" : "PLAY";
 
             int resPct = TryInt(LocalWsResourceRegex(), text, -1);
+            string explicitFact = MatchGroup(LocalWsFactRegex(), text).Trim();
+            bool hasUrgentFact = !string.IsNullOrEmpty(explicitFact);
+
             string fact = otStart
                 ? (isEn ? "Overtime sudden death — zero overcommits" : "Overtime — muerte súbita, rotación segura")
-                : (resPct is >= 0 and <= 15
-                    ? (isEn ? $"Critical resource ({resPct}%) — recover safely" : $"Recurso crítico ({resPct}%) — recuperá sin arriesgar")
-                    : text.Replace(ExternalTelemetryParser.TelemetryPrefix, string.Empty, StringComparison.OrdinalIgnoreCase).Trim());
+                : hasUrgentFact
+                    ? explicitFact
+                    : (resPct is >= 0 and <= 15
+                        ? (isEn ? $"Critical resource ({resPct}%) — recover safely" : $"Recurso crítico ({resPct}%) — recuperá sin arriesgar")
+                        : text.Replace(ExternalTelemetryParser.TelemetryPrefix, string.Empty, StringComparison.OrdinalIgnoreCase).Trim());
 
             return new TacticalEvaluation(
-                isOt ? "OVERTIME" : "PLAY",
+                isOt ? "OVERTIME" : (string.IsNullOrEmpty(explicitPhase) ? "PLAY" : explicitPhase),
                 ShouldSilence: false,
                 ShouldDelayNonUrgent: false,
-                TriggerImmediate: otStart,
+                TriggerImmediate: otStart || hasUrgentFact,
                 MatchEnded: false,
-                CooldownMultiplier: (resPct is >= 0 and <= 15 || isOt) ? 0.75 : 1.0,
+                CooldownMultiplier: (resPct is >= 0 and <= 15 || isOt || hasUrgentFact) ? 0.75 : 1.0,
                 DeterministicFact: fact);
         });
 

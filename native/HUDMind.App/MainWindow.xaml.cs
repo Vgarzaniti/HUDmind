@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using HUDMind.Core.AI;
 using HUDMind.Core.Config;
@@ -290,6 +291,10 @@ public partial class MainWindow : Window
         ChkLaunchWithWindows.IsChecked = _config.LaunchWithWindows && WindowsStartupManager.IsEnabled();
         ChkEnableAudioCues.IsChecked = _config.EnableAudioCues;
         ChkCheckUpdatesOnStartup.IsChecked = _config.CheckUpdatesOnStartup;
+        ChkExternalTelemetryWs.IsChecked = _config.ExternalTelemetryWsEnabled;
+        TxtTelemetryWsPort.Text = (_config.ExternalTelemetryWsPort <= 0
+            ? InGameOverlayBridgeProtocol.DefaultTelemetryWsPort
+            : _config.ExternalTelemetryWsPort).ToString(CultureInfo.InvariantCulture);
         TxtCoachSoul.Text = _repo.LoadCoachSoulMarkdown();
         TxtPlayerProfile.Text = _repo.LoadPlayerProfileMarkdown();
         TxtPauseKey.Text = _config.HotkeyTogglePause;
@@ -365,6 +370,13 @@ public partial class MainWindow : Window
         _ = SyncCompanionHudServerAsync();
     }
 
+    private void InGameOverlayBridgeSettingChanged(object sender, RoutedEventArgs e)
+    {
+        if (_syncingUi || _smokeMode || _closingInProgress || _shutdownComplete)
+            return;
+        _config.EnableInGameOverlayBridge = ChkEnableInGameOverlayBridge.IsChecked == true;
+    }
+
     private async Task SyncCompanionHudServerAsync()
     {
         try
@@ -377,6 +389,7 @@ public partial class MainWindow : Window
                 await _companionHud.StopAsync();
                 if (!_shutdownComplete && CompanionUrlBar is not null)
                     CompanionUrlBar.Visibility = Visibility.Collapsed;
+                UpdateCompanionQrVisual(string.Empty, allowLan: false);
                 return;
             }
 
@@ -394,6 +407,7 @@ public partial class MainWindow : Window
                     TxtCompanionUrl.Text = url;
                 if (CompanionUrlBar is not null)
                     CompanionUrlBar.Visibility = Visibility.Visible;
+                UpdateCompanionQrVisual(url, _config.CompanionHudAllowLan);
                 AppendLog($"🌐 Companion Web HUD activo ({(_config.CompanionHudAllowLan ? "LAN Wi-Fi con clave" : "solo localhost")}): {url}");
             }
             else if (!string.IsNullOrWhiteSpace(warning))
@@ -408,12 +422,93 @@ public partial class MainWindow : Window
         }
     }
 
+    private void UpdateCompanionQrVisual(string url, bool allowLan)
+    {
+        if (_shutdownComplete || BorderCompanionQr is null || ImgCompanionQr is null || TxtCompanionQrHint is null)
+            return;
+
+        if (!allowLan || string.IsNullOrWhiteSpace(url))
+        {
+            ImgCompanionQr.Source = null;
+            BorderCompanionQr.Visibility = Visibility.Collapsed;
+            TxtCompanionQrHint.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var bmp = BuildQrBitmapSource(url);
+        if (bmp is null)
+        {
+            ImgCompanionQr.Source = null;
+            BorderCompanionQr.Visibility = Visibility.Collapsed;
+            TxtCompanionQrHint.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        ImgCompanionQr.Source = bmp;
+        BorderCompanionQr.Visibility = Visibility.Visible;
+        TxtCompanionQrHint.Visibility = Visibility.Visible;
+    }
+
+    private static BitmapSource? BuildQrBitmapSource(string url)
+    {
+        var modules = QrMatrixEncoder.TryEncode(url);
+        if (modules is null)
+            return null;
+
+        int n = modules.GetLength(0);
+        const int quiet = 2;
+        const int scale = 4;
+        int dim = (n + quiet * 2) * scale;
+        int stride = dim * 4;
+        var pixels = new byte[dim * stride];
+
+        // Fill opaque white background (#FFFFFF BGRA)
+        Array.Fill(pixels, (byte)255);
+
+        for (int r = 0; r < n; r++)
+        {
+            for (int c = 0; c < n; c++)
+            {
+                if (!modules[r, c])
+                    continue;
+                int py0 = (r + quiet) * scale;
+                int px0 = (c + quiet) * scale;
+                for (int dy = 0; dy < scale; dy++)
+                {
+                    int rowOffset = (py0 + dy) * stride;
+                    for (int dx = 0; dx < scale; dx++)
+                    {
+                        int off = rowOffset + (px0 + dx) * 4;
+                        pixels[off] = 0x15;     // B
+                        pixels[off + 1] = 0x0D; // G
+                        pixels[off + 2] = 0x07; // R
+                        pixels[off + 3] = 0xFF; // A
+                    }
+                }
+            }
+        }
+
+        var bmp = BitmapSource.Create(dim, dim, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
+        bmp.Freeze();
+        return bmp;
+    }
+
     private void BtnCopyCompanionUrl_Click(object sender, RoutedEventArgs e)
     {
         var url = (TxtCompanionUrl?.Text ?? string.Empty).Trim();
         if (string.IsNullOrEmpty(url)) return;
         System.Windows.Clipboard.SetText(url);
         AppendLog($"📋 URL de Companion Web HUD copiada al portapapeles: {url}");
+    }
+
+    private void BtnCopyCompanionObsUrl_Click(object sender, RoutedEventArgs e)
+    {
+        var url = _config.CompanionHudAllowLan && !string.IsNullOrEmpty(_companionHud.LanUrl)
+            ? $"{_companionHud.LanUrl}&mode=obs"
+            : _companionHud.ObsLocalUrl;
+        if (string.IsNullOrEmpty(url)) return;
+        System.Windows.Clipboard.SetText(url);
+        AppendLog($"📺 URL transparente para OBS Browser Source copiada: {url}");
     }
 
     private void BtnOpenCompanionUrl_Click(object sender, RoutedEventArgs e)
@@ -2000,6 +2095,21 @@ public partial class MainWindow : Window
         _config.EnableCompanionHud = ChkEnableCompanionHud.IsChecked == true;
         _config.CompanionHudAllowLan = ChkCompanionLan.IsChecked == true;
         _config.EnableInGameOverlayBridge = ChkEnableInGameOverlayBridge.IsChecked == true;
+        _config.ExternalTelemetryWsEnabled = ChkExternalTelemetryWs.IsChecked == true;
+        if (int.TryParse((TxtTelemetryWsPort?.Text ?? string.Empty).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int wsPort) &&
+            wsPort is >= 1024 and <= 65535)
+        {
+            _config.ExternalTelemetryWsPort = wsPort;
+        }
+        else if (validateHotkeys)
+        {
+            System.Windows.MessageBox.Show("Puerto WS Telemetría inválido: usá un número entre 1024 y 65535 (ej: 49122).", "Puerto inválido", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+        else
+        {
+            _config.ExternalTelemetryWsPort = InGameOverlayBridgeProtocol.DefaultTelemetryWsPort;
+        }
         _config.EnableHotkeys = ChkEnableHotkeys.IsChecked == true;
         _config.MinimizeToTray = ChkMinimizeToTray.IsChecked == true;
         _config.LaunchWithWindows = ChkLaunchWithWindows.IsChecked == true;

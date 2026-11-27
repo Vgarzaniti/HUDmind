@@ -14,6 +14,9 @@ public static class InGameOverlayBridgeProtocol
     public const int DefaultRconPort = 9002;
     public const int DefaultTelemetryWsPort = 49122;
 
+    public static string BuildTelemetryWsUrl(int port) =>
+        $"ws://127.0.0.1:{Math.Clamp(port <= 0 ? DefaultTelemetryWsPort : port, 1024, 65535)}/";
+
     public static LoopbackRconBridgeSettings ParseRconBridgeConfig(string? configContent)
     {
         bool enabled = false;
@@ -123,6 +126,90 @@ public static class InGameOverlayBridgeProtocol
         lines.Add(cmd);
         return (string.Join(Environment.NewLine, lines) + Environment.NewLine, true);
     }
+
+    public static (string UpdatedText, bool Changed, bool HasSecret) EnsureRconConfigEnabled(
+        string? configContent,
+        string? fallbackSecret = null)
+    {
+        var rawLines = (configContent ?? string.Empty).Split(["\r\n", "\n"], StringSplitOptions.None);
+        var outLines = new List<string>(rawLines.Length + 2);
+        bool sawEnabled = false;
+        bool sawSecret = false;
+        bool hasNonEmptySecret = false;
+        bool changed = false;
+
+        foreach (var rawLine in rawLines)
+        {
+            var trimmed = rawLine.Trim();
+            if (trimmed.StartsWith("rcon_enabled ", StringComparison.OrdinalIgnoreCase))
+            {
+                sawEnabled = true;
+                var val = UnquoteValue(StripInlineComment(trimmed)["rcon_enabled ".Length..]);
+                if (val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase))
+                {
+                    outLines.Add(rawLine);
+                }
+                else
+                {
+                    outLines.Add("rcon_enabled \"1\"");
+                    changed = true;
+                }
+                continue;
+            }
+
+            if (trimmed.StartsWith("rcon_password ", StringComparison.OrdinalIgnoreCase))
+            {
+                sawSecret = true;
+                var secretVal = UnquoteValue(StripInlineComment(trimmed)["rcon_password ".Length..]);
+                if (!string.IsNullOrWhiteSpace(secretVal))
+                {
+                    hasNonEmptySecret = true;
+                    outLines.Add(rawLine);
+                }
+                else if (!string.IsNullOrWhiteSpace(fallbackSecret))
+                {
+                    outLines.Add($"rcon_password \"{SanitizeSecretValue(fallbackSecret)}\"");
+                    hasNonEmptySecret = true;
+                    changed = true;
+                }
+                else
+                {
+                    outLines.Add(rawLine);
+                }
+                continue;
+            }
+
+            outLines.Add(rawLine);
+        }
+
+        // Drop trailing empty placeholder split line if original ended with newline
+        if (outLines.Count > 0 && string.IsNullOrEmpty(outLines[^1]))
+            outLines.RemoveAt(outLines.Count - 1);
+
+        if (!sawEnabled)
+        {
+            outLines.Add("rcon_enabled \"1\"");
+            changed = true;
+        }
+
+        if (!sawSecret && !string.IsNullOrWhiteSpace(fallbackSecret))
+        {
+            outLines.Add($"rcon_password \"{SanitizeSecretValue(fallbackSecret)}\"");
+            hasNonEmptySecret = true;
+            changed = true;
+        }
+
+        return (string.Join(Environment.NewLine, outLines) + Environment.NewLine, changed, hasNonEmptySecret);
+    }
+
+    private static string StripInlineComment(string trimmedLine)
+    {
+        int idx = trimmedLine.IndexOf("//", StringComparison.Ordinal);
+        return idx >= 0 ? trimmedLine[..idx].Trim() : trimmedLine;
+    }
+
+    private static string SanitizeSecretValue(string secret) =>
+        new string(secret.Where(c => !char.IsControl(c) && c is not ('"' or ';')).ToArray()).Trim();
 
     private static string UnquoteValue(string raw)
     {
