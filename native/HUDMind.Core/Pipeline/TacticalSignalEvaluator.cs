@@ -13,7 +13,11 @@ public sealed record TacticalEvaluation(
     double CooldownMultiplier,
     string DeterministicFact,
     bool IsTiltRisk = false,
-    int ConsecutiveDeaths = 0
+    int ConsecutiveDeaths = 0,
+    string InstantLocalAlert = "",
+    UrgencyLevel InstantAlertUrgency = UrgencyLevel.Medium,
+    string BriefingNote = "",
+    string LeakCategoryKey = ""
 )
 {
     public static TacticalEvaluation Neutral { get; } = new(
@@ -47,6 +51,9 @@ public sealed class TacticalSignalTracker
     private int _consecutiveDeaths;
     private bool _diedCurrentRound;
     private double _lastDeathClockMins = -10.0;
+    private string _lastAlertKey = string.Empty;
+    private string _lastBriefingKey = string.Empty;
+    private bool _wasLowResource;
 
     public void Reset(string? gameId = null)
     {
@@ -66,6 +73,9 @@ public sealed class TacticalSignalTracker
             _consecutiveDeaths = 0;
             _diedCurrentRound = false;
             _lastDeathClockMins = -10.0;
+            _lastAlertKey = string.Empty;
+            _lastBriefingKey = string.Empty;
+            _wasLowResource = false;
         }
     }
 
@@ -96,7 +106,10 @@ public sealed class TacticalSignalTracker
                 LastLogState = _lastLogState,
                 ConsecutiveDeaths = _consecutiveDeaths,
                 DiedCurrentRound = _diedCurrentRound,
-                LastDeathClockMins = _lastDeathClockMins
+                LastDeathClockMins = _lastDeathClockMins,
+                LastAlertKey = _lastAlertKey,
+                LastBriefingKey = _lastBriefingKey,
+                WasLowResource = _wasLowResource
             };
 
             var res = fn(state);
@@ -114,6 +127,9 @@ public sealed class TacticalSignalTracker
             _consecutiveDeaths = state.ConsecutiveDeaths;
             _diedCurrentRound = state.DiedCurrentRound;
             _lastDeathClockMins = state.LastDeathClockMins;
+            _lastAlertKey = state.LastAlertKey;
+            _lastBriefingKey = state.LastBriefingKey;
+            _wasLowResource = state.WasLowResource;
             return res;
         }
     }
@@ -133,6 +149,25 @@ public sealed class TacticalSignalTracker
         public int ConsecutiveDeaths;
         public bool DiedCurrentRound;
         public double LastDeathClockMins = -10.0;
+        public string LastAlertKey = string.Empty;
+        public string LastBriefingKey = string.Empty;
+        public bool WasLowResource;
+
+        public string EmitAlertOnce(string key, string message)
+        {
+            if (string.IsNullOrEmpty(message) || string.Equals(LastAlertKey, key, StringComparison.Ordinal))
+                return string.Empty;
+            LastAlertKey = key;
+            return message;
+        }
+
+        public string EmitBriefingOnce(string key, string message)
+        {
+            if (string.IsNullOrEmpty(message) || string.Equals(LastBriefingKey, key, StringComparison.Ordinal))
+                return string.Empty;
+            LastBriefingKey = key;
+            return message;
+        }
     }
 }
 
@@ -267,6 +302,8 @@ public static partial class TacticalSignalEvaluator
                 var fact = (money >= 0
                     ? (isEn ? $"CS2 DEAD | Next round bank: ${money}" : $"CS2 Muerto | Banco prox. ronda: ${money}")
                     : (isEn ? "CS2 DEAD" : "CS2 Muerto")) + tiltSuffix;
+                string leak = firstDeath && s.ConsecutiveDeaths == 3 ? "tilt_streak" : string.Empty;
+                string brief = firstDeath ? s.EmitBriefingOnce($"cs2_dead_{s.ConsecutiveDeaths}", fact) : string.Empty;
                 return new TacticalEvaluation(
                     "DEAD_REVIEW",
                     ShouldSilence: !firstDeath,
@@ -276,7 +313,9 @@ public static partial class TacticalSignalEvaluator
                     CooldownMultiplier: 0.75,
                     DeterministicFact: fact,
                     IsTiltRisk: tiltRisk,
-                    ConsecutiveDeaths: s.ConsecutiveDeaths);
+                    ConsecutiveDeaths: s.ConsecutiveDeaths,
+                    BriefingNote: brief,
+                    LeakCategoryKey: leak);
             }
 
             s.DeadReviewTriggered = false;
@@ -300,8 +339,10 @@ public static partial class TacticalSignalEvaluator
                     _ => "BUY"
                 };
                 var extras = new List<string>(2);
-                if (armor == 0 && money >= 650) extras.Add(isEn ? "no armor" : "sin chaleco");
-                if (side == "CT" && !hasKit && money >= 4000) extras.Add(isEn ? "no kit" : "sin kit");
+                bool missingArmor = armor == 0 && money >= 650;
+                bool missingKit = side == "CT" && !hasKit && money >= 4000;
+                if (missingArmor) extras.Add(isEn ? "no armor" : "sin chaleco");
+                if (missingKit) extras.Add(isEn ? "no kit" : "sin kit");
                 string extraText = extras.Count > 0 ? $" ({string.Join(", ", extras)})" : string.Empty;
                 string tiltHint = tiltRisk
                     ? (isEn ? $" | Reset ({s.ConsecutiveDeaths}d)" : $" | Calma/Reset ({s.ConsecutiveDeaths}m)")
@@ -309,6 +350,17 @@ public static partial class TacticalSignalEvaluator
                 string fact = (money >= 0
                     ? (isEn ? $"CS2 Buy: {econTag} ${money}{extraText}" : $"CS2 Compra: {econTag} ${money}{extraText}")
                     : (isEn ? "CS2 Buy Phase" : "CS2 Fase de compra")) + tiltHint;
+
+                string buyBrief = phaseChanged ? s.EmitBriefingOnce($"cs2_buy_{econTag}_{money}", fact) : string.Empty;
+                string buyAlert = string.Empty;
+                if (missingKit)
+                    buyAlert = s.EmitAlertOnce("cs2_kit", isEn ? $"Buy Kit (${money})" : $"Comprá Kit (${money})");
+                else if (missingArmor && phaseChanged)
+                    buyAlert = s.EmitAlertOnce("cs2_armor", isEn ? $"Buy Armor (${money})" : $"Falta chaleco (${money})");
+
+                string buyLeak = phaseChanged
+                    ? (missingKit ? "cs2_no_kit" : (missingArmor ? "cs2_no_armor" : string.Empty))
+                    : string.Empty;
 
                 return new TacticalEvaluation(
                     "BUY_PHASE",
@@ -319,7 +371,11 @@ public static partial class TacticalSignalEvaluator
                     CooldownMultiplier: 0.55,
                     DeterministicFact: fact,
                     IsTiltRisk: tiltRisk,
-                    ConsecutiveDeaths: s.ConsecutiveDeaths);
+                    ConsecutiveDeaths: s.ConsecutiveDeaths,
+                    InstantLocalAlert: buyAlert,
+                    InstantAlertUrgency: UrgencyLevel.Medium,
+                    BriefingNote: buyBrief,
+                    LeakCategoryKey: buyLeak);
             }
 
             // Bomb critical threshold timing (~10s without kit / ~6s with kit)
@@ -331,6 +387,7 @@ public static partial class TacticalSignalEvaluator
                     s.BombUrgencyTriggered = true;
                     s.LastHp = hp;
                     string kitTag = side == "CT" ? (hasKit ? "con kit" : "SIN kit") : "C4";
+                    string c4Fact = $"CS2 C4 ~{c4Rem}s ({kitTag})";
                     return new TacticalEvaluation(
                         "POST_PLANT",
                         ShouldSilence: false,
@@ -338,7 +395,9 @@ public static partial class TacticalSignalEvaluator
                         TriggerImmediate: true,
                         MatchEnded: false,
                         CooldownMultiplier: 0.65,
-                        DeterministicFact: $"CS2 C4 ~{c4Rem}s ({kitTag})");
+                        DeterministicFact: c4Fact,
+                        InstantLocalAlert: c4Fact,
+                        InstantAlertUrgency: UrgencyLevel.High);
                 }
             }
 
@@ -395,6 +454,11 @@ public static partial class TacticalSignalEvaluator
                 factParts.Add(isEn ? "DEAD" : "Muerto");
                 if (tiltRisk)
                     factParts.Add(isEn ? $"Anti-tilt calm reset ({s.ConsecutiveDeaths}d)" : $"Calma/Anti-tilt ({s.ConsecutiveDeaths} muertes seg.)");
+                string joinedFact = string.Join(" | ", factParts);
+                string lolLeak = firstDeath
+                    ? (gold >= 1300 ? "lol_unspent_gold_death" : (s.ConsecutiveDeaths == 3 ? "tilt_streak" : string.Empty))
+                    : string.Empty;
+                string lolBrief = firstDeath ? s.EmitBriefingOnce($"lol_dead_{s.ConsecutiveDeaths}_{mins}", joinedFact) : string.Empty;
                 return new TacticalEvaluation(
                     "DEAD_REVIEW",
                     ShouldSilence: !firstDeath,
@@ -402,9 +466,11 @@ public static partial class TacticalSignalEvaluator
                     TriggerImmediate: firstDeath,
                     MatchEnded: false,
                     CooldownMultiplier: 0.75,
-                    DeterministicFact: string.Join(" | ", factParts),
+                    DeterministicFact: joinedFact,
                     IsTiltRisk: tiltRisk,
-                    ConsecutiveDeaths: s.ConsecutiveDeaths);
+                    ConsecutiveDeaths: s.ConsecutiveDeaths,
+                    BriefingNote: lolBrief,
+                    LeakCategoryKey: lolLeak);
             }
 
             s.DeadReviewTriggered = false;
@@ -428,6 +494,13 @@ public static partial class TacticalSignalEvaluator
             bool takingDamage = s.LastHp > 0 && hpPct > 0 && (s.LastHp - hpPct) >= 18;
             s.LastHp = hpPct;
 
+            string objAlert = newObj
+                ? s.EmitAlertOnce($"lol_{objWindow}",
+                    gold >= 1300
+                        ? (isEn ? $"Obj soon ({objWindow}) · Spend {gold}g" : $"Objetivo próximo · Backeá ({gold}g)")
+                        : (isEn ? $"Objective soon ({objWindow}) — prep prio" : $"Objetivo próximo — prepará prio/visión"))
+                : string.Empty;
+
             return new TacticalEvaluation(
                 takingDamage ? "COMBAT" : (!string.IsNullOrEmpty(objWindow) ? "OBJECTIVE_WINDOW" : "PLAY"),
                 ShouldSilence: false,
@@ -435,7 +508,9 @@ public static partial class TacticalSignalEvaluator
                 TriggerImmediate: newObj,
                 MatchEnded: false,
                 CooldownMultiplier: takingDamage ? 1.35 : (gold >= 1400 || newObj ? 0.80 : 1.0),
-                DeterministicFact: factParts.Count > 1 ? string.Join(" | ", factParts) : string.Empty);
+                DeterministicFact: factParts.Count > 1 ? string.Join(" | ", factParts) : string.Empty,
+                InstantLocalAlert: objAlert,
+                InstantAlertUrgency: UrgencyLevel.Medium);
         });
 
     private static TacticalEvaluation EvaluateDota(string text, TacticalSignalTracker tracker, bool isEn) =>
@@ -580,6 +655,7 @@ public static partial class TacticalSignalEvaluator
             {
                 s.MatchActiveSeen = true;
                 s.MatchEndEmittedForCurrentRun = false;
+                string repBrief = s.EmitBriefingOnce($"ws_replay_{s.LastGoalMarker}", isEn ? "Goal replay — align kickoff role" : "Replay de gol — alineá rol de kickoff");
                 return new TacticalEvaluation(
                     "REPLAY_GOAL",
                     ShouldSilence: true,
@@ -587,7 +663,8 @@ public static partial class TacticalSignalEvaluator
                     TriggerImmediate: false,
                     MatchEnded: false,
                     CooldownMultiplier: 1.35,
-                    DeterministicFact: isEn ? "Replay active" : "Replay activo");
+                    DeterministicFact: isEn ? "Replay active" : "Replay activo",
+                    BriefingNote: repBrief);
             }
 
             s.MatchActiveSeen = true;
@@ -601,6 +678,10 @@ public static partial class TacticalSignalEvaluator
             string explicitFact = MatchGroup(LocalWsFactRegex(), text).Trim();
             bool hasUrgentFact = !string.IsNullOrEmpty(explicitFact);
 
+            bool lowResEdge = resPct is >= 0 and <= 15 && !s.WasLowResource;
+            if (resPct is >= 0 and <= 15) s.WasLowResource = true;
+            else if (resPct >= 28) s.WasLowResource = false;
+
             string fact = otStart
                 ? (isEn ? "Overtime sudden death — zero overcommits" : "Overtime — muerte súbita, rotación segura")
                 : hasUrgentFact
@@ -609,6 +690,12 @@ public static partial class TacticalSignalEvaluator
                         ? (isEn ? $"Critical resource ({resPct}%) — recover safely" : $"Recurso crítico ({resPct}%) — recuperá sin arriesgar")
                         : text.Replace(ExternalTelemetryParser.TelemetryPrefix, string.Empty, StringComparison.OrdinalIgnoreCase).Trim());
 
+            string wsAlert = otStart
+                ? s.EmitAlertOnce("ws_ot", isEn ? "Overtime — zero overcommits!" : "Overtime — cero overcommits")
+                : (lowResEdge
+                    ? s.EmitAlertOnce("ws_lowres", isEn ? $"Low boost ({resPct}%) — grab pads" : $"Boost {resPct}% — juntá mini-pads")
+                    : string.Empty);
+
             return new TacticalEvaluation(
                 isOt ? "OVERTIME" : (string.IsNullOrEmpty(explicitPhase) ? "PLAY" : explicitPhase),
                 ShouldSilence: false,
@@ -616,7 +703,10 @@ public static partial class TacticalSignalEvaluator
                 TriggerImmediate: otStart || hasUrgentFact,
                 MatchEnded: false,
                 CooldownMultiplier: (resPct is >= 0 and <= 15 || isOt || hasUrgentFact) ? 0.75 : 1.0,
-                DeterministicFact: fact);
+                DeterministicFact: fact,
+                InstantLocalAlert: wsAlert,
+                InstantAlertUrgency: otStart ? UrgencyLevel.High : UrgencyLevel.Medium,
+                LeakCategoryKey: lowResEdge ? "rl_low_boost" : string.Empty);
         });
 
     private static TacticalEvaluation EvaluateRocketLeague(string text, TacticalSignalTracker tracker, bool isEn) =>
@@ -645,6 +735,8 @@ public static partial class TacticalSignalEvaluator
             {
                 bool newGoal = !string.Equals(s.LastGoalMarker, text, StringComparison.Ordinal);
                 s.LastGoalMarker = text;
+                string rlFact = isEn ? "Goal replay — prep next kickoff role" : "Replay de gol — prepará tu rol para el saque";
+                string rlBrief = newGoal ? s.EmitBriefingOnce($"rl_goal_{text}", rlFact) : string.Empty;
                 return new TacticalEvaluation(
                     "REPLAY_GOAL",
                     ShouldSilence: false,
@@ -652,7 +744,8 @@ public static partial class TacticalSignalEvaluator
                     TriggerImmediate: false,
                     MatchEnded: false,
                     CooldownMultiplier: newGoal ? 1.25 : 1.0,
-                    DeterministicFact: isEn ? "Goal replay — prep next kickoff role" : "Replay de gol — prepará tu rol para el saque");
+                    DeterministicFact: rlFact,
+                    BriefingNote: rlBrief);
             }
 
             return TacticalEvaluation.Neutral;

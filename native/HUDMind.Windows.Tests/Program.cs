@@ -790,6 +790,47 @@ await RunTest("W19. InGameOverlayBridgeSetup rcon_enabled automation & configura
         $"Expected live generic WS telemetry snapshot on custom port {wsPort} (got '{telemetry}')");
 });
 
+// W20. Multi-profile Windows DPAPI workspace secret isolation & encrypted archive interoperability
+await RunTest("W20. UserProfileStore + Win32DpapiSecretProtector isolates per-profile API secrets on Windows", () =>
+{
+    var tmpRoot = Path.Combine(Path.GetTempPath(), $"hudmind_win_profiles_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmpRoot);
+    try
+    {
+        var store = new UserProfileStore(tmpRoot);
+        var userA = store.CreateProfile("Jugador Alpha", "⚡", "#22D3EE", "cs2", pin: "1357");
+        var userB = store.CreateProfile("Jugador Beta", "🔥", "#F59E0B", "rocket_league");
+        Assert(UserProfileStore.VerifyPin(userA.PinHash, "1357") && !UserProfileStore.VerifyPin(userA.PinHash, "0000"),
+            "Windows profile PBKDF2 PIN mismatch");
+
+        var dpapi = new Win32DpapiSecretProtector();
+        var repoA = new ConfigRepository(store.ResolveWorkspaceRoot(userA.ProfileId), secretProtector: dpapi);
+        var repoB = new ConfigRepository(store.ResolveWorkspaceRoot(userB.ProfileId), secretProtector: dpapi);
+
+        repoA.SaveAccounts([new ProviderAccount { Label = "AlphaKey", Provider = "gemini", ApiKey = "AIzaWinAlphaSecretKey987654", Enabled = true }]);
+        repoB.SaveAccounts([new ProviderAccount { Label = "BetaKey", Provider = "openrouter", ApiKey = "sk-or-v1-WinBetaSecret123456", Enabled = true }]);
+
+        string rawA = File.ReadAllText(repoA.AccountsPath, Encoding.UTF8);
+        string rawB = File.ReadAllText(repoB.AccountsPath, Encoding.UTF8);
+        Assert(rawA.Contains(ConfigRepository.ProtectedSecretPrefix, StringComparison.Ordinal) &&
+               !rawA.Contains("AIzaWinAlphaSecretKey987654", StringComparison.Ordinal) &&
+               !rawA.Contains("sk-or-v1-WinBetaSecret123456", StringComparison.Ordinal) &&
+               rawB.Contains(ConfigRepository.ProtectedSecretPrefix, StringComparison.Ordinal),
+            "Raw accounts.json files must be DPAPI sealed and cross-profile isolated");
+
+        var loadedA = repoA.LoadAccounts();
+        var loadedB = repoB.LoadAccounts();
+        Assert(loadedA.Count == 1 && loadedA[0].ApiKey == "AIzaWinAlphaSecretKey987654" &&
+               loadedB.Count == 1 && loadedB[0].ApiKey == "sk-or-v1-WinBetaSecret123456",
+            "Per-profile DPAPI unprotect mismatch");
+    }
+    finally
+    {
+        try { Directory.Delete(tmpRoot, recursive: true); } catch { }
+    }
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

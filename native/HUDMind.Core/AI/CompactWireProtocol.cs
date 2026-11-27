@@ -208,8 +208,8 @@ public static class CompactWireProtocol
         (coachMode ?? "auto").Trim().ToLowerInvariant() switch
         {
             "training" => isEn
-                ? "Mode=TRAINING: coach mechanics, spacing & consistency naturally."
-                : "Modo=ENTRENAMIENTO: guiá mecánicas, control y posicionamiento como entrenador real.",
+                ? "Mode=TRAINING_BY_ATTEMPTS: keep quiet mid-execution while the player sets up; deliver 1 concrete mechanical fix right after each attempt resets."
+                : "Modo=ENTRENAMIENTO_POR_INTENTOS: guardá silencio mientras ejecuta la jugada y da 1 corrección técnica exacta apenas termina o reinicia el intento.",
             "auto" => isEn
                 ? "Auto-detect phase from screen: MENU/LOADING/REPLAY/DESKTOP -> NONE; KICKOFF/ROUND_START -> opening/kickoff read; TRAINING -> mechanics; PLAY -> live match coaching."
                 : "Detectá solo la FASE real en pantalla: MENU/LOADING/REPLAY/DESKTOP -> NONE (silencio); KICKOFF (saque/cuenta regresiva/inicio de ronda) -> lectura de saque/apertura; TRAINING -> entrenamiento; PLAY -> partida en vivo.",
@@ -292,6 +292,12 @@ public static class CompactWireProtocol
         int soulCap,
         int profileCap)
     {
+        var cleanRole = SanitizeInline(config.PlayerRoleTag, 48);
+        if (!string.IsNullOrWhiteSpace(cleanRole) && !cleanRole.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            sb.Append(isEn ? "Active player role/mode: " : "Rol/modo del jugador: ").Append(cleanRole).Append('\n');
+        var cleanLeaks = SanitizeInline(config.RuntimeLeakFocus, 220);
+        if (!string.IsNullOrWhiteSpace(cleanLeaks))
+            sb.Append(isEn ? "Tracked recurring leaks: " : "Fugas repetidas detectadas: ").Append(cleanLeaks).Append('\n');
         var safeSoul = CoachContentGuard.SanitizeInstructionMarkdown(config.CoachSoulSummary);
         if (!string.IsNullOrWhiteSpace(safeSoul))
             sb.Append(isEn ? "Coach soul/honesty: " : "Personalidad del coach: ")

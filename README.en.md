@@ -19,7 +19,8 @@
   - `🎙 Charla`: live microphone (**Open Mic with echo suppression** or **Push-to-Talk** key) + coach voice.
   - `🔊 Solo voz del coach`: microphone off, coach speaks while you can send text chat messages.
   - `💬 Solo texto`: 100% silent, written chat + overlay only.
-- **Skill Tier / Rank & Pro-Standard Calibration:** adapts tactical depth, terminology, and strictness from *Beginner* to *Pro / GC / Radiant / Faceit 10* in Spanish or English.
+- **Skill Tier / Rank, Active Role, Event-First Pacing & Measurable Leak Tracking:** adapts depth and vocabulary from *Beginner* to *Pro / GC / Radiant / Faceit 10* in English or Spanish, lets you pick an in-match role (`1v1`, `2v2/3v3`, `Entry`, `AWP`, `Anchor/IGL`, `Jungle`, etc.), switch to **Event-First IGL Pacing** (quiet during routine combat, attempt-based cadence in `training`, `<5 ms` deterministic local alerts, and dead-time briefing cards), and track recurring habits (**Today vs Previous** in `logs/leaks.json`).
+- **Personal Local Accounts ($0 Server) + 1–2 Click AI Login:** create or switch isolated player profiles on shared PCs with custom emoji badge, accent color, favorite game, optional **PIN lock (PBKDF2-SHA256)**, and portable **AES-256-GCM `.hudmind`** backups; connect your AI effortlessly via **1-click OpenRouter OAuth PKCE** or the **2-click Guided Gemini Live Assistant**.
 - **Flexible Hardware Audio, System Tray & Hybrid 0% GPU Overlay:** WinMM microphone and speaker selection, RMS mic test, minimize to **System Tray (Win32 `Shell_NotifyIconW`)**, optional Windows startup (`--minimized`, **disabled by default**), Discord-style translucent **PerMonitorV2** click-through overlay with `WS_EX_TOPMOST` re-assert and automatic active-monitor tracking (3 styles: *Floating Text*, *Translucent Pill*, *Tactical Card*, `0%–95%` background opacity with 0% GPU crisp shadowed text, `1–3` message mini-feed, live PTT/waveform pill, and `F7` Quick-Chat without Alt-Tab), **Companion Web HUD** over HTTP SSE (2nd screen, **0% GPU LAN QR code** with `?k=` token auth for mobile Wi-Fi, or transparent **`?mode=obs`** URL for OBS Browser Source), assisted **local RCON HUD Bridge** (`127.0.0.1`) for Exclusive Fullscreen compatibility, and **`📊 Resumen Partida`** post-match reviews.
 
 ---
@@ -90,7 +91,7 @@ On the **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/latest)** pag
 # 1. Build entire solution (0 warnings / 0 errors)
 dotnet build native\HUDMind.sln -c Release
 
-# 2. Cross-platform Core suite (58 tests) + Native Windows suite (19 tests) + WPF smoke
+# 2. Cross-platform Core suite (61 tests) + Native Windows suite (20 tests) + WPF smoke
 dotnet run --project native\HUDMind.Tests\HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native\HUDMind.Windows.Tests\HUDMind.Windows.Tests.csproj -c Release --no-build
 .\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe --smoke-startup
@@ -144,8 +145,8 @@ You can also launch directly via [HUDMind.bat](HUDMind.bat).
 │   ├── HUDMind.Windows/            # GDI Capture, WinMM Audio/Devices, WinRT Natural TTS + OneCore, GSI, OCR, KnownFolders
 │   ├── HUDMind.App/                # WPF UI (0% GPU), PerMonitorV2 Overlay, Win32 Tray Icon & Update Banner
 │   ├── HUDMind.Packer/             # Build-time AES-256-GCM vault compiler (Profiles + ProtectedAssets -> Vault.bin)
-│   ├── HUDMind.Tests/              # Cross-platform Core test suite (58 tests)
-│   └── HUDMind.Windows.Tests/      # Win32, WASAPI, GSI, RCON bridge, WS, TLS, DPAPI, Startup, Audio & KnownFolders test suite (19 tests)
+│   ├── HUDMind.Tests/              # Cross-platform Core test suite (61 tests)
+│   └── HUDMind.Windows.Tests/      # Win32, WASAPI, GSI, RCON bridge, WS, TLS, DPAPI, Startup, Audio & KnownFolders test suite (20 tests)
 ├── profiles/                       # Game profiles and tactical prompts
 ├── docs/                           # Bilingual technical documentation (*.es.md and *.en.md)
 └── archive/legacy_python/          # Archived legacy Python code after the .NET 9 migration

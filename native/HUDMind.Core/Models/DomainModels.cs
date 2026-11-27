@@ -273,6 +273,16 @@ public sealed class UserConfig
     [JsonPropertyName("coach_style")]
     public string CoachStyle { get; set; } = "friendly";
 
+    [JsonPropertyName("coaching_pacing_mode")]
+    public string CoachingPacingMode { get; set; } = "balanced";
+
+    [JsonPropertyName("player_role_tag")]
+    public string PlayerRoleTag { get; set; } = "auto";
+
+    [JsonIgnore]
+    public bool IsEventFirstMode =>
+        string.Equals(CoachingPacingMode, "event_first", StringComparison.OrdinalIgnoreCase);
+
     [JsonPropertyName("tts_volume")]
     public double TtsVolume { get; set; } = 0.75;
 
@@ -380,6 +390,9 @@ public sealed class UserConfig
     [JsonIgnore]
     public bool RuntimeTiltRisk { get; set; }
 
+    [JsonIgnore]
+    public string RuntimeLeakFocus { get; set; } = string.Empty;
+
     /// <summary>
     /// Synchronizes mutable runtime preferences when a caller provides a separate UserConfig instance.
     /// </summary>
@@ -403,6 +416,9 @@ public sealed class UserConfig
         PlayerSkillTier = source.PlayerSkillTier;
         PlayerRankLabel = source.PlayerRankLabel;
         CoachStyle = source.CoachStyle;
+        CoachingPacingMode = source.CoachingPacingMode;
+        PlayerRoleTag = source.PlayerRoleTag;
+        RuntimeLeakFocus = source.RuntimeLeakFocus;
         OverlayDurationSeconds = source.OverlayDurationSeconds;
         OverlayPosition = source.OverlayPosition;
         OverlayOpacity = source.OverlayOpacity;

@@ -46,7 +46,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
         Action onMicHotkey,
         Action<MatchSessionSnapshot>? onMatchCompleted = null,
         Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null,
-        Action? onQuickChatHotkey = null)
+        Action? onQuickChatHotkey = null,
+        Action<string, string>? onLeakDetected = null)
     {
         if (Volatile.Read(ref _disposed) != 0)
             return (false, false, string.Empty, string.Empty);
@@ -120,7 +121,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                         onMatchCompleted: wrappedMatchCompleted,
                         resolveContextForProfile: resolveContextForProfile,
                         storyboardComposer: new Win32TemporalStoryboardComposer(),
-                        audioMonitor: _audioMonitor
+                        audioMonitor: _audioMonitor,
+                        onLeakDetected: onLeakDetected
                     );
                 }
                 catch
@@ -160,7 +162,8 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
                     onMatchCompleted: wrappedMatchCompleted,
                     resolveContextForProfile: resolveContextForProfile,
                     storyboardComposer: new Win32TemporalStoryboardComposer(),
-                    audioMonitor: _audioMonitor
+                    audioMonitor: _audioMonitor,
+                    onLeakDetected: onLeakDetected
                 );
             }
 

@@ -27,6 +27,7 @@ public sealed class MatchSessionCoordinator
     private readonly IOverlayOutputService _overlay;
     private readonly Action<string>? _onLog;
     private readonly Action<MatchSessionSnapshot>? _onMatchCompleted;
+    private readonly Action<string, string>? _onLeakDetected;
     private readonly Func<GameProfile, AssembledCoachContext>? _resolveContextForProfile;
     private readonly string? _forcedGameId;
     private readonly bool _testMode;
@@ -51,7 +52,8 @@ public sealed class MatchSessionCoordinator
         string? forcedGameId = null,
         Action<string>? onLog = null,
         Action<MatchSessionSnapshot>? onMatchCompleted = null,
-        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null)
+        Func<GameProfile, AssembledCoachContext>? resolveContextForProfile = null,
+        Action<string, string>? onLeakDetected = null)
     {
         _profiles = profiles;
         _windowDetector = windowDetector;
@@ -62,6 +64,7 @@ public sealed class MatchSessionCoordinator
         _onLog = onLog;
         _onMatchCompleted = onMatchCompleted;
         _resolveContextForProfile = resolveContextForProfile;
+        _onLeakDetected = onLeakDetected;
     }
 
     public GameProfile? ResolveForcedOrDefaultProfile() =>
@@ -137,6 +140,39 @@ public sealed class MatchSessionCoordinator
         config.RuntimeTiltRisk = tactical.IsTiltRisk;
         if (!string.IsNullOrWhiteSpace(tactical.DeterministicFact))
             Memory.UpdateMatchAnchor(tactical.DeterministicFact);
+
+        if (!string.IsNullOrWhiteSpace(tactical.LeakCategoryKey) && _onLeakDetected is not null)
+        {
+            var gId = profile?.Manifest.GameId ?? "universal";
+            try { _onLeakDetected(gId, tactical.LeakCategoryKey); } catch { }
+        }
+
+        if (config.IsAnyOverlayEnabled)
+        {
+            var title = profile?.Manifest.DisplayName ?? "HUDMind";
+            if (!string.IsNullOrWhiteSpace(tactical.InstantLocalAlert))
+            {
+                _overlay.ShowMessage(new OverlayCalloutMessage(
+                    tactical.InstantLocalAlert,
+                    tactical.InstantAlertUrgency,
+                    title,
+                    3.8,
+                    OverlayEntryKind.Status,
+                    "TACTIC"));
+            }
+
+            if (!string.IsNullOrWhiteSpace(tactical.BriefingNote))
+            {
+                _overlay.ShowMessage(new OverlayCalloutMessage(
+                    tactical.BriefingNote,
+                    UrgencyLevel.Low,
+                    title,
+                    5.0,
+                    OverlayEntryKind.Status,
+                    "BRIEF"));
+            }
+        }
+
         if (tactical.MatchEnded)
             FlushMatchSnapshot(resetMatchLog: true, config);
         return tactical;

@@ -9,12 +9,14 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using HUDMind.App.Controls;
 using HUDMind.Core.AI;
 using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 using HUDMind.Core.Overlay;
 using HUDMind.Core.Pipeline;
+using HUDMind.Core.Security;
 using HUDMind.Core.Updates;
 using HUDMind.Windows;
 using HUDMind.Windows.Overlay;
@@ -43,7 +45,11 @@ public partial class MainWindow : Window
     private const int MaxLogEntries = 180;
     private const int MaxFeedEntries = 120;
 
-    private readonly ConfigRepository _repo = new(secretProtector: new Win32DpapiSecretProtector());
+    private readonly string _baseWorkspaceRoot;
+    private readonly UserProfileStore _userStore;
+    private readonly object _leakIoLock = new();
+    private UserProfileRecord _activeUserProfile;
+    private ConfigRepository _repo;
     private readonly CoachEngineCoordinator _coordinator = new();
     private readonly object _memoryIoLock = new();
     private readonly object _profilesLock = new();
@@ -103,6 +109,28 @@ public partial class MainWindow : Window
             ShowInTaskbar = false;
         }
 
+        _baseWorkspaceRoot = ConfigRepository.DiscoverWorkspaceRoot();
+        _userStore = new UserProfileStore(_baseWorkspaceRoot);
+        var profileIndex = _userStore.LoadOrInitialize();
+        _activeUserProfile = profileIndex.Profiles.First(p => p.ProfileId == profileIndex.ActiveProfileId);
+
+        if (!_smokeMode && _activeUserProfile.HasPin)
+        {
+            var (unlocked, switchTo) = PersonalAccountDialogs.PromptPinUnlock(
+                null,
+                _userStore,
+                _activeUserProfile,
+                allowSwitchProfile: true);
+            if (!unlocked && switchTo is null)
+                Environment.Exit(0);
+            if (switchTo is not null)
+                _activeUserProfile = switchTo;
+        }
+
+        _repo = new ConfigRepository(
+            _userStore.ResolveWorkspaceRoot(_activeUserProfile.ProfileId),
+            secretProtector: new Win32DpapiSecretProtector());
+
         InitializeComponent();
         _externalOverlayBridge = new LoopbackRconToastBridge(
             isEnabled: () => !_shutdownComplete && _config?.EnableInGameOverlayBridge == true,
@@ -134,13 +162,13 @@ public partial class MainWindow : Window
         {
             Timestamp = DateTime.Now.ToString("HH:mm"),
             Author = "HUDMind",
-            Message = "Listo para acompañarte. Elegí tu juego (o dejalo en Automático) y tocá Activar Coach.",
-            AccentHex = "#10B981",
+            Message = $"Listo para acompañarte, {_activeUserProfile.DisplayName}. Elegí tu juego (o dejalo en Automático) y tocá Activar Coach.",
+            AccentHex = _activeUserProfile.AccentHex,
             CardBackgroundHex = "#081C19",
             AuthorForegroundHex = "#6EE7B7"
         });
 
-        _sharedVoice = new HybridVoiceService(_repo.WorkspaceRoot);
+        _sharedVoice = new HybridVoiceService(_baseWorkspaceRoot);
         _config = _repo.LoadUserConfig();
         _sharedVoice.SetSpeechRate(_config.TtsRate);
         _sharedVoice.SetOutputDevice(_config.AudioOutputDeviceName);
@@ -234,7 +262,10 @@ public partial class MainWindow : Window
 
     private void BindInitialUi()
     {
-        RefreshProfilePickers();
+        var favGame = string.IsNullOrWhiteSpace(_activeUserProfile.FavoriteGameId)
+            ? null
+            : _activeUserProfile.FavoriteGameId;
+        RefreshProfilePickers(selectMainId: favGame, selectRulesId: favGame);
 
         CmbNewProvider.ItemsSource = ProviderRegistry.AllPresets
             .Select(p => new ProviderOption(p.Id, CoachFeedFormatter.FriendlyProviderName(p.Id)))
@@ -267,6 +298,8 @@ public partial class MainWindow : Window
             SelectByTag(CmbEfficiency, _config.TokenEfficiencyMode);
             string memBucket = _config.MemoryMatchWindow switch { <= 7 => "5", <= 15 => "10", _ => "20" };
             SelectByTag(CmbMemoryWindow, memBucket);
+            SelectByTag(CmbCoachingPacing, _config.CoachingPacingMode);
+            SelectByTag(CmbPlayerRole, _config.PlayerRoleTag);
             SelectByTag(CmbOverlayStyle, _config.ResolveOverlayStyle());
             SelectByTag(CmbOverlayFeedLines, _config.ResolveOverlayMaxMessages() == 1 ? "1" : "3");
             SelectByTag(CmbOverlayPos, _config.OverlayPosition);
@@ -307,6 +340,7 @@ public partial class MainWindow : Window
         BtnVersionCheck.Content = $"v{GitHubReleaseUpdateService.FormatVersion(curVer)}";
 
         ConfigureOverlayFromCurrentConfig();
+        RefreshPersonalProfileCardUi();
         RefreshAccountsList();
         RefreshOnboardingBanner();
         RefreshRollingMemoryUi();
@@ -316,7 +350,7 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(_repo.LastLoadWarning))
             AppendLog($"⚠ AVISO: {_repo.LastLoadWarning}");
 
-        AppendLog($"HUDMind Native (.NET 9 · 0% GPU) listo | Workspace: {_repo.WorkspaceRoot}");
+        AppendLog($"HUDMind Native (.NET 9 · 0% GPU) listo | Perfil: {_activeUserProfile.DisplayName} | Workspace: {_repo.WorkspaceRoot}");
         AppendLog($"Perfiles cargados: {_profiles.Count} | Cuentas IA listas: {_accounts.Count(a => a.IsReady())}");
     }
 
@@ -789,6 +823,8 @@ public partial class MainWindow : Window
             SyncAssembledContext(forcedId ?? "universal", hintProf, CoachContextDepth.RealtimePlay);
             if (!string.IsNullOrWhiteSpace(_config.PreviousMatchFocus))
                 AppendLog($"🧠 Memoria de partidas activa: {_config.PreviousMatchFocus}");
+            if (!string.IsNullOrWhiteSpace(_config.RuntimeLeakFocus))
+                AppendLog($"📉 Seguimiento de fugas activo: {_config.RuntimeLeakFocus}");
 
             try
             {
@@ -807,7 +843,8 @@ public partial class MainWindow : Window
                     ToggleMicViaHotkey,
                     HandleMatchCompleted,
                     ResolveContextForProfileSafe,
-                    ToggleQuickChatViaHotkey);
+                    ToggleQuickChatViaHotkey,
+                    HandleLeakDetected);
 
                 if (_closingInProgress || _shutdownComplete || !result.Started)
                     return;
@@ -852,8 +889,11 @@ public partial class MainWindow : Window
 
     private AssembledCoachContext ResolveContextForProfileSafe(GameProfile profile)
     {
+        AssembledCoachContext ctx;
         lock (_memoryIoLock)
-            return _repo.LoadAssembledCoachContext(profile.Manifest.GameId, _config, profile, CoachContextDepth.RealtimePlay);
+            ctx = _repo.LoadAssembledCoachContext(profile.Manifest.GameId, _config, profile, CoachContextDepth.RealtimePlay);
+        _config.RuntimeLeakFocus = LoadLeakFocusPromptContext(profile.Manifest.GameId);
+        return ctx;
     }
 
     private void SyncAssembledContext(string? gameId, GameProfile? profile, CoachContextDepth depth)
@@ -862,6 +902,7 @@ public partial class MainWindow : Window
         lock (_memoryIoLock)
             assembled = _repo.LoadAssembledCoachContext(gameId, _config, profile, depth);
         CoachContextAssembler.ApplyToConfig(_config, assembled);
+        _config.RuntimeLeakFocus = LoadLeakFocusPromptContext(gameId);
     }
 
     private void HandleMatchCompleted(MatchSessionSnapshot snap)
@@ -1326,6 +1367,285 @@ public partial class MainWindow : Window
     private void BtnOpenGroq_Click(object sender, RoutedEventArgs e) => OpenExternalUrl("https://console.groq.com/keys");
     private void BtnOpenGemini_Click(object sender, RoutedEventArgs e) => OpenExternalUrl("https://aistudio.google.com/apikey");
 
+    private async void BtnOpenRouterPkce_Click(object sender, RoutedEventArgs e)
+    {
+        if (BtnOpenRouterPkce is not null)
+            BtnOpenRouterPkce.IsEnabled = false;
+        AppendLog("🔐 Abriendo navegador para conectar OpenRouter en 1 clic (PKCE loopback)...");
+        try
+        {
+            var (ok, apiKey, errorMsg) = await OpenRouterOAuthPkceClient.AuthenticateAsync(
+                uri => OpenExternalUrl(uri.AbsoluteUri),
+                timeout: TimeSpan.FromMinutes(3));
+            if (_shutdownComplete || _closingInProgress)
+                return;
+
+            if (!ok || string.IsNullOrWhiteSpace(apiKey))
+            {
+                var safeErr = SecretRedactor.Redact(errorMsg, [apiKey]);
+                AppendLog($"⚠ Conexión OpenRouter cancelada o fallida: {safeErr}");
+                System.Windows.MessageBox.Show(safeErr, "OpenRouter · Conexión PKCE", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var defaultModel = ProviderRegistry.FindPreset("openrouter")?.DefaultModel ?? "google/gemma-3-27b-it:free";
+            var label = $"OpenRouter · {_activeUserProfile.DisplayName}";
+            UpsertQuickAccount("openrouter", label, defaultModel, apiKey, linkedBadge: "OpenRouter 1-clic");
+            AppendLog($"✅ Cuenta personal OpenRouter conectada y cifrada en Windows (DPAPI) para {_activeUserProfile.DisplayName}.");
+            System.Windows.MessageBox.Show(
+                $"¡Listo, {_activeUserProfile.DisplayName}! Tu cuenta OpenRouter se conectó automáticamente y quedó guardada solo en tu perfil.",
+                "HUDMind · Cuenta Conectada",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            var safe = SecretRedactor.Redact(ex.Message);
+            AppendLog($"⚠ Error en conexión OpenRouter PKCE: {safe}");
+            System.Windows.MessageBox.Show(safe, "OpenRouter · Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            if (BtnOpenRouterPkce is not null && !_shutdownComplete)
+                BtnOpenRouterPkce.IsEnabled = true;
+        }
+    }
+
+    private void BtnGuidedGemini_Click(object sender, RoutedEventArgs e)
+    {
+        var (confirmed, apiKey, label) = PersonalAccountDialogs.ShowGuidedGeminiKeyDialog(
+            this,
+            () => OpenExternalUrl("https://aistudio.google.com/apikey"));
+        if (!confirmed || string.IsNullOrWhiteSpace(apiKey))
+            return;
+
+        var defaultModel = ProviderRegistry.FindPreset("gemini")?.DefaultModel ?? "gemini-2.5-flash";
+        UpsertQuickAccount("gemini", label, defaultModel, apiKey, linkedBadge: "Gemini Live");
+        AppendLog($"✅ Gemini Live conectado y cifrado para {_activeUserProfile.DisplayName} [{defaultModel}].");
+    }
+
+    private void UpsertQuickAccount(string providerId, string label, string model, string apiKey, string linkedBadge)
+    {
+        List<ProviderAccount> snapshot;
+        lock (_accountsLock)
+        {
+            var existingIdx = _accounts.FindIndex(a =>
+                string.Equals(a.Provider, providerId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(a.Label, label, StringComparison.OrdinalIgnoreCase));
+            if (existingIdx >= 0)
+            {
+                var acc = _accounts[existingIdx];
+                acc.ApiKey = apiKey;
+                acc.Model = string.IsNullOrWhiteSpace(acc.Model) ? model : acc.Model;
+                acc.Enabled = true;
+                _accounts.RemoveAt(existingIdx);
+                _accounts.Insert(0, acc);
+            }
+            else
+            {
+                _accounts.Insert(0, new ProviderAccount
+                {
+                    Label = label,
+                    Provider = providerId,
+                    Model = model,
+                    ApiKey = apiKey,
+                    Priority = 1,
+                    Enabled = true
+                });
+            }
+            snapshot = [.. _accounts];
+        }
+
+        _repo.SaveAccounts(snapshot);
+        _userStore.UpdateProfileMetadata(_activeUserProfile.ProfileId, linkedBadge: linkedBadge);
+        var refreshed = _userStore.LoadOrInitialize().Profiles.FirstOrDefault(p => p.ProfileId == _activeUserProfile.ProfileId);
+        if (refreshed is not null)
+            _activeUserProfile = refreshed;
+
+        RefreshPersonalProfileCardUi();
+        RefreshAccountsList();
+        RefreshOnboardingBanner();
+    }
+
+    private void BtnManageProfiles_Click(object sender, RoutedEventArgs e)
+    {
+        if (_coordinator.IsRunning)
+        {
+            System.Windows.MessageBox.Show(
+                "Detené primero el Coach Live para cambiar de perfil o respaldar tu cuenta.",
+                "HUDMind · Perfil en uso",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var res = PersonalAccountDialogs.ShowProfileManagerDialog(this, _userStore, _activeUserProfile, GetProfilesSnapshot());
+        switch (res.Outcome)
+        {
+            case PersonalProfileDialogOutcome.SwitchProfile when res.TargetProfile is not null:
+                ReloadWorkspaceForActiveProfile(res.TargetProfile);
+                if (!string.IsNullOrWhiteSpace(res.StatusMessage))
+                    AppendLog($"👤 {res.StatusMessage}");
+                break;
+
+            case PersonalProfileDialogOutcome.UpdatedActiveMetadata when res.TargetProfile is not null:
+                _activeUserProfile = res.TargetProfile;
+                RefreshPersonalProfileCardUi();
+                RefreshPersonalWelcomeFeedItem();
+                if (!string.IsNullOrWhiteSpace(res.StatusMessage))
+                    AppendLog($"👤 {res.StatusMessage}");
+                break;
+
+            case PersonalProfileDialogOutcome.PinChanged:
+                var reloaded = _userStore.LoadOrInitialize().Profiles.FirstOrDefault(p => p.ProfileId == _activeUserProfile.ProfileId);
+                if (reloaded is not null)
+                    _activeUserProfile = reloaded;
+                RefreshPersonalProfileCardUi();
+                if (!string.IsNullOrWhiteSpace(res.StatusMessage))
+                    AppendLog($"🔒 {res.StatusMessage}");
+                break;
+
+            case PersonalProfileDialogOutcome.ExportArchive:
+                ExportPersonalArchive();
+                break;
+
+            case PersonalProfileDialogOutcome.ImportArchive:
+                ImportPersonalArchive();
+                break;
+        }
+    }
+
+    private void ExportPersonalArchive()
+    {
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Exportar backup personal cifrado (.hudmind)",
+            Filter = "HUDMind Personal Bundle (*.hudmind)|*.hudmind",
+            FileName = $"hudmind-{_activeUserProfile.ProfileId}-{DateTime.Now:yyyyMMdd}.hudmind"
+        };
+        if (dlg.ShowDialog(this) != true)
+            return;
+
+        var (ok, passphrase, includeKeys) = PersonalAccountDialogs.ShowPassphraseDialog(this, isExport: true);
+        if (!ok)
+            return;
+
+        try
+        {
+            var bytes = ProfileArchiveCodec.ExportBundle(_repo, passphrase, includeApiAccounts: includeKeys);
+            File.WriteAllBytes(dlg.FileName, bytes);
+            AppendLog($"📦 Backup cifrado guardado: {dlg.FileName} ({bytes.Length:N0} bytes).");
+            System.Windows.MessageBox.Show(
+                $"Tu cuenta '{_activeUserProfile.DisplayName}' se exportó cifrada con AES-256-GCM.",
+                "HUDMind · Backup Exportado",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            var safe = SecretRedactor.Redact(ex.Message);
+            AppendLog($"⚠ Error exportando .hudmind: {safe}");
+            System.Windows.MessageBox.Show(safe, "Error de Exportación", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ImportPersonalArchive()
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Importar backup personal cifrado (.hudmind)",
+            Filter = "HUDMind Personal Bundle (*.hudmind)|*.hudmind"
+        };
+        if (dlg.ShowDialog(this) != true)
+            return;
+
+        var (ok, passphrase, _) = PersonalAccountDialogs.ShowPassphraseDialog(this, isExport: false);
+        if (!ok)
+            return;
+
+        try
+        {
+            var bytes = File.ReadAllBytes(dlg.FileName);
+            int restoredCount = ProfileArchiveCodec.ImportBundle(bytes, _repo, passphrase, importApiAccounts: false);
+            ReloadWorkspaceForActiveProfile(_activeUserProfile);
+            AppendLog($"📥 Backup restaurado ({restoredCount} archivos) en perfil '{_activeUserProfile.DisplayName}'.");
+            System.Windows.MessageBox.Show(
+                $"Se restauraron {restoredCount} archivos en '{_activeUserProfile.DisplayName}'. (Por seguridad cross-PC, revisá o conectá tu clave IA si la necesitás.)",
+                "HUDMind · Backup Restaurado",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            var safe = SecretRedactor.Redact(ex.Message);
+            AppendLog($"⚠ Error importando .hudmind: {safe}");
+            System.Windows.MessageBox.Show("Contraseña incorrecta o archivo .hudmind inválido/dañado.", "Error de Importación", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ReloadWorkspaceForActiveProfile(UserProfileRecord targetProfile)
+    {
+        _activeUserProfile = targetProfile;
+        _repo = new ConfigRepository(
+            _userStore.ResolveWorkspaceRoot(targetProfile.ProfileId),
+            secretProtector: new Win32DpapiSecretProtector());
+        _repo.EnsureDefaultProfilesSeeded();
+
+        lock (_accountsLock)
+            _accounts = _repo.LoadAccounts();
+        lock (_profilesLock)
+        {
+            _profiles = _repo.LoadProfiles();
+            _profiles.Insert(0, ConfigRepository.CreateUniversalProfile(_repo.ProfilesDir));
+        }
+
+        _config = _repo.LoadUserConfig();
+        _sharedVoice.SetSpeechRate(_config.TtsRate);
+        _sharedVoice.SetOutputDevice(_config.AudioOutputDeviceName);
+
+        _rulesDirty = false;
+        _lastRulesGameId = null;
+        _editingAccountId = null;
+        CancelAccountEdit();
+
+        RefreshPersonalWelcomeFeedItem();
+        BindInitialUi();
+    }
+
+    private void RefreshPersonalProfileCardUi()
+    {
+        if (TxtActiveUserAvatar is null || TxtActiveUserName is null || TxtActiveUserSub is null)
+            return;
+
+        TxtActiveUserAvatar.Text = _activeUserProfile.AvatarBadge;
+        TxtActiveUserName.Text = _activeUserProfile.DisplayName;
+        TxtActiveUserName.Foreground = PersonalAccountDialogs.ParseHexBrush(_activeUserProfile.AccentHex);
+
+        string lockBadge = _activeUserProfile.HasPin ? "🔒 PIN" : "Libre";
+        string providerBadge = string.IsNullOrWhiteSpace(_activeUserProfile.LinkedAccountBadge)
+            ? "Cuenta local"
+            : _activeUserProfile.LinkedAccountBadge;
+        TxtActiveUserSub.Text = $"{providerBadge} · {lockBadge}";
+    }
+
+    private void RefreshPersonalWelcomeFeedItem()
+    {
+        if (_feedEntries.Count == 0)
+            return;
+        if (_feedEntries[0].Author == "HUDMind" && _feedEntries[0].Message.StartsWith("Listo para acompañarte", StringComparison.Ordinal))
+        {
+            _feedEntries[0] = new CoachFeedItem
+            {
+                Timestamp = DateTime.Now.ToString("HH:mm"),
+                Author = "HUDMind",
+                Message = $"Listo para acompañarte, {_activeUserProfile.DisplayName}. Elegí tu juego (o dejalo en Automático) y tocá Activar Coach.",
+                AccentHex = _activeUserProfile.AccentHex,
+                CardBackgroundHex = "#081C19",
+                AuthorForegroundHex = "#6EE7B7"
+            };
+        }
+    }
+
     private void OpenExternalUrl(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
@@ -1413,6 +1733,84 @@ public partial class MainWindow : Window
 
         LblRollingMemorySummary.Text = PlayerMemoryStore.FormatForUiSummary(mem);
         BtnResetGameMemory.IsEnabled = mem.Matches.Count > 0;
+        RefreshLeakSummaryUi(id);
+    }
+
+    private void RefreshLeakSummaryUi(string? gameId = null)
+    {
+        if (LblLeaksSummary is null || BtnResetGameLeaks is null)
+            return;
+
+        var id = gameId ?? CmbRulesGame.SelectedValue?.ToString() ?? "universal";
+        bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+        PlayerLeakReport report;
+        lock (_leakIoLock)
+            report = _repo.LoadPlayerLeaks();
+
+        var summary = PlayerLeakTracker.FormatComparisonSummary(report, id, isEn);
+        bool hasAny = report.Games.TryGetValue(id.ToLowerInvariant(), out var g) && g.Today.Count > 0;
+        LblLeaksSummary.Text = string.IsNullOrWhiteSpace(summary)
+            ? "📉 Fugas medibles (Hoy vs Anterior): sin errores tácticos repetidos detectados aún."
+            : $"📉 {summary}";
+        BtnResetGameLeaks.IsEnabled = hasAny || report.Games.Count > 0;
+    }
+
+    private void BtnResetGameLeaks_Click(object sender, RoutedEventArgs e)
+    {
+        var id = CmbRulesGame.SelectedValue?.ToString() ?? "universal";
+        try
+        {
+            lock (_leakIoLock)
+                _repo.ResetPlayerLeaks(id);
+            _config.RuntimeLeakFocus = string.Empty;
+            _coordinator.RefreshPersona("fugas reiniciadas");
+            RefreshLeakSummaryUi(id);
+            AppendLog($"🧹 Contadores de fugas reiniciados para '{id}'.");
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show(SecretRedactor.Redact(ex.Message), "Error al reiniciar fugas", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void HandleLeakDetected(string gameId, string leakCategoryKey)
+    {
+        try
+        {
+            PlayerLeakReport report;
+            lock (_leakIoLock)
+                report = _repo.RecordPlayerLeak(gameId, leakCategoryKey);
+
+            bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+            _config.RuntimeLeakFocus = PlayerLeakTracker.FormatComparisonSummary(report, gameId, isEn);
+
+            if (!_shutdownComplete)
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (!_shutdownComplete)
+                        RefreshLeakSummaryUi(gameId);
+                });
+            }
+        }
+        catch { }
+    }
+
+    private string LoadLeakFocusPromptContext(string? gameId)
+    {
+        try
+        {
+            bool isEn = CoachingPersonaBuilder.IsEnglish(_config, preferTextLang: true);
+            lock (_leakIoLock)
+            {
+                var report = _repo.LoadPlayerLeaks();
+                return PlayerLeakTracker.FormatComparisonSummary(report, gameId, isEn);
+            }
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     private void BtnResetGameMemory_Click(object sender, RoutedEventArgs e)
@@ -2083,6 +2481,8 @@ public partial class MainWindow : Window
         _config.MemoryMatchWindow = int.TryParse(GetSelectedTag(CmbMemoryWindow, "10"), out int memWin)
             ? PlayerMemoryStore.ClampWindowSize(memWin)
             : PlayerMemoryStore.DefaultWindowSize;
+        _config.CoachingPacingMode = GetSelectedTag(CmbCoachingPacing, "balanced");
+        _config.PlayerRoleTag = GetSelectedTag(CmbPlayerRole, "auto");
         _config.OverlayStyle = UserConfig.NormalizeOverlayStyle(GetSelectedTag(CmbOverlayStyle, UserConfig.OverlayStyleDiscordPill));
         _config.OverlayCompact = _config.OverlayStyle != UserConfig.OverlayStyleCard;
         _config.OverlayMaxMessages = int.TryParse(GetSelectedTag(CmbOverlayFeedLines, "3"), out int ovMax)

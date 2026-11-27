@@ -282,6 +282,7 @@ public sealed partial class ConfigRepository
     public string ProfilesDir => Path.Combine(WorkspaceRoot, "profiles");
     public string ReviewsDir => Path.Combine(WorkspaceRoot, "logs", "reviews");
     public string MemoryDir => Path.Combine(WorkspaceRoot, "logs", "memory");
+    public string LeaksPath => Path.Combine(WorkspaceRoot, "logs", "leaks.json");
     public string AccountsPath => Path.Combine(ConfigDir, "accounts.json");
     public string UserConfigPath => Path.Combine(ConfigDir, "user_config.json");
     public string CoachSoulPath => Path.Combine(ConfigDir, "coach_soul.md");
@@ -993,6 +994,75 @@ public sealed partial class ConfigRepository
 
         if (Directory.Exists(MemoryDir))
             RefreshMemoryIndexMarkdown();
+    }
+
+    public Pipeline.PlayerLeakReport LoadPlayerLeaks()
+    {
+        try
+        {
+            var logsDir = Path.GetFullPath(Path.Combine(WorkspaceRoot, "logs"));
+            var fullLeaks = Path.GetFullPath(LeaksPath);
+            if (!fullLeaks.StartsWith(logsDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                return new Pipeline.PlayerLeakReport();
+            if (Directory.Exists(logsDir) && (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) != 0)
+                return new Pipeline.PlayerLeakReport();
+            if (!File.Exists(fullLeaks))
+                return new Pipeline.PlayerLeakReport();
+
+            var info = new FileInfo(fullLeaks);
+            if (info.Length > MaxConfigFileBytes * 2 || (info.Attributes & FileAttributes.ReparsePoint) != 0)
+                return new Pipeline.PlayerLeakReport();
+
+            return JsonSerializer.Deserialize<Pipeline.PlayerLeakReport>(
+                File.ReadAllText(fullLeaks, Encoding.UTF8), JsonOpts) ?? new Pipeline.PlayerLeakReport();
+        }
+        catch
+        {
+            return new Pipeline.PlayerLeakReport();
+        }
+    }
+
+    public Pipeline.PlayerLeakReport RecordPlayerLeak(string? gameId, string? leakKey, DateOnly? todayOverride = null)
+    {
+        var report = LoadPlayerLeaks();
+        Pipeline.PlayerLeakTracker.RecordLeak(report, gameId, leakKey, todayOverride);
+        SavePlayerLeaks(report);
+        return report;
+    }
+
+    public void ResetPlayerLeaks(string? gameId = null)
+    {
+        var logsDir = Path.GetFullPath(Path.Combine(WorkspaceRoot, "logs"));
+        var fullLeaks = Path.GetFullPath(LeaksPath);
+        if (Directory.Exists(logsDir) && (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) != 0)
+            return;
+
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            if (File.Exists(fullLeaks) && (File.GetAttributes(fullLeaks) & FileAttributes.ReparsePoint) == 0)
+                File.Delete(fullLeaks);
+            return;
+        }
+
+        var report = LoadPlayerLeaks();
+        var norm = gameId.Trim().ToLowerInvariant();
+        if (report.Games.Remove(norm))
+            SavePlayerLeaks(report);
+    }
+
+    private void SavePlayerLeaks(Pipeline.PlayerLeakReport report)
+    {
+        var logsDir = Path.GetFullPath(Path.Combine(WorkspaceRoot, "logs"));
+        var fullLeaks = Path.GetFullPath(LeaksPath);
+        if (!fullLeaks.StartsWith(logsDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("Ruta de leaks inválida (CWE-22).");
+        if (Directory.Exists(logsDir) && (File.GetAttributes(logsDir) & FileAttributes.ReparsePoint) != 0)
+            throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en logs.");
+        if (File.Exists(fullLeaks) && (File.GetAttributes(fullLeaks) & FileAttributes.ReparsePoint) != 0)
+            throw new UnauthorizedAccessException("No se permiten enlaces simbólicos en leaks.json.");
+
+        Directory.CreateDirectory(logsDir);
+        AtomicWrite(fullLeaks, JsonSerializer.Serialize(report, JsonOpts));
     }
 
     public string LoadCoachSoulMarkdown() =>
