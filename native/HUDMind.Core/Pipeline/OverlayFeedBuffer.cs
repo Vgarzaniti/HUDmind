@@ -77,7 +77,7 @@ public sealed class OverlayFeedBuffer
         {
             case OverlayEntryKind.CoachLive:
             {
-                RemoveAllByKind(OverlayEntryKind.Status);
+                RemoveEphemeralStatusEntries();
                 int liveIdx = FindLastIndexByKind(OverlayEntryKind.CoachLive);
                 if (liveIdx >= 0 && liveIdx == _entries.Count - 1)
                 {
@@ -111,7 +111,7 @@ public sealed class OverlayFeedBuffer
 
             case OverlayEntryKind.CoachFinal:
             {
-                RemoveAllByKind(OverlayEntryKind.Status);
+                RemoveEphemeralStatusEntries();
                 int liveIdx = FindLastIndexByKind(OverlayEntryKind.CoachLive);
                 if (liveIdx >= 0)
                 {
@@ -156,7 +156,17 @@ public sealed class OverlayFeedBuffer
 
             case OverlayEntryKind.Status:
             {
-                RemoveAllByKind(OverlayEntryKind.Status);
+                if (string.Equals(speaker, "BRIEF", StringComparison.OrdinalIgnoreCase))
+                {
+                    _entries.RemoveAll(e =>
+                        e.Kind == OverlayEntryKind.Status &&
+                        (string.Equals(e.Speaker, "BRIEF", StringComparison.OrdinalIgnoreCase) ||
+                         !string.Equals(e.Speaker, "BRIEF", StringComparison.OrdinalIgnoreCase)));
+                }
+                else
+                {
+                    RemoveEphemeralStatusEntries();
+                }
                 _entries.Add(new OverlayFeedEntry(
                     ++_nextId,
                     OverlayEntryKind.Status,
@@ -172,7 +182,7 @@ public sealed class OverlayFeedBuffer
             case OverlayEntryKind.UserMessage:
             default:
             {
-                RemoveAllByKind(OverlayEntryKind.Status);
+                RemoveEphemeralStatusEntries();
                 _entries.Add(new OverlayFeedEntry(
                     ++_nextId,
                     OverlayEntryKind.UserMessage,
@@ -212,8 +222,10 @@ public sealed class OverlayFeedBuffer
         return removed > 0;
     }
 
-    private void RemoveAllByKind(OverlayEntryKind kind) =>
-        _entries.RemoveAll(e => e.Kind == kind);
+    private void RemoveEphemeralStatusEntries() =>
+        _entries.RemoveAll(e =>
+            e.Kind == OverlayEntryKind.Status &&
+            !string.Equals(e.Speaker, "BRIEF", StringComparison.OrdinalIgnoreCase));
 
     private int FindLastIndexByKind(OverlayEntryKind kind)
     {

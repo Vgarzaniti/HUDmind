@@ -54,7 +54,7 @@
                     <DockPanel>
                         <Button x:Name="BtnVersionCheck"
                                 DockPanel.Dock="Left"
-                                Content="v1.5.1"
+                                Content="v1.5.2"
                                 FontSize="10.5"
                                 Padding="9,4"
                                 Background="#09121C"
@@ -103,6 +103,17 @@
                                 </StackPanel>
                             </DockPanel>
                             <DockPanel Margin="0,5,0,0">
+                                <Button x:Name="BtnLockSession"
+                                        DockPanel.Dock="Right"
+                                        Content="🔒"
+                                        FontSize="9.5"
+                                        Padding="5,1"
+                                        Margin="4,0,0,0"
+                                        Background="#1E1B2E"
+                                        BorderBrush="#6366F1"
+                                        Visibility="Collapsed"
+                                        ToolTip="Bloquear sesión ahora (requiere PIN)"
+                                        Click="BtnLockSession_Click" />
                                 <Button DockPanel.Dock="Right"
                                         Content="📋"
                                         FontSize="9.5"
@@ -140,7 +151,7 @@
                                         Background="#0E1826"
                                         BorderBrush="#1A2C40"
                                         ToolTip="Exportar o importar cuenta portátil cifrada (.hudmind)"
-                                        Click="BtnManageProfiles_Click" />
+                                        Click="BtnQuickBackup_Click" />
                             </Grid>
                         </StackPanel>
                     </Border>
@@ -348,10 +359,31 @@
                                 </ComboBox>
 
                                 <TextBlock Text="Partida:" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
-                                <ComboBox x:Name="CmbCoachMode" Width="134" Margin="0,0,12,4">
+                                <ComboBox x:Name="CmbCoachMode" Width="130" Margin="0,0,12,4" SelectionChanged="CmbCoachMode_SelectionChanged">
                                     <ComboBoxItem Content="Automático" Tag="auto" />
                                     <ComboBoxItem Content="Competitiva" Tag="match" />
                                     <ComboBoxItem Content="Entrenamiento" Tag="training" />
+                                </ComboBox>
+
+                                <TextBlock Text="Ritmo:" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
+                                <ComboBox x:Name="CmbQuickPacing" Width="148" Margin="0,0,12,4" SelectionChanged="CmbQuickPacing_SelectionChanged" ToolTip="Solo Eventos Clave evita interrupciones de rutina en medio de la acción">
+                                    <ComboBoxItem Content="⚡ Continuo" Tag="balanced" />
+                                    <ComboBoxItem Content="🎯 Solo Eventos" Tag="event_first" />
+                                </ComboBox>
+
+                                <TextBlock Text="Rol:" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
+                                <ComboBox x:Name="CmbQuickRole" Width="168" Margin="0,0,12,4" SelectionChanged="CmbQuickRole_SelectionChanged" ToolTip="Ajusta prioridades tácticas según tu rol o modalidad">
+                                    <ComboBoxItem Content="🌐 Auto" Tag="auto" />
+                                    <ComboBoxItem Content="🚗 RL · 1v1" Tag="rl_1v1" />
+                                    <ComboBoxItem Content="🚗 RL · 2v2/3v3" Tag="rl_2v2_3v3" />
+                                    <ComboBoxItem Content="🔫 CS2 · Entry" Tag="cs2_entry" />
+                                    <ComboBoxItem Content="🎯 CS2 · AWPer" Tag="cs2_awp" />
+                                    <ComboBoxItem Content="🛡️ CS2 · Anchor/IGL" Tag="cs2_anchor" />
+                                    <ComboBoxItem Content="⚡ Val · Duelista" Tag="val_duelist" />
+                                    <ComboBoxItem Content="🌫️ Val · Control" Tag="val_controller" />
+                                    <ComboBoxItem Content="🌲 LoL · Jungla" Tag="lol_jungle" />
+                                    <ComboBoxItem Content="⚔️ LoL · Laner" Tag="lol_lane" />
+                                    <ComboBoxItem Content="💖 LoL · Support" Tag="lol_support" />
                                 </ComboBox>
 
                                 <TextBlock Text="Modo IA:" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
@@ -795,13 +827,13 @@
                                             </ComboBox>
 
                                             <TextBlock Grid.Row="7" Grid.Column="0" Text="Ritmo del Coach (Pacing):" VerticalAlignment="Center" />
-                                            <ComboBox x:Name="CmbCoachingPacing" Grid.Row="7" Grid.Column="1" VerticalAlignment="Center" ToolTip="Solo Eventos Clave evita interrupciones por reloj durante la acción intensa y solo avisa ante eventos reales, alertas críticas o F10">
+                                            <ComboBox x:Name="CmbCoachingPacing" Grid.Row="7" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbCoachingPacing_SelectionChanged" ToolTip="Solo Eventos Clave evita interrupciones por reloj durante la acción intensa y solo avisa ante eventos reales, alertas críticas o F10">
                                                 <ComboBoxItem Content="⚡ Continuo (cada Xs + Eventos)" Tag="balanced" />
                                                 <ComboBoxItem Content="🎯 Solo Eventos Clave (Silencio IGL)" Tag="event_first" />
                                             </ComboBox>
 
                                             <TextBlock Grid.Row="8" Grid.Column="0" Text="Rol / Modo en Partida:" VerticalAlignment="Center" />
-                                            <ComboBox x:Name="CmbPlayerRole" Grid.Row="8" Grid.Column="1" VerticalAlignment="Center" ToolTip="Ajusta las prioridades tácticas del coach según tu rol o modalidad de juego">
+                                            <ComboBox x:Name="CmbPlayerRole" Grid.Row="8" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbPlayerRole_SelectionChanged" ToolTip="Ajusta las prioridades tácticas del coach según tu rol o modalidad de juego">
                                                 <ComboBoxItem Content="🌐 Automático (según contexto)" Tag="auto" />
                                                 <ComboBoxItem Content="🚗 Rocket League · 1v1 (Duelos)" Tag="rl_1v1" />
                                                 <ComboBoxItem Content="🚗 Rocket League · 2v2 / 3v3 (Backpost)" Tag="rl_2v2_3v3" />

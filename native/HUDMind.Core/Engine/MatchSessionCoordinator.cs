@@ -150,26 +150,26 @@ public sealed class MatchSessionCoordinator
         if (config.IsAnyOverlayEnabled)
         {
             var title = profile?.Manifest.DisplayName ?? "HUDMind";
-            if (!string.IsNullOrWhiteSpace(tactical.InstantLocalAlert))
-            {
-                _overlay.ShowMessage(new OverlayCalloutMessage(
-                    tactical.InstantLocalAlert,
-                    tactical.InstantAlertUrgency,
-                    title,
-                    3.8,
-                    OverlayEntryKind.Status,
-                    "TACTIC"));
-            }
-
             if (!string.IsNullOrWhiteSpace(tactical.BriefingNote))
             {
                 _overlay.ShowMessage(new OverlayCalloutMessage(
                     tactical.BriefingNote,
                     UrgencyLevel.Low,
                     title,
-                    5.0,
+                    5.5,
                     OverlayEntryKind.Status,
                     "BRIEF"));
+            }
+
+            if (!string.IsNullOrWhiteSpace(tactical.InstantLocalAlert))
+            {
+                _overlay.ShowMessage(new OverlayCalloutMessage(
+                    tactical.InstantLocalAlert,
+                    tactical.InstantAlertUrgency,
+                    title,
+                    4.2,
+                    OverlayEntryKind.CoachFinal,
+                    "TACTIC"));
             }
         }
 

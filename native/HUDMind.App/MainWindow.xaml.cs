@@ -299,7 +299,9 @@ public partial class MainWindow : Window
             string memBucket = _config.MemoryMatchWindow switch { <= 7 => "5", <= 15 => "10", _ => "20" };
             SelectByTag(CmbMemoryWindow, memBucket);
             SelectByTag(CmbCoachingPacing, _config.CoachingPacingMode);
+            SelectByTag(CmbQuickPacing, _config.CoachingPacingMode);
             SelectByTag(CmbPlayerRole, _config.PlayerRoleTag);
+            SelectByTag(CmbQuickRole, _config.PlayerRoleTag);
             SelectByTag(CmbOverlayStyle, _config.ResolveOverlayStyle());
             SelectByTag(CmbOverlayFeedLines, _config.ResolveOverlayMaxMessages() == 1 ? "1" : "3");
             SelectByTag(CmbOverlayPos, _config.OverlayPosition);
@@ -623,7 +625,8 @@ public partial class MainWindow : Window
             "strict" => "Torneo",
             _ => "Amigable"
         };
-        return $"{engine} · Estilo {style} · 0% GPU pasivo";
+        var pacingTag = _config.IsEventFirstMode ? " · Solo Eventos IGL" : string.Empty;
+        return $"{engine} · Estilo {style}{pacingTag} · 0% GPU pasivo";
     }
 
     private (string Label, bool Highlighted) ResolveContextBadge()
@@ -676,8 +679,52 @@ public partial class MainWindow : Window
             rows = _accounts.Select(a => new AccountRowView { Source = a }).ToList();
         }
         LstAccounts.ItemsSource = rows;
+        SyncLinkedAccountBadgeFromAccounts();
         RefreshOnboardingBanner();
         RefreshMatchReviewButtonState();
+    }
+
+    private void SyncLinkedAccountBadgeFromAccounts()
+    {
+        if (_activeUserProfile is null || _userStore is null)
+            return;
+
+        ProviderAccount? topReady;
+        lock (_accountsLock)
+            topReady = _accounts.FirstOrDefault(a => a.Enabled && a.IsReady());
+
+        string resolvedBadge;
+        if (topReady is null)
+        {
+            resolvedBadge = "Cuenta local";
+        }
+        else if (string.Equals(topReady.Provider, "openrouter", StringComparison.OrdinalIgnoreCase) &&
+                 _activeUserProfile.LinkedAccountBadge.StartsWith("OpenRouter", StringComparison.OrdinalIgnoreCase))
+        {
+            resolvedBadge = _activeUserProfile.LinkedAccountBadge;
+        }
+        else if (string.Equals(topReady.Provider, "gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            resolvedBadge = "Gemini Live";
+        }
+        else
+        {
+            resolvedBadge = CoachFeedFormatter.FriendlyShortProvider(topReady.Provider);
+        }
+
+        if (!_smokeMode && !string.Equals(resolvedBadge, _activeUserProfile.LinkedAccountBadge, StringComparison.Ordinal))
+        {
+            try
+            {
+                _userStore.UpdateProfileMetadata(_activeUserProfile.ProfileId, linkedBadge: resolvedBadge);
+                var refreshed = _userStore.LoadOrInitialize().Profiles
+                    .FirstOrDefault(p => p.ProfileId == _activeUserProfile.ProfileId);
+                if (refreshed is not null)
+                    _activeUserProfile = refreshed;
+            }
+            catch { }
+        }
+        RefreshPersonalProfileCardUi();
     }
 
     private void AppendLog(string message)
@@ -1046,6 +1093,82 @@ public partial class MainWindow : Window
                     : "🎙 Charla (micrófono + voz del coach)";
             AppendLog($"Modo de comunicación configurado: {desc}.");
         }
+    }
+
+    private void CmbCoachMode_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingUi || CmbCoachMode is null) return;
+        _config.CoachMode = GetSelectedTag(CmbCoachMode, "auto");
+        _repo.SaveUserConfig(_config);
+        if (_coordinator.IsRunning)
+            _coordinator.ApplyLiveSettings(_config);
+        AppendLog($"Modo de partida actualizado: {_config.CoachMode}.");
+    }
+
+    private void CmbQuickPacing_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingUi || CmbQuickPacing is null) return;
+        ApplyPacingFromUi(GetSelectedTag(CmbQuickPacing, "balanced"));
+    }
+
+    private void CmbCoachingPacing_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingUi || CmbCoachingPacing is null) return;
+        ApplyPacingFromUi(GetSelectedTag(CmbCoachingPacing, "balanced"));
+    }
+
+    private void ApplyPacingFromUi(string pacing)
+    {
+        _config.CoachingPacingMode = pacing;
+        _syncingUi = true;
+        try
+        {
+            SelectByTag(CmbQuickPacing, _config.CoachingPacingMode);
+            SelectByTag(CmbCoachingPacing, _config.CoachingPacingMode);
+        }
+        finally
+        {
+            _syncingUi = false;
+        }
+        _repo.SaveUserConfig(_config);
+        if (_coordinator.IsRunning)
+            _coordinator.ApplyLiveSettings(_config);
+        else
+            ActiveBanner.Reset(_config.IsTextOnlyMode, BuildActiveBannerSubtitle());
+        AppendLog(_config.IsEventFirstMode
+            ? "🎯 Ritmo IGL activo: Solo Eventos Clave (sin interrupciones de rutina)."
+            : "⚡ Ritmo activo: Continuo.");
+    }
+
+    private void CmbQuickRole_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingUi || CmbQuickRole is null) return;
+        ApplyRoleFromUi(GetSelectedTag(CmbQuickRole, "auto"));
+    }
+
+    private void CmbPlayerRole_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingUi || CmbPlayerRole is null) return;
+        ApplyRoleFromUi(GetSelectedTag(CmbPlayerRole, "auto"));
+    }
+
+    private void ApplyRoleFromUi(string role)
+    {
+        _config.PlayerRoleTag = role;
+        _syncingUi = true;
+        try
+        {
+            SelectByTag(CmbQuickRole, _config.PlayerRoleTag);
+            SelectByTag(CmbPlayerRole, _config.PlayerRoleTag);
+        }
+        finally
+        {
+            _syncingUi = false;
+        }
+        _repo.SaveUserConfig(_config);
+        if (_coordinator.IsRunning)
+            _coordinator.ApplyLiveSettings(_config);
+        AppendLog($"🎮 Rol en partida configurado: {_config.PlayerRoleTag}.");
     }
 
     private void TxtChatInput_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -1483,6 +1606,20 @@ public partial class MainWindow : Window
         switch (res.Outcome)
         {
             case PersonalProfileDialogOutcome.SwitchProfile when res.TargetProfile is not null:
+                if (res.CopySettingsFromCurrent)
+                {
+                    try
+                    {
+                        var targetRepo = new ConfigRepository(
+                            _userStore.ResolveWorkspaceRoot(res.TargetProfile.ProfileId),
+                            secretProtector: new Win32DpapiSecretProtector());
+                        targetRepo.SaveUserConfig(_config);
+                        var accSnap = GetAccountsSnapshot();
+                        if (accSnap.Count > 0)
+                            targetRepo.SaveAccounts(accSnap);
+                    }
+                    catch { }
+                }
                 ReloadWorkspaceForActiveProfile(res.TargetProfile);
                 if (!string.IsNullOrWhiteSpace(res.StatusMessage))
                     AppendLog($"👤 {res.StatusMessage}");
@@ -1512,7 +1649,70 @@ public partial class MainWindow : Window
             case PersonalProfileDialogOutcome.ImportArchive:
                 ImportPersonalArchive();
                 break;
+
+            case PersonalProfileDialogOutcome.LockSession:
+                LockActiveSession();
+                break;
         }
+    }
+
+    private void BtnQuickBackup_Click(object sender, RoutedEventArgs e)
+    {
+        if (_coordinator.IsRunning)
+        {
+            System.Windows.MessageBox.Show(
+                "Detené primero el Coach Live para exportar o importar tu backup.",
+                "HUDMind · Perfil en uso",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var outcome = PersonalAccountDialogs.ShowQuickBackupDialog(this, _activeUserProfile);
+        if (outcome == PersonalProfileDialogOutcome.ExportArchive)
+            ExportPersonalArchive();
+        else if (outcome == PersonalProfileDialogOutcome.ImportArchive)
+            ImportPersonalArchive();
+    }
+
+    private void BtnLockSession_Click(object sender, RoutedEventArgs e) =>
+        LockActiveSession();
+
+    private void LockActiveSession()
+    {
+        if (!_activeUserProfile.HasPin)
+            return;
+        if (_coordinator.IsRunning)
+        {
+            System.Windows.MessageBox.Show(
+                "Detené primero el Coach Live antes de bloquear tu sesión.",
+                "HUDMind · Perfil en uso",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        Hide();
+        var (unlocked, switchTo) = PersonalAccountDialogs.PromptPinUnlock(
+            null,
+            _userStore,
+            _activeUserProfile,
+            allowSwitchProfile: true);
+        if (switchTo is not null)
+        {
+            ReloadWorkspaceForActiveProfile(switchTo);
+            Show();
+            Activate();
+            AppendLog($"👤 Sesión cambiada a {switchTo.AvatarBadge} {switchTo.DisplayName}.");
+            return;
+        }
+        if (unlocked)
+        {
+            Show();
+            Activate();
+            return;
+        }
+        Close();
     }
 
     private void ExportPersonalArchive()
@@ -1532,7 +1732,11 @@ public partial class MainWindow : Window
 
         try
         {
-            var bytes = ProfileArchiveCodec.ExportBundle(_repo, passphrase, includeApiAccounts: includeKeys);
+            var bytes = ProfileArchiveCodec.ExportBundle(
+                _repo,
+                passphrase,
+                includeApiAccounts: includeKeys,
+                profileMetadata: _activeUserProfile);
             File.WriteAllBytes(dlg.FileName, bytes);
             AppendLog($"📦 Backup cifrado guardado: {dlg.FileName} ({bytes.Length:N0} bytes).");
             System.Windows.MessageBox.Show(
@@ -1559,18 +1763,34 @@ public partial class MainWindow : Window
         if (dlg.ShowDialog(this) != true)
             return;
 
-        var (ok, passphrase, _) = PersonalAccountDialogs.ShowPassphraseDialog(this, isExport: false);
+        var (ok, passphrase, importKeys) = PersonalAccountDialogs.ShowPassphraseDialog(this, isExport: false);
         if (!ok)
             return;
 
         try
         {
             var bytes = File.ReadAllBytes(dlg.FileName);
-            int restoredCount = ProfileArchiveCodec.ImportBundle(bytes, _repo, passphrase, importApiAccounts: false);
+            var importRes = ProfileArchiveCodec.ImportBundleDetailed(bytes, _repo, passphrase, importApiAccounts: importKeys);
+            if (importRes.Metadata is { } meta)
+            {
+                _userStore.UpdateProfileMetadata(
+                    _activeUserProfile.ProfileId,
+                    meta.DisplayName,
+                    meta.AvatarBadge,
+                    meta.AccentHex,
+                    meta.FavoriteGameId);
+                var refreshed = _userStore.LoadOrInitialize().Profiles
+                    .FirstOrDefault(p => p.ProfileId == _activeUserProfile.ProfileId);
+                if (refreshed is not null)
+                    _activeUserProfile = refreshed;
+            }
             ReloadWorkspaceForActiveProfile(_activeUserProfile);
-            AppendLog($"📥 Backup restaurado ({restoredCount} archivos) en perfil '{_activeUserProfile.DisplayName}'.");
+            string keysNote = importRes.ImportedApiAccounts
+                ? "Incluyó cuentas IA cifradas."
+                : "No incluyó claves IA (revisá Proveedores IA si necesitás conectar una).";
+            AppendLog($"📥 Backup restaurado ({importRes.FilesWritten} archivos) en perfil '{_activeUserProfile.DisplayName}'. {keysNote}");
             System.Windows.MessageBox.Show(
-                $"Se restauraron {restoredCount} archivos en '{_activeUserProfile.DisplayName}'. (Por seguridad cross-PC, revisá o conectá tu clave IA si la necesitás.)",
+                $"Se restauraron {importRes.FilesWritten} archivos en '{_activeUserProfile.DisplayName}'.\n{keysNote}",
                 "HUDMind · Backup Restaurado",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -1637,6 +1857,8 @@ public partial class MainWindow : Window
             TxtActiveUserUniqueId.Text = $"ID: {_activeUserProfile.UniqueUserId}";
 
         string lockBadge = _activeUserProfile.HasPin ? "🔒 PIN" : "Libre";
+        if (BtnLockSession is not null)
+            BtnLockSession.Visibility = _activeUserProfile.HasPin ? Visibility.Visible : Visibility.Collapsed;
         string providerBadge = string.IsNullOrWhiteSpace(_activeUserProfile.LinkedAccountBadge)
             ? "Cuenta local"
             : _activeUserProfile.LinkedAccountBadge;
@@ -1763,7 +1985,10 @@ public partial class MainWindow : Window
             report = _repo.LoadPlayerLeaks();
 
         var summary = PlayerLeakTracker.FormatComparisonSummary(report, id, isEn);
-        bool hasAny = report.Games.TryGetValue(id.ToLowerInvariant(), out var g) && g.Today.Count > 0;
+        bool isUniversal = string.Equals(id, "universal", StringComparison.OrdinalIgnoreCase);
+        bool hasAny = isUniversal
+            ? report.Games.Count > 0
+            : (report.Games.TryGetValue(id.ToLowerInvariant(), out var g) && (g.Today.Count > 0 || g.Previous.Count > 0));
         LblLeaksSummary.Text = string.IsNullOrWhiteSpace(summary)
             ? "📉 Fugas medibles (Hoy vs Anterior): sin errores tácticos repetidos detectados aún."
             : $"📉 {summary}";
@@ -1773,14 +1998,24 @@ public partial class MainWindow : Window
     private void BtnResetGameLeaks_Click(object sender, RoutedEventArgs e)
     {
         var id = CmbRulesGame.SelectedValue?.ToString() ?? "universal";
+        bool isUniversal = string.Equals(id, "universal", StringComparison.OrdinalIgnoreCase);
+        var scopeLabel = isUniversal ? "todos los juegos" : id;
+        var ans = System.Windows.MessageBox.Show(
+            $"¿Reiniciar los contadores de fugas medibles (Hoy vs Anterior) para '{scopeLabel}'?",
+            "HUDMind · Reiniciar fugas",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (ans != MessageBoxResult.Yes)
+            return;
+
         try
         {
             lock (_leakIoLock)
-                _repo.ResetPlayerLeaks(id);
+                _repo.ResetPlayerLeaks(isUniversal ? null : id);
             _config.RuntimeLeakFocus = string.Empty;
             _coordinator.RefreshPersona("fugas reiniciadas");
             RefreshLeakSummaryUi(id);
-            AppendLog($"🧹 Contadores de fugas reiniciados para '{id}'.");
+            AppendLog($"🧹 Contadores de fugas reiniciados para '{scopeLabel}'.");
         }
         catch (Exception ex)
         {

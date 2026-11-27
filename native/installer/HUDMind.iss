@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "1.5.1"
+  #define MyAppVersion "1.5.2"
 #endif
 #ifndef InputExe
   #define InputExe "..\dist\standalone-win-x64\HUDMind.Native.exe"

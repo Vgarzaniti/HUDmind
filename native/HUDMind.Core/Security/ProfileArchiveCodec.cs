@@ -2,8 +2,20 @@ using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace HUDMind.Core.Security;
+
+public sealed record ProfileArchiveMetadata(
+    string DisplayName,
+    string AvatarBadge,
+    string AccentHex,
+    string FavoriteGameId);
+
+public sealed record ProfileArchiveImportResult(
+    int FilesWritten,
+    ProfileArchiveMetadata? Metadata,
+    bool ImportedApiAccounts);
 
 /// <summary>
 /// Portable AES-256-GCM + PBKDF2-SHA256 (.hudmind) personal profile exporter/importer
@@ -12,6 +24,7 @@ namespace HUDMind.Core.Security;
 /// </summary>
 public static class ProfileArchiveCodec
 {
+    private const string ProfileMetadataEntryKey = "config/profile_meta.json";
     private static readonly byte[] Magic = "HMP1"u8.ToArray();
     private static readonly byte[] Aad = "HUDMind.PersonalBundle.v1"u8.ToArray();
     private const int SaltSize = 16;
@@ -24,7 +37,8 @@ public static class ProfileArchiveCodec
     public static byte[] ExportBundle(
         Config.ConfigRepository repo,
         string passphrase,
-        bool includeApiAccounts = false)
+        bool includeApiAccounts = false,
+        Config.UserProfileRecord? profileMetadata = null)
     {
         ArgumentNullException.ThrowIfNull(repo);
         if (string.IsNullOrWhiteSpace(passphrase) || passphrase.Length < 4)
@@ -35,6 +49,16 @@ public static class ProfileArchiveCodec
         TryAddRelativeFile(entries, "config/coach_soul.md", repo.CoachSoulPath);
         TryAddRelativeFile(entries, "config/player_profile.md", repo.PlayerProfilePath);
         TryAddRelativeFile(entries, "logs/leaks.json", Path.Combine(repo.WorkspaceRoot, "logs", "leaks.json"));
+
+        if (profileMetadata is not null)
+        {
+            var meta = new ProfileArchiveMetadata(
+                Config.UserProfileStore.SanitizeDisplayName(profileMetadata.DisplayName),
+                Config.UserProfileStore.NormalizeAvatarBadge(profileMetadata.AvatarBadge),
+                Config.UserProfileStore.NormalizeAccentHex(profileMetadata.AccentHex),
+                AI.CoachingPersonaBuilder.SanitizeField(profileMetadata.FavoriteGameId, 48).ToLowerInvariant());
+            entries[ProfileMetadataEntryKey] = JsonSerializer.SerializeToUtf8Bytes(meta);
+        }
 
         if (includeApiAccounts)
             TryAddRelativeFile(entries, "config/accounts.json", repo.AccountsPath);
@@ -108,6 +132,13 @@ public static class ProfileArchiveCodec
         ReadOnlySpan<byte> bundleBytes,
         Config.ConfigRepository destRepo,
         string passphrase,
+        bool importApiAccounts = false) =>
+        ImportBundleDetailed(bundleBytes, destRepo, passphrase, importApiAccounts).FilesWritten;
+
+    public static ProfileArchiveImportResult ImportBundleDetailed(
+        ReadOnlySpan<byte> bundleBytes,
+        Config.ConfigRepository destRepo,
+        string passphrase,
         bool importApiAccounts = false)
     {
         ArgumentNullException.ThrowIfNull(destRepo);
@@ -162,8 +193,17 @@ public static class ProfileArchiveCodec
             Directory.CreateDirectory(fullRoot);
 
             int written = 0;
+            bool importedAccounts = false;
+            ProfileArchiveMetadata? metadata = null;
+
             foreach (var (relKey, data) in entries)
             {
+                if (string.Equals(relKey, ProfileMetadataEntryKey, StringComparison.Ordinal))
+                {
+                    metadata = TryParseMetadataSafe(data);
+                    continue;
+                }
+
                 if (!IsAllowedRelativeRestorePath(relKey, importApiAccounts))
                     continue;
 
@@ -180,12 +220,35 @@ public static class ProfileArchiveCodec
                 File.WriteAllBytes(tmp, data);
                 File.Move(tmp, destPath, overwrite: true);
                 written++;
+                if (string.Equals(relKey, "config/accounts.json", StringComparison.Ordinal))
+                    importedAccounts = true;
             }
-            return written;
+            return new ProfileArchiveImportResult(written, metadata, importedAccounts);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(plainArchive);
+        }
+    }
+
+    private static ProfileArchiveMetadata? TryParseMetadataSafe(byte[] data)
+    {
+        if (data.Length == 0 || data.Length > 4096)
+            return null;
+        try
+        {
+            var raw = JsonSerializer.Deserialize<ProfileArchiveMetadata>(data);
+            if (raw is null)
+                return null;
+            return new ProfileArchiveMetadata(
+                Config.UserProfileStore.SanitizeDisplayName(raw.DisplayName),
+                Config.UserProfileStore.NormalizeAvatarBadge(raw.AvatarBadge),
+                Config.UserProfileStore.NormalizeAccentHex(raw.AccentHex),
+                AI.CoachingPersonaBuilder.SanitizeField(raw.FavoriteGameId, 48).ToLowerInvariant());
+        }
+        catch
+        {
+            return null;
         }
     }
 
