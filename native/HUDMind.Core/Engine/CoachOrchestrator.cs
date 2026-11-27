@@ -209,7 +209,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                 if (initialProfile is not null)
                 {
                     _onLog?.Invoke($"[TEST-MODE] Perfil activo: {initialProfile.Manifest.DisplayName} | Comunicación: {commLabel}");
-                    if (_config.EnableOverlay)
+                    if (_config.IsAnyOverlayEnabled)
                         _overlay.ShowCallout("Coach Nativo .NET 9 ACTIVO — observando", UrgencyLevel.Low, initialProfile.Manifest.DisplayName, 3.5);
                 }
             }
@@ -339,7 +339,7 @@ public sealed class CoachOrchestrator : ICoachEngine
         var inputGuard = _safety.EvaluateUserInput(msg, isEnMsg);
         if (!inputGuard.IsAllowed)
         {
-            if (_config.EnableOverlay)
+            if (_config.IsAnyOverlayEnabled)
                 _overlay.ShowMessage(new OverlayCalloutMessage(inputGuard.SafeRedirectReply, UrgencyLevel.Low, profile.Manifest.DisplayName, Math.Min(_config.OverlayDurationSeconds, 3.5), OverlayEntryKind.Status, "HUD"));
             double guardVoiceMs = 0;
             if (_config.IsCoachVoiceActive && !_userPaused)
@@ -382,7 +382,7 @@ public sealed class CoachOrchestrator : ICoachEngine
             return true;
         }
         int taskId = Interlocked.Increment(ref _chatSeq);
-        if (_config.EnableOverlay && !_userPaused)
+        if (_config.IsAnyOverlayEnabled && !_userPaused)
             _overlay.ShowMessage(new OverlayCalloutMessage(msg, UrgencyLevel.Low, profile.Manifest.DisplayName, _config.OverlayDurationSeconds, OverlayEntryKind.UserMessage, "Vos"));
         CancellationTokenSource? linkedCts = null;
         try
@@ -421,8 +421,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                     var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
                         _storyboardComposer,
                         frame,
-                        maxFrames: 6,
-                        maxAgeSeconds: 8.0,
+                        maxFrames: 3,
+                        maxAgeSeconds: 5.5,
                         jpegQuality: Math.Max(q, 84),
                         isEn: isEn);
                     var timelineText = _session.Memory.FormatVisualTimeline(isEn: isEn);
@@ -457,7 +457,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                     _session.Memory.RecordObservation("CHAT", msg);
                     _session.Memory.RecordMatchEvent(profile.Manifest.GameId, profile.Manifest.DisplayName, "CHAT", msg, reply);
 
-                    if (_config.EnableOverlay)
+                    if (_config.IsAnyOverlayEnabled)
                         _overlay.ShowMessage(new OverlayCalloutMessage(reply, UrgencyLevel.Medium, profile.Manifest.DisplayName, _config.OverlayDurationSeconds, OverlayEntryKind.CoachFinal, "Coach"));
 
                     double voiceMs = 0;
@@ -521,14 +521,14 @@ public sealed class CoachOrchestrator : ICoachEngine
                     _speech.InterruptAndClear();
             }
             _onLog?.Invoke($"Coach PAUSADO ({_config.HotkeyTogglePause} para reanudar).");
-            if (_config.EnableOverlay)
+            if (_config.IsAnyOverlayEnabled)
                 _overlay.ShowMessage(new OverlayCalloutMessage($"Coach PAUSADO — {_config.HotkeyTogglePause} para reanudar", UrgencyLevel.Low, title, 2.5, OverlayEntryKind.Status, "HUD"));
         }
         else
         {
             WakeNow();
             _onLog?.Invoke("Coach REANUDADO.");
-            if (_config.EnableOverlay)
+            if (_config.IsAnyOverlayEnabled)
                 _overlay.ShowMessage(new OverlayCalloutMessage("Coach ACTIVO — observando", UrgencyLevel.Low, title, 2.5, OverlayEntryKind.Status, "HUD"));
         }
         EmitStats();
@@ -560,7 +560,7 @@ public sealed class CoachOrchestrator : ICoachEngine
         Interlocked.Exchange(ref _forceAnalysisPending, 1);
         WakeNow();
         _onLog?.Invoke($"Análisis inmediato ({_config.HotkeyAnalyzeNow}) disparado (<1ms wake).");
-        if (_config.EnableOverlay)
+        if (_config.IsAnyOverlayEnabled)
             _overlay.ShowMessage(new OverlayCalloutMessage("Analizando jugada...", UrgencyLevel.Low, active.Manifest.DisplayName, 1.8, OverlayEntryKind.Status, "HUD"));
     }
 
@@ -820,11 +820,12 @@ public sealed class CoachOrchestrator : ICoachEngine
                 Interlocked.Increment(ref _aiCalls);
                 bool isEn = CoachingPersonaBuilder.IsEnglish(_config);
                 var (_, _, cfgQuality) = ResolveTargetResolution();
+                int proactiveFrames = _config.TokenEfficiencyMode.Equals("eco", StringComparison.OrdinalIgnoreCase) ? 2 : 3;
                 var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
                     _storyboardComposer,
                     frame,
-                    maxFrames: forceNow ? 4 : 3,
-                    maxAgeSeconds: forceNow ? 4.5 : 3.2,
+                    maxFrames: forceNow ? 3 : proactiveFrames,
+                    maxAgeSeconds: forceNow ? 4.0 : 2.2,
                     jpegQuality: Math.Max(cfgQuality, 82),
                     isEn: isEn);
 
@@ -854,6 +855,29 @@ public sealed class CoachOrchestrator : ICoachEngine
                     continue;
                 }
 
+                // Post-AI freshness & tactical phase gate for proactive turns so slow cloud RTT never emits stale tips
+                if (!forceNow && resp is { ShouldIntervene: true } && !string.IsNullOrWhiteSpace(resp.OverlayText))
+                {
+                    double frameAgeMs = (DateTimeOffset.UtcNow - frame.CapturedAtUtc).TotalMilliseconds;
+                    double maxFreshMs = Math.Clamp(EffectiveCooldown(profile) * 1050.0, 2200.0, 3800.0);
+                    bool staleByLatency = frameAgeMs > maxFreshMs;
+                    bool staleByPhase = false;
+                    if (!staleByLatency && _telemetrySensor is not null)
+                    {
+                        var postTelemetry = await _telemetrySensor.ReadTelemetryAsync(profile, ct);
+                        var postSignal = _session.EvaluateTacticalSignal(postTelemetry, profile, _config, isEn);
+                        staleByPhase = postSignal.ShouldSilence;
+                    }
+
+                    if (staleByLatency || staleByPhase)
+                    {
+                        _onLog?.Invoke(
+                            $"Consejo descartado por {(staleByPhase ? "cambio de fase" : "latencia")} " +
+                            $"({frameAgeMs:F0}ms, IA={aiMs:F0}ms) [{model}]");
+                        continue;
+                    }
+                }
+
                 if (resp is not null && !string.IsNullOrWhiteSpace(resp.MatchContext))
                 {
                     var ctx = resp.MatchContext.Trim();
@@ -880,7 +904,7 @@ public sealed class CoachOrchestrator : ICoachEngine
                         _session.Memory.Record(resp);
                         _session.Memory.RecordMatchEvent(profile.Manifest.GameId, profile.Manifest.DisplayName, "PLAY", resp.MatchContext, resp.OverlayText);
 
-                        if (_config.EnableOverlay)
+                        if (_config.IsAnyOverlayEnabled)
                             _overlay.ShowMessage(new OverlayCalloutMessage(resp.OverlayText, resp.Urgency, profile.Manifest.DisplayName, _config.OverlayDurationSeconds, OverlayEntryKind.CoachFinal, "Coach"));
 
                         double voiceMs = 0;
@@ -1011,6 +1035,7 @@ public sealed class CoachOrchestrator : ICoachEngine
         await _router.DisposeAsync();
         if (_disposeVoice)
             lock (_voiceGate) _voice.Dispose();
+        (_telemetrySensor as IDisposable)?.Dispose();
         _capture.Dispose();
         _wakeSignal.Dispose();
         _lifecycleLock.Dispose();

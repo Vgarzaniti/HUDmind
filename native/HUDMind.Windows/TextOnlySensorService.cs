@@ -14,13 +14,17 @@ namespace HUDMind.Windows;
 /// Lazy Windows 11 WinRT OCR (~25-60ms CPU, 0% GPU) + pluggable <see cref="IGameTelemetrySensor"/> aggregator.
 /// Invoked ONLY for text-only ("blind") AI models and optional proactive Live menu gating.
 /// </summary>
-public sealed class TextOnlySensorService : ITextOnlySensorService
+public sealed class TextOnlySensorService : ITextOnlySensorService, IDisposable
 {
     private readonly OcrEngine? _ocr;
     private readonly List<IGameTelemetrySensor> _sensors;
     private readonly SemaphoreSlim _ocrGate = new(1, 1);
     private readonly object _stateLock = new();
     private Dictionary<string, string> _prevZones = new(StringComparer.OrdinalIgnoreCase);
+    private ulong _cachedFrameSig;
+    private int _cachedFrameLen;
+    private long _cachedOcrAtTick;
+    private Dictionary<string, string>? _cachedOcrZones;
 
     public bool HasOcrEngine => _ocr is not null;
     public string OcrLanguageTag { get; }
@@ -31,6 +35,7 @@ public sealed class TextOnlySensorService : ITextOnlySensorService
     {
         _sensors =
         [
+            new LoopbackWebSocketTelemetrySensor(),
             new RocketLeagueLogSensor(),
             new ValorantLogSensor(),
             new LeagueLiveClientSensor()
@@ -71,7 +76,11 @@ public sealed class TextOnlySensorService : ITextOnlySensorService
     public void Reset()
     {
         lock (_stateLock)
+        {
             _prevZones.Clear();
+            _cachedOcrZones = null;
+            _cachedOcrAtTick = 0;
+        }
     }
 
     public static string ClassifyPhase(IReadOnlyDictionary<string, string> zones, string logSummary) =>
@@ -83,14 +92,40 @@ public sealed class TextOnlySensorService : ITextOnlySensorService
     public async Task<HudSensorSnapshot> ExtractAsync(byte[] jpegBytes, GameProfile profile, CancellationToken ct = default)
     {
         long t0 = Stopwatch.GetTimestamp();
+        ulong sig = ComputeFastFrameSignature(jpegBytes);
+        Dictionary<string, string>? cachedZones = null;
+        lock (_stateLock)
+        {
+            if (_cachedOcrZones is not null &&
+                _cachedFrameLen == jpegBytes.Length &&
+                _cachedFrameSig == sig &&
+                _cachedOcrAtTick > 0 &&
+                Stopwatch.GetElapsedTime(_cachedOcrAtTick).TotalMilliseconds < 280.0)
+            {
+                cachedZones = _cachedOcrZones;
+            }
+        }
 
-        var ocrTask = RunWinRtOcrZonesAsync(jpegBytes, ct);
+        Task<Dictionary<string, string>> ocrTask = cachedZones is not null
+            ? Task.FromResult(cachedZones)
+            : RunWinRtOcrZonesAsync(jpegBytes, ct);
         var logTask = ReadMatchingTelemetryAsync(profile, ct);
         await Task.WhenAll(ocrTask, logTask).ConfigureAwait(false);
 
         var zones = await ocrTask.ConfigureAwait(false);
         string logSummary = await logTask.ConfigureAwait(false);
         double elapsedMs = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+
+        if (cachedZones is null)
+        {
+            lock (_stateLock)
+            {
+                _cachedFrameSig = sig;
+                _cachedFrameLen = jpegBytes.Length;
+                _cachedOcrAtTick = Stopwatch.GetTimestamp();
+                _cachedOcrZones = zones;
+            }
+        }
 
         string phase = HudPhaseClassifier.ClassifyPhase(zones, logSummary);
         string delta = ComputeZoneDelta(zones);
@@ -105,6 +140,21 @@ public sealed class TextOnlySensorService : ITextOnlySensorService
             OcrMs: elapsedMs,
             HasUsefulData: hasUseful
         );
+    }
+
+    private static ulong ComputeFastFrameSignature(byte[] bytes)
+    {
+        if (bytes.Length == 0)
+            return 0;
+        ulong hash = 14695981039346656037UL;
+        int step = Math.Max(1, bytes.Length / 96);
+        for (int i = 0; i < bytes.Length; i += step)
+        {
+            hash ^= bytes[i];
+            hash *= 1099511628211UL;
+        }
+        hash ^= (ulong)bytes.Length;
+        return hash;
     }
 
     private async Task<string> ReadMatchingTelemetryAsync(GameProfile profile, CancellationToken ct)
@@ -214,5 +264,18 @@ public sealed class TextOnlySensorService : ITextOnlySensorService
         if (zones.Count == 0)
             return string.Empty;
         return string.Join(" ; ", zones.Take(6).Select(kv => $"[{kv.Key}] {kv.Value}"));
+    }
+
+    public void Dispose()
+    {
+        List<IGameTelemetrySensor> snapshot;
+        lock (_stateLock)
+            snapshot = [.. _sensors];
+        foreach (var s in snapshot)
+        {
+            if (s is IDisposable disp)
+                try { disp.Dispose(); } catch { }
+        }
+        try { _ocrGate.Dispose(); } catch { }
     }
 }

@@ -118,6 +118,7 @@ public sealed class OverlayFeedRowViewModel : INotifyPropertyChanged
 public partial class OverlayWindow : Window, IOverlayOutputService
 {
     private const int GwlExStyle = -20;
+    private const int WsExTopmost = 0x00000008;
     private const int WsExTransparent = 0x00000020;
     private const int WsExToolWindow = 0x00000080;
     private const int WsExNoActivate = 0x08000000;
@@ -158,6 +159,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
     private static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
 
     private readonly DispatcherTimer _pruneTimer;
+    private readonly DispatcherTimer _topmostGuardTimer;
     private readonly OverlayFeedBuffer _feedBuffer = new();
     private readonly ObservableCollection<OverlayFeedRowViewModel> _rows = [];
 
@@ -165,6 +167,9 @@ public partial class OverlayWindow : Window, IOverlayOutputService
     private bool _screensDirty = true;
     private string _position = "top-right";
     private int _monitorIndex = 1;
+    private bool _followActiveMonitor = true;
+    private bool _desktopOverlayEnabled = true;
+    private int? _autoMonitorIndex;
     private double _backdropOpacity = 0.55;
     private double _scale = 1.0;
     private string _style = UserConfig.OverlayStyleDiscordPill;
@@ -206,6 +211,17 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         _pruneTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         _pruneTimer.Tick += (_, _) => OnPruneTimerTick();
 
+        _topmostGuardTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
+        _topmostGuardTimer.Tick += (_, _) =>
+        {
+            if (_closed || !IsVisible || _quickChatOpen)
+            {
+                _topmostGuardTimer.Stop();
+                return;
+            }
+            ReassertTopmostAndActiveMonitor();
+        };
+
         SizeChanged += (_, _) =>
         {
             if (IsVisible && !_closed && Math.Abs(ActualHeight - _lastActualH) > 1.0)
@@ -238,7 +254,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
 
         if (IntPtr.Size == 8)
         {
-            nint exStyle = GetWindowLongPtr64(hwnd, GwlExStyle) | WsExToolWindow;
+            nint exStyle = GetWindowLongPtr64(hwnd, GwlExStyle) | WsExToolWindow | WsExTopmost;
             exStyle = clickThrough
                 ? exStyle | WsExTransparent | WsExNoActivate
                 : exStyle & ~(nint)(WsExTransparent | WsExNoActivate);
@@ -246,7 +262,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         }
         else
         {
-            int exStyle = GetWindowLong32(hwnd, GwlExStyle) | WsExToolWindow;
+            int exStyle = GetWindowLong32(hwnd, GwlExStyle) | WsExToolWindow | WsExTopmost;
             exStyle = clickThrough
                 ? exStyle | WsExTransparent | WsExNoActivate
                 : exStyle & ~(WsExTransparent | WsExNoActivate);
@@ -468,7 +484,9 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         double scale = 1.0,
         bool compact = false,
         string? style = null,
-        int maxMessages = 3)
+        int maxMessages = 3,
+        bool followActiveMonitor = true,
+        bool desktopOverlayEnabled = true)
     {
         if (_closed) return;
         Dispatcher.BeginInvoke(() =>
@@ -476,6 +494,10 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             if (_closed) return;
             _position = string.IsNullOrWhiteSpace(position) ? "top-right" : position.ToLowerInvariant();
             _monitorIndex = Math.Max(1, monitorIndex);
+            _followActiveMonitor = followActiveMonitor;
+            _desktopOverlayEnabled = desktopOverlayEnabled;
+            if (!followActiveMonitor)
+                _autoMonitorIndex = null;
             _scale = Math.Clamp(scale, 0.75, 1.45);
             _backdropOpacity = Math.Clamp(opacity, 0.0, 0.95);
             _style = UserConfig.NormalizeOverlayStyle(style, compactFallback: compact);
@@ -499,6 +521,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
                 if (_rows.Count == 0 && !_quickChatOpen)
                 {
                     _pruneTimer.Stop();
+                    _topmostGuardTimer.Stop();
                     BeginAnimation(OpacityProperty, null);
                     Hide();
                     return;
@@ -518,6 +541,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         {
             if (_closed) return;
             _pruneTimer.Stop();
+            _topmostGuardTimer.Stop();
             _feedBuffer.Clear();
             _rows.Clear();
             _latestUserMicActive = false;
@@ -540,6 +564,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         {
             if (_closed) return;
             _pruneTimer.Stop();
+            _topmostGuardTimer.Stop();
             if (_quickChatOpen)
                 CloseQuickChat(restoreFocus: false);
             BeginAnimation(OpacityProperty, null);
@@ -571,18 +596,26 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             ApplyVoiceActivityUi();
 
             bool wasVisible = IsVisible;
+            if (!_desktopOverlayEnabled && !_quickChatOpen)
+            {
+                if (wasVisible)
+                {
+                    _pruneTimer.Stop();
+                    _topmostGuardTimer.Stop();
+                    BeginAnimation(OpacityProperty, null);
+                    Hide();
+                }
+                return;
+            }
             if (!wasVisible)
             {
                 BeginAnimation(OpacityProperty, null);
                 Opacity = _quickChatOpen ? 1.0 : 0.0;
                 Show();
-                var hwnd = new WindowInteropHelper(this).Handle;
-                if (hwnd != IntPtr.Zero)
-                    SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SwpNoActivate | SwpNoMove | SwpNoSize);
             }
 
             UpdateLayout();
-            PositionOnScreen(force: !wasVisible);
+            ReassertTopmostAndActiveMonitor(forceReposition: !wasVisible);
 
             if (!wasVisible && !_quickChatOpen)
             {
@@ -598,7 +631,11 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             }
 
             if (!_quickChatOpen)
+            {
                 ScheduleNextPrune(nowUtc);
+                if (!_topmostGuardTimer.IsEnabled)
+                    _topmostGuardTimer.Start();
+            }
         });
     }
 
@@ -874,6 +911,7 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         {
             if (!_closed && !_quickChatOpen && _feedBuffer.IsEmpty)
             {
+                _topmostGuardTimer.Stop();
                 BeginAnimation(OpacityProperty, null);
                 Hide();
             }
@@ -886,7 +924,35 @@ public partial class OverlayWindow : Window, IOverlayOutputService
         _closed = true;
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         _pruneTimer.Stop();
+        _topmostGuardTimer.Stop();
         try { Close(); } catch { }
+    }
+
+    private void ReassertTopmostAndActiveMonitor(bool forceReposition = false)
+    {
+        if (_closed) return;
+
+        bool monitorChanged = false;
+        if (_followActiveMonitor)
+        {
+            IntPtr extHwnd = Win32WindowDetector.GetExternalForegroundWindowHandle();
+            if (extHwnd != IntPtr.Zero)
+            {
+                int? fgMon = Win32DisplayHelper.TryGetMonitorIndexForWindow(extHwnd);
+                if (fgMon.HasValue && fgMon.Value != _autoMonitorIndex)
+                {
+                    _autoMonitorIndex = fgMon.Value;
+                    monitorChanged = true;
+                }
+            }
+        }
+
+        if (forceReposition || monitorChanged)
+            PositionOnScreen(force: true);
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != IntPtr.Zero && IsVisible)
+            SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SwpNoActivate | SwpNoMove | SwpNoSize);
     }
 
     private void PositionOnScreen(bool force = false)
@@ -897,11 +963,14 @@ public partial class OverlayWindow : Window, IOverlayOutputService
             _screensDirty = false;
         }
 
-        int idx = Math.Clamp(_monitorIndex - 1, 0, Math.Max(0, _cachedWorkingAreas.Length - 1));
+        int effectiveMonitor = _followActiveMonitor && _autoMonitorIndex is int autoIdx
+            ? autoIdx
+            : _monitorIndex;
+        int idx = Math.Clamp(effectiveMonitor - 1, 0, Math.Max(0, _cachedWorkingAreas.Length - 1));
         var waPx = _cachedWorkingAreas.Length > 0 ? _cachedWorkingAreas[idx] : new MonitorBoundsRect(0, 0, 1920, 1080);
 
         double h = Math.Max(52, ActualHeight);
-        string posKey = $"{_monitorIndex}:{_position}:{Width:F0}:{h:F0}:{waPx.Left},{waPx.Top},{waPx.Width},{waPx.Height}";
+        string posKey = $"{effectiveMonitor}:{_position}:{Width:F0}:{h:F0}:{waPx.Left},{waPx.Top},{waPx.Width},{waPx.Height}";
         if (!force && posKey == _lastPosKey)
             return;
         _lastPosKey = posKey;

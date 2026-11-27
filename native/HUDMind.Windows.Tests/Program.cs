@@ -9,6 +9,7 @@ using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
 using HUDMind.Windows;
+using HUDMind.Windows.Overlay;
 using HUDMind.Windows.Security;
 
 int passed = 0;
@@ -600,6 +601,120 @@ await RunTest("W16. Win32DpapiSecretProtector crypt32 round-trip, WindowsStartup
     return Task.CompletedTask;
 });
 
+// W17. Win32DisplayHelper active monitor resolution, FastScreenCapture SparseLumaDelta & TextOnlySensorService OCR cache + fresh telemetry
+await RunTest("W17. Win32DisplayHelper.TryGetMonitorIndexForWindow, SparseLumaDelta & OCR-cached fresh telemetry", async () =>
+{
+    Assert(Win32DisplayHelper.TryGetMonitorIndexForWindow(IntPtr.Zero) is null,
+        "TryGetMonitorIndexForWindow(IntPtr.Zero) must return null");
+    var areas = Win32DisplayHelper.GetAllWorkingAreas();
+    IntPtr selfHwnd = System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle;
+    if (selfHwnd != IntPtr.Zero)
+    {
+        int? mon = Win32DisplayHelper.TryGetMonitorIndexForWindow(selfHwnd);
+        Assert(mon is >= 1 && mon <= areas.Length,
+            $"Valid window handle monitor index must stay inside 1..{areas.Length} (got {mon})");
+    }
+
+    using var cap = new FastScreenCapture();
+    var (f1, skip1) = cap.CaptureIfChanged(1, null, 640, 360, 75, 1, null, 4, isForced: true);
+    if (f1 is not null)
+        Assert(!skip1 && f1.SparseLumaDelta >= 0.0, "Forced capture must report SparseLumaDelta >= 0");
+
+    // Verify TextOnlySensorService caches expensive OCR per identical image while ALWAYS reading live telemetry!
+    int telemetryCalls = 0;
+    var mockSensor = new StubDynamicTelemetrySensor(() =>
+    {
+        int call = Interlocked.Increment(ref telemetryCalls);
+        return call == 1 ? "RL_PHASE=PLAY" : "RL_PHASE=MENU";
+    });
+    var svc = new TextOnlySensorService(additionalSensors: [mockSensor]);
+    var dummyProfile = new HUDMind.Core.Models.GameProfile
+    {
+        DirectoryPath = ".",
+        Manifest = new HUDMind.Core.Models.GameManifest { GameId = "rocket_league", DisplayName = "Rocket League" }
+    };
+    byte[] minimalImg = [0xFF, 0xD8, 0xFF, 0xD9];
+    var snap1 = await svc.ExtractAsync(minimalImg, dummyProfile);
+    var snap2 = await svc.ExtractAsync(minimalImg, dummyProfile);
+    Assert(telemetryCalls >= 2 && snap2.LogSummary.Contains("MENU", StringComparison.Ordinal),
+        $"Cached OCR window must still poll fresh telemetry on every call (calls={telemetryCalls}, log2={snap2.LogSummary})");
+});
+
+// W18. LoopbackRconToastBridge loopback RFC 6455 auth + toast sanitization & RocketLeagueLogSensor PII strip
+await RunTest("W18. LoopbackRconToastBridge WebSocket toast + RocketLeagueLogSensor PII safety", async () =>
+{
+    var received = new List<string>();
+    using var listener = new TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    using var serverCts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+
+    var serverTask = Task.Run(async () =>
+    {
+        using var tcp = await listener.AcceptTcpClientAsync(serverCts.Token);
+        await using var ns = tcp.GetStream();
+        using var reader = new StreamReader(ns, Encoding.ASCII, leaveOpen: true);
+        string? secKey = null;
+        string? line;
+        while (!string.IsNullOrEmpty(line = await reader.ReadLineAsync(serverCts.Token)))
+        {
+            if (line.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase))
+                secKey = line["Sec-WebSocket-Key:".Length..].Trim();
+        }
+        byte[] acceptHash = System.Security.Cryptography.SHA1.HashData(
+            Encoding.ASCII.GetBytes($"{secKey}258EAFA5-E914-47DA-95CA-C5AB0DC85B11"));
+        string accept = Convert.ToBase64String(acceptHash);
+        await ns.WriteAsync(Encoding.ASCII.GetBytes(
+            "HTTP/1.1 101 Switching Protocols\r\n" +
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+            $"Sec-WebSocket-Accept: {accept}\r\n\r\n"), serverCts.Token);
+
+        while (!serverCts.Token.IsCancellationRequested && received.Count < 2)
+        {
+            string? frameMsg = await ReadMaskedWsTextFrameAsync(ns, serverCts.Token);
+            if (frameMsg is null) break;
+            received.Add(frameMsg);
+            if (frameMsg.StartsWith("rcon_password ", StringComparison.Ordinal))
+                await WriteUnmaskedWsTextFrameAsync(ns, "authyes", serverCts.Token);
+        }
+    });
+
+    await using var rconClient = new LoopbackRconToastBridge(
+        isEnabled: () => true,
+        isSupportedGameActive: () => true,
+        settingsResolver: () => new HUDMind.Core.Overlay.LoopbackRconBridgeSettings(true, port, "TestPass99"));
+
+    // CoachLive partial MUST be ignored (no toast flood); CoachFinal MUST send sanitized command!
+    rconClient.ShowMessage(new OverlayCalloutMessage("Parcial...", UrgencyLevel.Low, "Rocket League", 3.0, OverlayEntryKind.CoachLive, "Coach"));
+    rconClient.ShowMessage(new OverlayCalloutMessage("Rotá segundo palo; quit", UrgencyLevel.High, "Rocket League", 4.0, OverlayEntryKind.CoachFinal, "Coach"));
+
+    await serverTask;
+    Assert(received.Count >= 2 &&
+           received[0] == "rcon_password TestPass99" &&
+           received[1] == "toast \"HUDMind\" \"Rotá segundo palo quit\"",
+        $"Unexpected RCON WebSocket sequence: {string.Join(" | ", received)}");
+
+    // Verify RocketLeagueLogSensor tail rules do not leak player '?Name=' query args
+    var tmpRl = Path.Combine(Path.GetTempPath(), $"hudmind_w18_{Guid.NewGuid():N}");
+    Directory.CreateDirectory(tmpRl);
+    try
+    {
+        var logFile = Path.Combine(tmpRl, "Launch.log");
+        File.WriteAllText(logFile, "[0090.09] Log: LoadMap: 15.228.137.3:9035/CHN_Stadium_Day_P?Name=SecretPlayer?game=TAGame.GameInfo_Soccar_TA\n");
+        var rlSensor = new RocketLeagueLogSensor(logFile);
+        var rlProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League", ProcessNames = ["RocketLeague.exe"] } };
+        string matched = await rlSensor.ReadAsync(rlProf);
+        Assert(matched.Contains("Partido Soccar activo", StringComparison.Ordinal) &&
+               !matched.Contains("SecretPlayer", StringComparison.Ordinal) &&
+               !matched.Contains("15.228.137.3", StringComparison.Ordinal),
+            $"RocketLeagueLogSensor must classify match state cleanly without leaking IP or player name: {matched}");
+    }
+    finally
+    {
+        try { Directory.Delete(tmpRl, recursive: true); } catch { }
+    }
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -622,4 +737,46 @@ static byte[] BuildSyntheticPcm16MonoWav(int sampleRate, int samples)
     for (int i = 0; i < samples; i++)
         BitConverter.GetBytes((short)(i % 2 == 0 ? 1000 : -1000)).CopyTo(buf, 44 + i * 2);
     return buf;
+}
+
+static async Task<string?> ReadMaskedWsTextFrameAsync(NetworkStream ns, CancellationToken ct)
+{
+    byte[] hdr = new byte[2];
+    if (await ns.ReadAsync(hdr, ct) < 2) return null;
+    int len = hdr[1] & 0x7F;
+    if (len == 126)
+    {
+        byte[] ext = new byte[2];
+        await ns.ReadExactlyAsync(ext, ct);
+        len = (ext[0] << 8) | ext[1];
+    }
+    byte[] mask = new byte[4];
+    if ((hdr[1] & 0x80) != 0)
+        await ns.ReadExactlyAsync(mask, ct);
+    byte[] payload = new byte[len];
+    await ns.ReadExactlyAsync(payload, ct);
+    if ((hdr[1] & 0x80) != 0)
+    {
+        for (int i = 0; i < len; i++)
+            payload[i] ^= mask[i & 3];
+    }
+    return Encoding.UTF8.GetString(payload);
+}
+
+static Task WriteUnmaskedWsTextFrameAsync(NetworkStream ns, string text, CancellationToken ct)
+{
+    byte[] data = Encoding.UTF8.GetBytes(text);
+    byte[] frame = new byte[2 + data.Length];
+    frame[0] = 0x81;
+    frame[1] = (byte)data.Length;
+    Buffer.BlockCopy(data, 0, frame, 2, data.Length);
+    return ns.WriteAsync(frame, ct).AsTask();
+}
+
+sealed class StubDynamicTelemetrySensor(Func<string> onRead) : IGameTelemetrySensor
+{
+    public string SensorId => "stub-dynamic";
+    public bool Supports(HUDMind.Core.Models.GameProfile profile) => true;
+    public Task<string> ReadAsync(HUDMind.Core.Models.GameProfile profile, CancellationToken ct = default) =>
+        Task.FromResult(onRead());
 }

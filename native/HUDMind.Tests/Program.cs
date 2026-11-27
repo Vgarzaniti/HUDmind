@@ -9,6 +9,7 @@ using HUDMind.Core.AI.LiveBackends;
 using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
+using HUDMind.Core.Overlay;
 using HUDMind.Core.Pipeline;
 using HUDMind.Core.Security;
 using HUDMind.Core.Updates;
@@ -2896,6 +2897,206 @@ await RunTest("53. Live suppresses NONE prebuffered audio/overlay, keeps clips <
     await live.StopAsync();
 });
 
+// 54. CompanionHudServer SSE/HTML security, CSP/XSS escaping, LAN token auth, CompositeOverlayService & IsAnyOverlayEnabled
+await RunTest("54. CompanionHudServer SSE/HTML security, CSP/XSS escaping, LAN token & CompositeOverlayService", async () =>
+{
+    await using var companion = new CompanionHudServer();
+    var (started, activeUrl, warn) = await companion.EnsureStartedAsync(preferredPort: 18940, allowLan: false, maxMessages: 3);
+    Assert(started && string.IsNullOrWhiteSpace(warn) && companion.BoundPort > 0 && activeUrl.StartsWith("http://127.0.0.1:"),
+        $"CompanionHudServer must start cleanly on loopback (warn={warn}, url={activeUrl})");
+
+    using var http = new HttpClient();
+    using var health = await http.GetAsync($"{companion.LocalUrl}health");
+    Assert((int)health.StatusCode == 200, "GET /health must return 200 OK");
+
+    using var htmlResp = await http.GetAsync(companion.LocalUrl);
+    Assert((int)htmlResp.StatusCode == 200, "GET / must return 200 OK");
+    string html = await htmlResp.Content.ReadAsStringAsync();
+    Assert(htmlResp.Headers.TryGetValues("Content-Security-Policy", out _) &&
+           htmlResp.Headers.TryGetValues("X-Frame-Options", out var xfo) && xfo.Contains("DENY") &&
+           html.Contains("textContent", StringComparison.Ordinal) &&
+           !html.Contains("innerHTML", StringComparison.Ordinal),
+        "Companion HTML must enforce CSP/XFO headers and pure textContent anti-XSS DOM updates");
+
+    using var postResp = await http.PostAsync(companion.LocalUrl, new StringContent("{}"));
+    Assert((int)postResp.StatusCode == 405, "POST / must be rejected with 405");
+    using var missResp = await http.GetAsync($"{companion.LocalUrl}nope");
+    Assert((int)missResp.StatusCode == 404, "Unknown route must return 404");
+
+    using var sseResp = await http.GetAsync($"{companion.LocalUrl}events", HttpCompletionOption.ResponseHeadersRead);
+    Assert((int)sseResp.StatusCode == 200, "GET /events SSE must connect cleanly");
+    await using var sseStream = await sseResp.Content.ReadAsStreamAsync();
+    using var sseReader = new StreamReader(sseStream, Encoding.UTF8);
+
+    // Drain initial state frame before testing live broadcast fan-out
+    for (int i = 0; i < 4; i++)
+    {
+        var line = await sseReader.ReadLineAsync();
+        if (string.IsNullOrEmpty(line)) break;
+    }
+
+    var primaryOverlay = new RecordingOverlay();
+    var composite = new CompositeOverlayService(primaryOverlay, companion);
+    composite.ShowMessage(new OverlayCalloutMessage(
+        "<script>alert(1)</script> Rotá corto",
+        UrgencyLevel.High,
+        "Rocket League",
+        5.0,
+        OverlayEntryKind.CoachFinal,
+        "Coach"));
+
+    string? dataLine = null;
+    using var readTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+    while (!readTimeout.IsCancellationRequested)
+    {
+        var line = await sseReader.ReadLineAsync(readTimeout.Token);
+        if (line is not null && line.StartsWith("data: ", StringComparison.Ordinal))
+        {
+            dataLine = line;
+            break;
+        }
+    }
+    Assert(primaryOverlay.Shown.Count == 1 &&
+           dataLine is not null &&
+           dataLine.Contains("Rot\\u00E1 corto", StringComparison.OrdinalIgnoreCase) || (dataLine?.Contains("Rotá corto") == true),
+        $"CompositeOverlayService must deliver simultaneously to WPF stub and SSE stream (data={dataLine})");
+    Assert(!string.IsNullOrEmpty(dataLine) && !dataLine.Contains("<script>alert(1)</script>", StringComparison.Ordinal),
+        "JSON serialization must escape HTML/script angle brackets cleanly");
+
+    // Verify UserConfig persistence & IsAnyOverlayEnabled semantics
+    var tmpDir = Path.Combine(Path.GetTempPath(), $"hudmind_ovcfg_{Guid.NewGuid():N}");
+    try
+    {
+        var repo = new ConfigRepository(tmpDir);
+        var cfg = new UserConfig
+        {
+            EnableOverlay = false,
+            EnableCompanionHud = true,
+            OverlayFollowActiveMonitor = false,
+            CompanionHudPort = 18444,
+            CompanionHudAllowLan = true
+        };
+        Assert(cfg.IsAnyOverlayEnabled, "IsAnyOverlayEnabled must be true when Companion HUD is enabled without desktop overlay");
+        repo.SaveUserConfig(cfg);
+        var loaded = repo.LoadUserConfig();
+        Assert(!loaded.EnableOverlay &&
+               loaded.EnableCompanionHud &&
+               !loaded.OverlayFollowActiveMonitor &&
+               loaded.CompanionHudPort == 18444 &&
+               loaded.CompanionHudAllowLan &&
+               loaded.IsAnyOverlayEnabled,
+            "Companion & auto-monitor config flags must round-trip cleanly");
+    }
+    finally
+    {
+        try { Directory.Delete(tmpDir, recursive: true); } catch { }
+    }
+});
+
+// 55. PerceptualHasher.ComputeMeanAbsLumaDelta, CoachOrchestrator stale-phase discard & Live passive dedup
+await RunTest("55. MeanAbsLumaDelta, CoachOrchestrator post-AI staleness/phase discard & Live passive dedup", async () =>
+{
+    byte[] gridA = Enumerable.Repeat((byte)40, PerceptualHasher.GridWidth * PerceptualHasher.GridHeight).ToArray();
+    byte[] gridB = Enumerable.Repeat((byte)50, PerceptualHasher.GridWidth * PerceptualHasher.GridHeight).ToArray();
+    Assert(PerceptualHasher.ComputeMeanAbsLumaDelta(gridA, gridA) == 0.0, "Identical luma grids must yield 0 delta");
+    Assert(Math.Abs(PerceptualHasher.ComputeMeanAbsLumaDelta(gridA, gridB) - 10.0) < 0.001, "Shifted luma grid must yield exact delta 10.0");
+
+    // Proactive turn where telemetry switches to MENU while AI call is in-flight -> CoachOrchestrator discards stale callout!
+    var prof = new GameProfile
+    {
+        DirectoryPath = ".",
+        Manifest = new GameManifest { GameId = "valorant", DisplayName = "Valorant", CooldownSeconds = 3.0, CaptureFps = 2.0, ProcessNames = ["VALORANT-Win64-Shipping.exe"] }
+    };
+    var acct = new ProviderAccount { Id = "p1", Provider = "gemini", Label = "G", Model = "gemini-2.5-flash", ApiKey = "AIzaTest1234567890", Priority = 1, Enabled = true };
+    var cfg = new UserConfig { CoachMode = "auto", EnableOverlay = true, VoiceLanguage = "es", TextLanguage = "es", MinInferenceIntervalSeconds = 0.5 };
+    cfg.SetCommunicationMode("text_only");
+
+    var dynamicSensor = new MutablePhaseTelemetrySensor("VAL_LOG: Partida en curso");
+    var slowProvider = new CallbackSlowVisionProvider(acct, async ct =>
+    {
+        dynamicSensor.CurrentTelemetry = "VAL_LOG: Menu / Lobby";
+        await Task.Delay(50, ct);
+        return new ProviderCallResult(new CoachResponse(true, UrgencyLevel.High, "Rotá ya", "Rotá ya", "CONSEJO"));
+    });
+
+    var router = new ProviderFailoverRouter([acct], factory: _ => slowProvider, textOnlySensor: dynamicSensor);
+    var ov = new RecordingOverlay();
+    var vc = new RecordingVoice();
+    await using var orch = new CoachOrchestrator(
+        cfg, [prof], router, new StubWindowDetector("VALORANT-Win64-Shipping.exe"),
+        new StubCapture(), vc, ov, testMode: true, forcedGameId: "valorant",
+        telemetrySensor: dynamicSensor, storyboardComposer: new StubStoryboardComposer());
+
+    await orch.StartAsync();
+    for (int i = 0; i < 40 && dynamicSensor.CurrentTelemetry != "VAL_LOG: Menu / Lobby"; i++) await Task.Delay(30);
+    await Task.Delay(120);
+    Assert(!ov.Shown.Any(s => s.Contains("Rotá ya", StringComparison.OrdinalIgnoreCase)) && vc.Spoken.Count == 0,
+        $"Post-AI phase switch to MENU must discard stale proactive callout (shown={string.Join(" | ", ov.Shown)}, voice={vc.Spoken.Count})");
+    await orch.StopAsync();
+
+    // Live engine passive WS frame dedup: static identical frames (SparseLumaDelta=0.2) should not spam WebSocket every 900ms!
+    var stubLive = new StubLiveBackend();
+    var player = new StubStreamingPlayer();
+    var staticOverlay = new RecordingOverlay();
+    var liveCfg = new UserConfig { LiveAutoCoachSeconds = 0.0, VoiceLanguage = "es", TextLanguage = "es", EnableOverlay = false };
+    liveCfg.SetCommunicationMode("text_only");
+    var staticCapture = new ConstantHashStaticCapture(hash: 0xABCDEF0102030405UL, delta: 0.2);
+
+    await using var live = new RealtimeLiveCoachOrchestrator(
+        stubLive, liveCfg, [prof], new StubWindowDetector("VALORANT-Win64-Shipping.exe"),
+        staticCapture, player, new StubStreamingMic(), staticOverlay,
+        testMode: true, forcedGameId: "valorant");
+    await live.StartAsync();
+    await Task.Delay(1600);
+    Assert(stubLive.SentVideoFrames <= 1,
+        $"Passive WS stream must deduplicate static identical frames inside <4s window (sent={stubLive.SentVideoFrames})");
+    await live.StopAsync();
+});
+
+// 56. InGameOverlayBridgeProtocol CWE-77 sanitization, ExternalTelemetryParser, TacticalSignalEvaluator & rcon_password redaction
+await RunTest("56. InGameOverlayBridgeProtocol CWE-77 sanitization, ExternalTelemetryParser & rcon_password redaction", () =>
+{
+    var rcon = InGameOverlayBridgeProtocol.ParseRconBridgeConfig("// comment\nrcon_enabled \"1\"\nrcon_port \"9002\"\nrcon_password \"SecretPass123!\"\n");
+    Assert(rcon.Enabled && rcon.Port == 9002 && rcon.SecretToken == "SecretPass123!", "RCON config parser failed");
+
+    var cmd = InGameOverlayBridgeProtocol.BuildToastCommand("HUD\"Mind;", "Rotá\"; quit; $env %x \\`rm`");
+    Assert(cmd.StartsWith("toast \"HUD Mind\" \"Rotá quit env x rm", StringComparison.Ordinal) &&
+           !cmd.Contains(';') && !cmd.Contains('$') && !cmd.Contains('`') && !cmd.Contains('\\'),
+        $"CWE-77 toast sanitizer left unsafe chars: {cmd}");
+
+    // 'toastme' must NOT falsely satisfy 'toast' check
+    var (upd1, added1) = InGameOverlayBridgeProtocol.EnsureCommandAllowlisted("ws_inventory\ntoastme\nsendback\n", "toast");
+    Assert(added1 && upd1.Split('\n').Any(l => l.Trim() == "toast"), "Must append standalone 'toast' line");
+    var (_, added2) = InGameOverlayBridgeProtocol.EnsureCommandAllowlisted(upd1, "toast");
+    Assert(!added2, "Allowlist append must be idempotent");
+
+    // Loopback telemetry JSON parsing -> TacticalSignalEvaluator resource, replay & OT signals
+    string wsJson = "{\"event\":\"game:update_state\",\"data\":{\"game\":{\"time_seconds\":74,\"isOT\":true,\"isReplay\":false,\"hasWinner\":false,\"target\":\"p1\",\"teams\":[{\"score\":1},{\"score\":2}]},\"players\":{\"p1\":{\"boost\":12,\"speed\":65}}}}";
+    Assert(ExternalTelemetryParser.TryParseStateEventJson(wsJson, out var wsSummary) &&
+           wsSummary.Contains("Resource=12%") && wsSummary.Contains("OT=1"),
+        $"External telemetry parser failed: {wsSummary}");
+
+    var tracker = new TacticalSignalTracker();
+    var rlProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League" } };
+    var otEval = TacticalSignalEvaluator.Evaluate(wsSummary, rlProf, tracker, isEn: false);
+    Assert(otEval.TriggerImmediate && otEval.PhaseTag == "OVERTIME" && !otEval.ShouldSilence,
+        $"Overtime must trigger immediate callout: {otEval}");
+
+    string wsReplay = "{\"event\":\"game:update_state\",\"data\":{\"game\":{\"time_seconds\":74,\"isOT\":false,\"isReplay\":true,\"hasWinner\":false,\"teams\":[]}}}";
+    Assert(ExternalTelemetryParser.TryParseStateEventJson(wsReplay, out var replaySummary), "Replay telemetry parse failed");
+    var repEval = TacticalSignalEvaluator.Evaluate(replaySummary, rlProf, tracker, isEn: false);
+    Assert(repEval.ShouldSilence && repEval.PhaseTag == "REPLAY_GOAL",
+        $"InReplay must silence proactive tips cleanly: {repEval}");
+
+    string redacted = SecretRedactor.Redact("rcon_password \"SuperSecretBridgeKey\"");
+    Assert(!redacted.Contains("SuperSecretBridgeKey", StringComparison.Ordinal) && redacted.Contains("[REDACTED]"),
+        $"SecretRedactor must mask rcon_password: {redacted}");
+
+    var cfg = new UserConfig { EnableOverlay = false, EnableInGameOverlayBridge = true };
+    Assert(cfg.IsAnyOverlayEnabled, "IsAnyOverlayEnabled must reflect EnableInGameOverlayBridge");
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -3024,6 +3225,37 @@ sealed class RecordingOverlay : IOverlayOutputService
     private readonly List<string> _shown = [];
     public IReadOnlyList<string> Shown { get { lock (_sync) return [.. _shown]; } }
     public void ShowCallout(string text, UrgencyLevel urgency, string title, double durationSeconds) { lock (_sync) _shown.Add(text); }
+}
+
+sealed class MutablePhaseTelemetrySensor(string initialTelemetry) : ITextOnlySensorService
+{
+    public volatile string CurrentTelemetry = initialTelemetry;
+    public Task<string> ReadTelemetryAsync(GameProfile profile, CancellationToken ct = default) => Task.FromResult(CurrentTelemetry);
+    public Task<HudSensorSnapshot> ExtractAsync(byte[] jpegBytes, GameProfile profile, CancellationToken ct = default) =>
+        Task.FromResult(new HudSensorSnapshot("COMBAT", string.Empty, CurrentTelemetry, string.Empty, 1.0, true));
+    public void Reset() { }
+}
+
+sealed class CallbackSlowVisionProvider(ProviderAccount account, Func<CancellationToken, Task<ProviderCallResult>> onAnalyze) : IAIProvider
+{
+    public ProviderAccount Account { get; } = account;
+    public Task PrewarmAsync(CancellationToken ct = default) => Task.CompletedTask;
+    public Task<ProviderCallResult> AnalyzeFrameAsync(byte[] jpegBytes, GameProfile profile, UserConfig config, string recentHistory, bool forceAdvice, string spatialTelemetry = "", HudSensorSnapshot? sensorSnapshot = null, CancellationToken ct = default) =>
+        onAnalyze(ct);
+    public Task<ProviderCallResult> AskQuestionAsync(byte[]? jpegBytes, string userQuestion, GameProfile profile, UserConfig config, string recentHistory = "", string visualTimeline = "", HudSensorSnapshot? sensorSnapshot = null, string recentChatHistory = "", CancellationToken ct = default) =>
+        onAnalyze(ct);
+    public Task<(bool Ok, string Message)> TestConnectionAsync(CancellationToken ct = default) => Task.FromResult((true, "ok"));
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+sealed class ConstantHashStaticCapture(ulong hash, double delta) : IScreenCaptureService
+{
+    public (CapturedFrameData? Frame, bool SkippedByHash) CaptureIfChanged(
+        int monitorIndex, (int Left, int Top, int Width, int Height)? regionRect,
+        int targetWidth, int targetHeight, int jpegQuality, long frameId,
+        ulong? lastAcceptedHash, int phashThreshold, bool isForced) =>
+        (new CapturedFrameData([0xFF, 0xD8, 0xFF, 0xD9], hash, frameId, 0.5, 0.5, DateTimeOffset.UtcNow, isForced, SparseLumaDelta: delta), false);
+    public void Dispose() { }
 }
 
 sealed class StubStreamingPlayer : IStreamingPcmPlayer

@@ -54,7 +54,7 @@
                     <DockPanel>
                         <Button x:Name="BtnVersionCheck"
                                 DockPanel.Dock="Left"
-                                Content="v1.2.3"
+                                Content="v1.3.0"
                                 FontSize="10.5"
                                 Padding="9,4"
                                 Background="#09121C"
@@ -826,7 +826,19 @@
                                         </DockPanel>
                                         <WrapPanel Margin="0,0,0,8">
                                             <CheckBox x:Name="ChkEnableOverlay" Content="Mostrar cartel sobre el juego (transparente al mouse)" Margin="0,0,20,6" />
+                                            <CheckBox x:Name="ChkOverlayFollowMonitor" Content="Seguir monitor activo del juego" Margin="0,0,20,6" ToolTip="Reubica automáticamente el cartel al monitor donde estés jugando." />
+                                            <CheckBox x:Name="ChkEnableCompanionHud" Content="Companion Web HUD (Pantalla Completa / 2º monitor)" Margin="0,0,20,6" Checked="CompanionHudSettingChanged" Unchecked="CompanionHudSettingChanged" ToolTip="Inicia un mini HUD web local (0% GPU, 0% riesgo anti-cheat) para verlo en otro monitor, OBS Browser Source o el celular." />
+                                            <CheckBox x:Name="ChkCompanionLan" Content="Permitir celular en Wi-Fi (LAN)" Margin="0,0,20,6" Checked="CompanionHudSettingChanged" Unchecked="CompanionHudSettingChanged" ToolTip="Habilita acceso por red Wi-Fi local usando una URL con clave temporal de sesión." />
+                                            <CheckBox x:Name="ChkEnableInGameOverlayBridge" Content="Puente HUD externo en juego (Pantalla Completa)" Margin="0,0,0,6" ToolTip="Reenvía callouts finales vía WebSocket local (127.0.0.1 RCON) a puentes/mods compatibles del propio juego para ver avisos dentro de pantalla completa exclusiva sin hooks." />
                                         </WrapPanel>
+                                        <Border x:Name="CompanionUrlBar" Visibility="Collapsed" Background="#07101B" BorderBrush="#1E3A5F" BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,0,0,10">
+                                            <DockPanel LastChildFill="True">
+                                                <Button DockPanel.Dock="Right" Content="🌐 Abrir" Padding="10,4" Margin="6,0,0,0" Click="BtnOpenCompanionUrl_Click" ToolTip="Abre el HUD Companion en tu navegador (ideal también para OBS Browser Source)" />
+                                                <Button DockPanel.Dock="Right" Content="📋 Copiar URL" Padding="10,4" Margin="8,0,0,0" Click="BtnCopyCompanionUrl_Click" />
+                                                <TextBlock DockPanel.Dock="Left" Text="URL Companion:" Foreground="#94A3B8" FontSize="11.5" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                                <TextBox x:Name="TxtCompanionUrl" IsReadOnly="True" BorderThickness="0" Background="Transparent" Foreground="#22D3EE" FontFamily="Consolas" FontSize="11.5" VerticalAlignment="Center" />
+                                            </DockPanel>
+                                        </Border>
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="210" />
@@ -915,6 +927,7 @@
                                         </Grid>
                                         <WrapPanel>
                                             <Button Content="🎮 Activar conexión CS2 / Dota 2" Click="BtnInstallGsi_Click" Margin="0,0,10,4" ToolTip="Instala el archivo oficial de lectura de partida en Steam (100% seguro, sin tocar memoria)" />
+                                            <Button x:Name="BtnSetupExternalBridge" Content="🔗 Activar Puente HUD Local (Pantalla Completa)" Click="BtnSetupExternalBridge_Click" Margin="0,0,10,4" ToolTip="Autoriza 'toast' en el puente RCON local instalado (%APPDATA%) y verifica la conexión loopback para mostrar avisos en pantalla completa." />
                                             <Button x:Name="BtnCheckUpdates" Content="🔄 Buscar Actualizaciones" Click="BtnCheckUpdates_Click" Margin="0,0,0,4" ToolTip="Verifica si salió una nueva versión en GitHub Releases" />
                                         </WrapPanel>
                                     </StackPanel>

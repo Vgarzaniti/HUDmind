@@ -51,6 +51,8 @@ public sealed class FastScreenCapture : IScreenCaptureService
     private Rectangle _cachedVirtualScreen;
     private volatile bool _screensDirty = true;
     private int _lastMeanLuma = -1;
+    private readonly byte[] _prevAcceptedGray = new byte[PerceptualHasher.GridWidth * PerceptualHasher.GridHeight];
+    private bool _hasPrevGray;
     private int _consecutiveBlackFrames;
     private bool _disposed;
 
@@ -120,7 +122,11 @@ public sealed class FastScreenCapture : IScreenCaptureService
                 double capMs = Stopwatch.GetElapsedTime(tCap).TotalMilliseconds;
 
                 long tEnc = Stopwatch.GetTimestamp();
-                var (hash, lumaRange, meanLuma) = ComputeCellAveragedDHash(_reusableBmp!);
+                Span<byte> currGray = stackalloc byte[PerceptualHasher.GridWidth * PerceptualHasher.GridHeight];
+                var (hash, lumaRange, meanLuma) = ComputeCellAveragedDHash(_reusableBmp!, currGray);
+                double lumaDelta = _hasPrevGray
+                    ? PerceptualHasher.ComputeMeanAbsLumaDelta(_prevAcceptedGray, currGray)
+                    : 255.0;
 
                 bool isPitchBlack = lumaRange < 8 && meanLuma <= 4;
                 if (isPitchBlack)
@@ -132,15 +138,20 @@ public sealed class FastScreenCapture : IScreenCaptureService
                 if (!isForced && lumaRange < 8)
                     return (null, true);
 
-                // Early-exit BEFORE JPEG encoding unless scene or global brightness shifted notably
+                // Early-exit BEFORE JPEG encoding unless scene, localized HUD luma, or brightness shifted notably
                 bool sameLumaBand = _lastMeanLuma < 0 || Math.Abs(meanLuma - _lastMeanLuma) < 18;
+                int dist = lastAcceptedHash.HasValue ? PerceptualHasher.HammingDistance(hash, lastAcceptedHash.Value) : int.MaxValue;
+                bool negligibleLumaShift = !_hasPrevGray || lumaDelta < 2.2;
+                bool staticDuplicate = phashThreshold > 0 && lastAcceptedHash.HasValue && _hasPrevGray && dist <= 1 && lumaDelta < 0.85;
                 if (!isForced && lastAcceptedHash.HasValue && sameLumaBand &&
-                    PerceptualHasher.HammingDistance(hash, lastAcceptedHash.Value) < phashThreshold)
+                    ((dist < phashThreshold && negligibleLumaShift) || staticDuplicate))
                 {
                     return (null, true);
                 }
 
                 _lastMeanLuma = meanLuma;
+                currGray.CopyTo(_prevAcceptedGray);
+                _hasPrevGray = true;
                 byte[] jpegBytes = EncodeJpeg(_reusableBmp!, Math.Clamp(jpegQuality, 35, 92));
                 double encMs = Stopwatch.GetElapsedTime(tEnc).TotalMilliseconds;
 
@@ -151,7 +162,8 @@ public sealed class FastScreenCapture : IScreenCaptureService
                     capMs,
                     encMs,
                     DateTimeOffset.UtcNow,
-                    IsForced: isForced
+                    IsForced: isForced,
+                    SparseLumaDelta: Math.Round(lumaDelta, 2)
                 ), false);
             }
             catch
@@ -199,11 +211,10 @@ public sealed class FastScreenCapture : IScreenCaptureService
         return (Math.Max(16, (int)(srcW * scale)), Math.Max(16, (int)(srcH * scale)));
     }
 
-    private static unsafe (ulong Hash, int LumaRange, int MeanLuma) ComputeCellAveragedDHash(Bitmap bmp)
+    private static unsafe (ulong Hash, int LumaRange, int MeanLuma) ComputeCellAveragedDHash(Bitmap bmp, Span<byte> gray)
     {
         int w = bmp.Width;
         int h = bmp.Height;
-        Span<byte> gray = stackalloc byte[PerceptualHasher.GridWidth * PerceptualHasher.GridHeight];
 
         int minLuma = 255;
         int maxLuma = 0;

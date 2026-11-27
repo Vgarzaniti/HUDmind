@@ -33,4 +33,20 @@ public static class PerceptualHasher
 
     public static int HammingDistance(ulong a, ulong b) =>
         BitOperations.PopCount(a ^ b);
+
+    /// <summary>
+    /// Computes mean absolute luminance delta across the 72 sub-sampled HUD grid cells (&lt;0.01ms).
+    /// Catches localized HUD meter / timer / menu transitions even when global gradient bits do not flip.
+    /// </summary>
+    public static double ComputeMeanAbsLumaDelta(ReadOnlySpan<byte> prevGray9x8, ReadOnlySpan<byte> currGray9x8)
+    {
+        int len = Math.Min(prevGray9x8.Length, currGray9x8.Length);
+        if (len == 0)
+            return 0.0;
+
+        long sum = 0;
+        for (int i = 0; i < len; i++)
+            sum += Math.Abs(currGray9x8[i] - prevGray9x8[i]);
+        return sum / (double)len;
+    }
 }

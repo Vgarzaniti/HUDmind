@@ -12,9 +12,11 @@ using HUDMind.Core.AI;
 using HUDMind.Core.Config;
 using HUDMind.Core.Engine;
 using HUDMind.Core.Models;
+using HUDMind.Core.Overlay;
 using HUDMind.Core.Pipeline;
 using HUDMind.Core.Updates;
 using HUDMind.Windows;
+using HUDMind.Windows.Overlay;
 using HUDMind.Windows.Security;
 using MediaColor = System.Windows.Media.Color;
 
@@ -52,6 +54,11 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<string> _logEntries = [];
     private readonly ObservableCollection<CoachFeedItem> _feedEntries = [];
     private readonly OverlayWindow _overlay = new();
+    private readonly CompanionHudServer _companionHud = new();
+    private readonly LoopbackRconToastBridge _externalOverlayBridge;
+    private readonly CompositeOverlayService _dualOverlay;
+    private IOverlayOutputService ActiveOverlaySink =>
+        (_config?.EnableCompanionHud == true || _config?.EnableInGameOverlayBridge == true) ? _dualOverlay : _overlay;
     private readonly HybridVoiceService _sharedVoice;
     private readonly GitHubReleaseUpdateService _updateService = new();
     private readonly HudNavigationMediator _navMediator;
@@ -96,6 +103,11 @@ public partial class MainWindow : Window
         }
 
         InitializeComponent();
+        _externalOverlayBridge = new LoopbackRconToastBridge(
+            isEnabled: () => !_shutdownComplete && _config?.EnableInGameOverlayBridge == true,
+            isSupportedGameActive: () =>
+                string.Equals(_coordinator.ActiveEngine?.ActiveGameId, "rocket_league", StringComparison.OrdinalIgnoreCase));
+        _dualOverlay = new CompositeOverlayService(_overlay, _companionHud, _externalOverlayBridge);
         _overlay.QuickChatSubmitted += msg => _ = SendQuickChatFromOverlayAsync(msg);
         _voiceUiTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
         _voiceUiTimer.Tick += (_, _) =>
@@ -108,7 +120,7 @@ public partial class MainWindow : Window
                 if (speaking || _lastClassicSpeaking)
                 {
                     _lastClassicSpeaking = speaking;
-                    _overlay.UpdateVoiceActivity(false, 0, speaking, speaking ? 0.62 : 0.0);
+                    ActiveOverlaySink.UpdateVoiceActivity(false, 0, speaking, speaking ? 0.62 : 0.0);
                     SettingsVoiceWave.UpdateAudioLevel(speaking ? 0.62 : 0.0);
                 }
             }
@@ -172,6 +184,8 @@ public partial class MainWindow : Window
 
         if (_config.CheckUpdatesOnStartup)
             _ = CheckForUpdatesAsync(manual: false);
+        if (_config.EnableCompanionHud)
+            _ = SyncCompanionHudServerAsync();
     }
 
     private void MainWindow_StateChanged(object? sender, EventArgs e)
@@ -267,6 +281,10 @@ public partial class MainWindow : Window
         }
 
         ChkEnableOverlay.IsChecked = _config.EnableOverlay;
+        ChkOverlayFollowMonitor.IsChecked = _config.OverlayFollowActiveMonitor;
+        ChkEnableCompanionHud.IsChecked = _config.EnableCompanionHud;
+        ChkCompanionLan.IsChecked = _config.CompanionHudAllowLan;
+        ChkEnableInGameOverlayBridge.IsChecked = _config.EnableInGameOverlayBridge;
         ChkEnableHotkeys.IsChecked = _config.EnableHotkeys;
         ChkMinimizeToTray.IsChecked = _config.MinimizeToTray;
         ChkLaunchWithWindows.IsChecked = _config.LaunchWithWindows && WindowsStartupManager.IsEnabled();
@@ -332,7 +350,77 @@ public partial class MainWindow : Window
             _config.OverlayScale,
             compact: style != UserConfig.OverlayStyleCard,
             style: style,
-            maxMessages: maxMessages);
+            maxMessages: maxMessages,
+            followActiveMonitor: _config.OverlayFollowActiveMonitor,
+            desktopOverlayEnabled: _config.EnableOverlay);
+        _companionHud.ConfigureMaxMessages(maxMessages);
+    }
+
+    private void CompanionHudSettingChanged(object sender, RoutedEventArgs e)
+    {
+        if (_syncingUi || _smokeMode || _closingInProgress || _shutdownComplete)
+            return;
+        _config.EnableCompanionHud = ChkEnableCompanionHud.IsChecked == true;
+        _config.CompanionHudAllowLan = ChkCompanionLan.IsChecked == true;
+        _ = SyncCompanionHudServerAsync();
+    }
+
+    private async Task SyncCompanionHudServerAsync()
+    {
+        try
+        {
+            if (_shutdownComplete || _closingInProgress)
+                return;
+
+            if (!_config.EnableCompanionHud)
+            {
+                await _companionHud.StopAsync();
+                if (!_shutdownComplete && CompanionUrlBar is not null)
+                    CompanionUrlBar.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            var (started, url, warning) = await _companionHud.EnsureStartedAsync(
+                _config.CompanionHudPort,
+                _config.CompanionHudAllowLan,
+                _config.ResolveOverlayMaxMessages());
+
+            if (_shutdownComplete)
+                return;
+
+            if (started)
+            {
+                if (TxtCompanionUrl is not null)
+                    TxtCompanionUrl.Text = url;
+                if (CompanionUrlBar is not null)
+                    CompanionUrlBar.Visibility = Visibility.Visible;
+                AppendLog($"🌐 Companion Web HUD activo ({(_config.CompanionHudAllowLan ? "LAN Wi-Fi con clave" : "solo localhost")}): {url}");
+            }
+            else if (!string.IsNullOrWhiteSpace(warning))
+            {
+                AppendLog($"⚠ {warning}");
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!_shutdownComplete)
+                AppendLog($"⚠ Error en Companion Web HUD: {SecretRedactor.Redact(ex.Message)}");
+        }
+    }
+
+    private void BtnCopyCompanionUrl_Click(object sender, RoutedEventArgs e)
+    {
+        var url = (TxtCompanionUrl?.Text ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(url)) return;
+        System.Windows.Clipboard.SetText(url);
+        AppendLog($"📋 URL de Companion Web HUD copiada al portapapeles: {url}");
+    }
+
+    private void BtnOpenCompanionUrl_Click(object sender, RoutedEventArgs e)
+    {
+        var local = _companionHud.LocalUrl;
+        if (!string.IsNullOrEmpty(local) && local.StartsWith("http://127.0.0.1:", StringComparison.Ordinal))
+            Process.Start(new ProcessStartInfo(local) { UseShellExecute = true });
     }
 
     private List<GameProfile> GetProfilesSnapshot()
@@ -560,6 +648,8 @@ public partial class MainWindow : Window
             _updateCts?.Dispose();
             _updateCts = null;
             await _coordinator.DisposeAsync();
+            await _companionHud.DisposeAsync();
+            await _externalOverlayBridge.DisposeAsync();
             _sharedVoice.Dispose();
             _trayIcon?.Dispose();
             _overlay.ShutdownCleanly();
@@ -590,6 +680,8 @@ public partial class MainWindow : Window
             ApplyConfigFromUi();
             _repo.SaveUserConfig(_config);
             ConfigureOverlayFromCurrentConfig();
+            if (_config.EnableCompanionHud)
+                await SyncCompanionHudServerAsync();
 
             bool testMode = GetSelectedTag(CmbRunMode) == "test";
             string? forcedId = CmbGameProfile.SelectedValue?.ToString();
@@ -610,7 +702,7 @@ public partial class MainWindow : Window
                     accountsSnapshot,
                     profilesSnapshot,
                     _sharedVoice,
-                    _overlay,
+                    _dualOverlay,
                     testMode,
                     forcedId,
                     wantLive,
@@ -719,7 +811,7 @@ public partial class MainWindow : Window
         _lastClassicSpeaking = false;
         SettingsVoiceWave.ResetToIdleCurve();
         _overlay.HideImmediately();
-        _overlay.ClearHistory();
+        _dualOverlay.ClearHistory();
         SetRunningControlLocks(false);
         ResetStatsCards();
         RefreshMatchReviewButtonState();
@@ -739,9 +831,9 @@ public partial class MainWindow : Window
             ApplyCommunicationModeFromUi(nextMode);
             if (_config.EnableAudioCues && !_config.IsTextOnlyMode)
                 Win32AudioCue.Play(_config.IsMicActive ? AudioCueKind.SoftOn : AudioCueKind.SoftOff);
-            if (_config.EnableOverlay)
+            if (_config.IsAnyOverlayEnabled)
             {
-                _overlay.ShowMessage(new OverlayCalloutMessage(
+                ActiveOverlaySink.ShowMessage(new OverlayCalloutMessage(
                     _config.IsMicActive ? "🎤 Micrófono ACTIVO" : "🔇 Micrófono SILENCIADO",
                     UrgencyLevel.Low,
                     "HUDMind Live",
@@ -1788,6 +1880,38 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void BtnSetupExternalBridge_Click(object sender, RoutedEventArgs e)
+    {
+        BtnSetupExternalBridge.IsEnabled = false;
+        try
+        {
+            var (configured, liveOk, msg) = await InGameOverlayBridgeSetup.ConfigureAndVerifyAsync();
+            if (configured)
+            {
+                _config.EnableInGameOverlayBridge = true;
+                if (ChkEnableInGameOverlayBridge is not null)
+                    ChkEnableInGameOverlayBridge.IsChecked = true;
+                _repo.SaveUserConfig(_config);
+            }
+            AppendLog($"🔗 Puente HUD local: {msg}");
+            System.Windows.MessageBox.Show(
+                msg,
+                "Puente HUD Pantalla Completa",
+                MessageBoxButton.OK,
+                liveOk || configured ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            var safeErr = $"No se pudo configurar puente HUD: {SecretRedactor.Redact(ex.Message)}";
+            AppendLog($"⚠ {safeErr}");
+            System.Windows.MessageBox.Show(safeErr, "Puente HUD Pantalla Completa", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            BtnSetupExternalBridge.IsEnabled = true;
+        }
+    }
+
     private bool ApplyConfigFromUi(bool validateHotkeys = false)
     {
         if (validateHotkeys)
@@ -1872,6 +1996,10 @@ public partial class MainWindow : Window
         _config.OverlayPosition = GetSelectedTag(CmbOverlayPos, "top-right");
         _config.CaptureMonitor = CmbMonitor.SelectedValue is int m ? m : 1;
         _config.EnableOverlay = ChkEnableOverlay.IsChecked == true;
+        _config.OverlayFollowActiveMonitor = ChkOverlayFollowMonitor.IsChecked == true;
+        _config.EnableCompanionHud = ChkEnableCompanionHud.IsChecked == true;
+        _config.CompanionHudAllowLan = ChkCompanionLan.IsChecked == true;
+        _config.EnableInGameOverlayBridge = ChkEnableInGameOverlayBridge.IsChecked == true;
         _config.EnableHotkeys = ChkEnableHotkeys.IsChecked == true;
         _config.MinimizeToTray = ChkMinimizeToTray.IsChecked == true;
         _config.LaunchWithWindows = ChkLaunchWithWindows.IsChecked == true;
@@ -1908,6 +2036,7 @@ public partial class MainWindow : Window
         ConfigureOverlayFromCurrentConfig();
         if (!_config.EnableOverlay)
             _overlay.HideImmediately();
+        _ = SyncCompanionHudServerAsync();
 
         _sharedVoice.SetOutputDevice(_config.AudioOutputDeviceName);
         _sharedVoice.SetSpeechRate(_config.TtsRate);
@@ -1918,16 +2047,19 @@ public partial class MainWindow : Window
         AppendLog($"Preferencias guardadas y aplicadas en vivo (Nivel: {_config.PlayerSkillTier}, Mic: {(_config.IsPushToTalkMode ? $"PTT {_config.PushToTalkKey}" : "Abierto")}).");
     }
 
-    private void BtnPreviewOverlay_Click(object sender, RoutedEventArgs e)
+    private async void BtnPreviewOverlay_Click(object sender, RoutedEventArgs e)
     {
         if (!ApplyConfigFromUi()) return;
         ConfigureOverlayFromCurrentConfig();
-        if (_config.EnableOverlay)
+        if (_config.EnableCompanionHud)
+            await SyncCompanionHudServerAsync();
+        if (_config.IsAnyOverlayEnabled)
         {
-            _overlay.ClearHistory();
+            var previewTarget = ActiveOverlaySink;
+            previewTarget.ClearHistory();
             if (_config.ResolveOverlayMaxMessages() > 1)
             {
-                _overlay.ShowMessage(new OverlayCalloutMessage(
+                previewTarget.ShowMessage(new OverlayCalloutMessage(
                     "¿Dónde me paro ahora?",
                     UrgencyLevel.Low,
                     "Rocket League",
@@ -1935,7 +2067,7 @@ public partial class MainWindow : Window
                     OverlayEntryKind.UserMessage,
                     "Vos"));
             }
-            _overlay.ShowMessage(new OverlayCalloutMessage(
+            previewTarget.ShowMessage(new OverlayCalloutMessage(
                 "Rotá segundo palo, tenés 18 de boost.",
                 UrgencyLevel.High,
                 "Rocket League",

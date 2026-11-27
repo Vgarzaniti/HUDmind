@@ -122,14 +122,14 @@ public sealed class MatchSessionCoordinator
 
         _activeProfile = matched;
         _onLog?.Invoke($"Juego detectado automáticamente: {matched.Manifest.DisplayName} ({fg})");
-        if (config.EnableOverlay)
+        if (config.IsAnyOverlayEnabled)
             _overlay.ShowMessage(new OverlayCalloutMessage(overlayBannerText, UrgencyLevel.Low, matched.Manifest.DisplayName, 3.0, OverlayEntryKind.Status, "HUD"));
 
         return new ProfileSwitchOutcome(true, true, prev, matched, fg);
     }
 
     public void ObserveCaptureHealth(UserConfig config) =>
-        BlackScreenDiagnostic.Observe(_capture, _activeProfile, _testMode, _onLog, _overlay, config.EnableOverlay);
+        BlackScreenDiagnostic.Observe(_capture, _activeProfile, _testMode, _onLog, _overlay, config.IsAnyOverlayEnabled);
 
     public TacticalEvaluation EvaluateTacticalSignal(string rawTelemetry, GameProfile? profile, UserConfig config, bool isEn)
     {

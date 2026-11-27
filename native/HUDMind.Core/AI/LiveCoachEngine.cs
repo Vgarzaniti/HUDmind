@@ -72,6 +72,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
     private int _disposeOnce;
 
     private ulong? _lastSentHash;
+    private ulong? _lastPassiveWsHash;
     private long _framesSent;
     private long _interventions;
     private double _lastCaptureMs;
@@ -524,7 +525,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         {
             _onLog?.Invoke($"💬 Vos: \"{msg}\"");
             _onLog?.Invoke($"🛡️ Coach [safety-guard]: \"{inputGuard.SafeRedirectReply}\"");
-            if (_config.EnableOverlay && !_userPaused)
+            if (_config.IsAnyOverlayEnabled && !_userPaused)
             {
                 _overlay.ShowMessage(new OverlayCalloutMessage(
                     inputGuard.SafeRedirectReply,
@@ -564,7 +565,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 try
                 {
                     _onLog?.Invoke($"💬 Vos: \"{msg}\"");
-                    if (_config.EnableOverlay && !_userPaused)
+                    if (_config.IsAnyOverlayEnabled && !_userPaused)
                     {
                         _overlay.ShowMessage(new OverlayCalloutMessage(
                             msg,
@@ -700,14 +701,14 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         if (pausedNow)
         {
             _onLog?.Invoke($"Coach Live PAUSADO ({_config.HotkeyTogglePause} para reanudar).");
-            if (_config.EnableOverlay)
+            if (_config.IsAnyOverlayEnabled)
                 _overlay.ShowMessage(new OverlayCalloutMessage($"Coach Live PAUSADO — {_config.HotkeyTogglePause}", UrgencyLevel.Low, title, 2.5, OverlayEntryKind.Status, "HUD"));
         }
         else
         {
             WakeNow();
             _onLog?.Invoke("Coach Live REANUDADO.");
-            if (_config.EnableOverlay)
+            if (_config.IsAnyOverlayEnabled)
             {
                 _overlay.ShowMessage(new OverlayCalloutMessage(
                     textOnlyNow ? "Coach Live ACTIVO — solo texto" : micNow ? "Coach Live ACTIVO — charla en vivo" : "Coach Live ACTIVO — solo voz del coach",
@@ -864,7 +865,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
                         if (!quietRefresh)
                             _onLog?.Invoke($"LIVE LISTO [{_backend.ProviderName} · {_backend.ActiveModelLabel}] · {modeDesc}");
-                        if (_config.EnableOverlay && !_userPaused && !quietRefresh)
+                        if (_config.IsAnyOverlayEnabled && !_userPaused && !quietRefresh)
                         {
                             _overlay.ShowMessage(new OverlayCalloutMessage(
                                 _config.IsTextOnlyMode
@@ -981,7 +982,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         double coachLevel01,
         bool force = false)
     {
-        if (!_config.EnableOverlay)
+        if (!_config.IsAnyOverlayEnabled)
             return;
         long prev = Interlocked.Read(ref _lastOverlayAudioTick);
         if (!force && prev != 0 && Stopwatch.GetElapsedTime(prev).TotalMilliseconds < 65.0)
@@ -1004,7 +1005,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                 _modelSpeaking = false;
                 _pcmPlayer.InterruptAndClear();
             }
-            if (_config.EnableOverlay && !_userPaused)
+            if (_config.IsAnyOverlayEnabled && !_userPaused)
             {
                 var title = (sessionProfile ?? _session.ActiveProfile)?.Manifest.DisplayName ?? "HUDMind Live";
                 _overlay.ShowMessage(new OverlayCalloutMessage(outGuard.FallbackReplacement, UrgencyLevel.Low, title, 3.0, OverlayEntryKind.Status, "HUD"));
@@ -1023,7 +1024,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         // Keep buffering PCM cleanly until HandleTurnComplete decides suppression on the finished transcript
         // so valid turns starting with "Nada..." or "None..." never lose opening audio.
         bool isSilentPartial = CompactWireProtocol.IsSilentMarker(currentLine, includeAmbiguousNo: false);
-        if (!isSilentPartial && _config.EnableOverlay && !_userPaused && currentLine.Length >= 5)
+        if (!isSilentPartial && _config.IsAnyOverlayEnabled && !_userPaused && currentLine.Length >= 5)
         {
             long prevTick = Interlocked.Read(ref _lastOverlayPartialTick);
             if (prevTick == 0 || Stopwatch.GetElapsedTime(prevTick).TotalMilliseconds >= 90.0)
@@ -1096,7 +1097,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
             var prof = sessionProfile ?? _session.ActiveProfile;
             if (!outGuard.IsSafe)
             {
-                if (_config.EnableOverlay && !_userPaused)
+                if (_config.IsAnyOverlayEnabled && !_userPaused)
                 {
                     _overlay.ShowMessage(new OverlayCalloutMessage(
                         outGuard.FallbackReplacement,
@@ -1126,7 +1127,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                     spoken);
             }
 
-            if (_config.EnableOverlay && !_userPaused)
+            if (_config.IsAnyOverlayEnabled && !_userPaused)
             {
                 _overlay.ShowMessage(new OverlayCalloutMessage(
                     spoken,
@@ -1532,7 +1533,11 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                             Interlocked.Exchange(ref _pendingMatchEndReset, 0);
                             Interlocked.Exchange(ref _proactiveTurnSeq, 0);
                             lock (_followUpLock) _pendingLiveFollowUpTopic = null;
-                            lock (_hashLock) _lastSentHash = null;
+                            lock (_hashLock)
+                            {
+                                _lastSentHash = null;
+                                _lastPassiveWsHash = null;
+                            }
                             _localPhaseGate?.Reset();
                             EmitStats();
 
@@ -1728,11 +1733,12 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
                                         if (!postRecaptureSilent)
                                         {
+                                            int proactiveMaxFrames = _config.TokenEfficiencyMode.Equals("eco", StringComparison.OrdinalIgnoreCase) ? 2 : 3;
                                             var clip = _session.FrameRingBuffer.BuildVisualClipPayload(
                                                 _storyboardComposer,
                                                 captured,
-                                                maxFrames: 3,
-                                                maxAgeSeconds: 2.6,
+                                                maxFrames: proactiveMaxFrames,
+                                                maxAgeSeconds: 2.0,
                                                 jpegQuality: Math.Max(cfgQuality, 82),
                                                 isEn: isEnEval);
 
@@ -1772,6 +1778,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                                 ? $"{seqPrefix}{factNote}{ctxNote}{motionNote}{followUpNote} Live OBS play active. Focus strictly on [NOW] and speak 1 ultra-short predictive adjustment (5-9 words) for the next 1-2s; never narrate old finished plays and never speak 'NONE' aloud."
                                                 : $"{seqPrefix}{factNote}{ctxNote}{motionNote}{followUpNote} Jugada en vivo activa. Mirá [AHORA] y tirá 1 ajuste táctico bien corto (5 a 9 palabras) para los próximos 1-2s; no relates jugadas pasadas ni digas 'NONE'.";
 
+                                            _lastPassiveWsHash = captured?.PerceptualHash;
                                             Interlocked.Increment(ref _framesSent);
                                             if (_backend.SupportsMultiFrameTurn && clip.Frames.Count > 1)
                                                 await _backend.SendFrameSequenceAndPromptTurnAsync(clip.Frames, prompt, ct);
@@ -1799,8 +1806,14 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         long prevWsTick = Interlocked.Read(ref _lastWebSocketFrameTick);
                         double sinceWsMs = prevWsTick == 0 ? double.MaxValue : Stopwatch.GetElapsedTime(prevWsTick).TotalMilliseconds;
                         bool wsDue = prevWsTick == 0 || sinceWsMs >= wsPeriodMs;
-                        if (!sentAsTurn && !skipPassiveWs && !_modelSpeaking && !_pcmPlayer.IsPlayingAudio && wsDue && captured is not null)
+                        bool staticDuplicateWs = _lastPassiveWsHash is ulong prevWsHash &&
+                            captured is not null &&
+                            PerceptualHasher.HammingDistance(captured.PerceptualHash, prevWsHash) <= 1 &&
+                            captured.SparseLumaDelta is >= 0.0 and < 1.0 &&
+                            sinceWsMs < 4000.0;
+                        if (!sentAsTurn && !skipPassiveWs && !staticDuplicateWs && !_modelSpeaking && !_pcmPlayer.IsPlayingAudio && wsDue && captured is not null)
                         {
+                            _lastPassiveWsHash = captured.PerceptualHash;
                             Interlocked.Exchange(ref _lastWebSocketFrameTick, Stopwatch.GetTimestamp());
                             Interlocked.Increment(ref _framesSent);
                             await _backend.SendVideoFrameAsync(captured.JpegBytes, ct);
@@ -1912,6 +1925,7 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
         await _backend.DisposeAsync();
         _mic.Dispose();
         _pcmPlayer.Dispose();
+        (_localPhaseGate as IDisposable)?.Dispose();
         _capture.Dispose();
         _wakeSignal.Dispose();
         _turnGate.Dispose();

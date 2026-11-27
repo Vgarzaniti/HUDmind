@@ -36,7 +36,7 @@ public sealed class CoachEngineCoordinator : IAsyncDisposable
         IReadOnlyList<ProviderAccount> accounts,
         List<GameProfile> profiles,
         IVoiceOutputService sharedVoice,
-        OverlayWindow overlay,
+        IOverlayOutputService overlay,
         bool testMode,
         string? forcedGameId,
         bool wantLive,

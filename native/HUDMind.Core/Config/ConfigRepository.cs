@@ -10,7 +10,7 @@ namespace HUDMind.Core.Config;
 public static partial class SecretRedactor
 {
     [GeneratedRegex(
-        @"(AIza[0-9A-Za-z_\-]{12,}|AQ\.[0-9A-Za-z_\-\.]{12,}|gsk_[0-9A-Za-z_\-]{12,}|sk-[0-9A-Za-z_\-]{12,}|hf_[0-9A-Za-z]{12,}|xai-[0-9A-Za-z_\-]{12,}|r8_[0-9A-Za-z_\-]{12,}|(?:Bearer|Basic)\s+\S{6,}|(?i)[""']?(?:x-(?:goog-)?api-key|api_?key|access_token|authorization)[""']?\s*[:=]\s*(?:[""'][^""'\r\n]{4,}[""']|[^\s,;}{&""']{6,})|(?i)(?:api_?key|access_token|token|key)=[^&\s""']+)",
+        @"(AIza[0-9A-Za-z_\-]{12,}|AQ\.[0-9A-Za-z_\-\.]{12,}|gsk_[0-9A-Za-z_\-]{12,}|sk-[0-9A-Za-z_\-]{12,}|hf_[0-9A-Za-z]{12,}|xai-[0-9A-Za-z_\-]{12,}|r8_[0-9A-Za-z_\-]{12,}|(?:Bearer|Basic)\s+\S{6,}|(?i)[""']?(?:x-(?:goog-)?api-key|api_?key|access_token|authorization|rcon_password)[""']?\s*(?:[:=]\s*(?:[""'][^""'\r\n]{4,}[""']|[^\s,;}{&""']{6,})|\s+[""'][^""'\r\n]{4,}[""']|\s+[^\s""'\r\n]{6,})|(?i)(?:api_?key|access_token|token|key)=[^&\s""']+)",
         RegexOptions.Compiled)]
     private static partial Regex SecretPattern();
 
