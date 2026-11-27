@@ -11,7 +11,7 @@ This file provides immediate architectural, security, testing, and workflow cont
   - `HUDMind.Windows` (`net9.0-windows10.0.19041.0`): GDI `StretchBlt` capture, Win32 foreground/hotkeys/PTT, WinMM streaming audio, WinRT TTS/OCR, passive `WasapiAudioSceneMonitor`, current-user `SingleInstancePipeServer` wakeup & `.hudmind` IPC, `SystemDiagnosticsProbe`, `Overlay/` (`LoopbackRconToastBridge`, `InGameOverlayBridgeSetup`), `Sensors/` (`LoopbackWebSocketTelemetrySensor`, GSI TCP, Riot TLS, log tailers), `RuntimeHardeningGuard`, and `KnownFolders`.
   - `HUDMind.App` (`net9.0-windows10.0.19041.0` WPF): `MainWindow` (5 modules incl. `📊 Historial`, 3-step first-run wizard, upgrade "What's New" dialog, health diagnostics dialog, complete live ES/EN `ResourceDictionary` & imperative UI localization, `.hudmind` double-click/drag-drop restore, focus-scoped hotkey recorder, factory reset, inline toast banner, window geometry persistence, local multi-profile switcher/PIN lock, 1-click OpenRouter PKCE & 2-step Guided Gemini key assistant, `.hudmind` portable backup/restore, measurable leak bars, role/pacing selectors, `UpdateBanner`, 0% GPU LAN QR & OBS URL copy), global secret-redacted crash handler (`App.xaml.cs`), click-through/draggable custom `OverlayWindow` (`HWND_TOPMOST` re-assert + active monitor tracking), `Win32TrayIcon`, and `CoachEngineCoordinator`.
   - `HUDMind.Packer` (`net9.0` build tool, `IsPublishable=false`): compiles `profiles/**/*` and `ProtectedAssets/` into authenticated `HUDMind.Vault.bin` at build time.
-  - `HUDMind.Tests` (`net9.0`, 64 tests) & `HUDMind.Windows.Tests` (`net9.0-windows`, 22 tests).
+  - `HUDMind.Tests` (`net9.0`, 64 tests), `HUDMind.Windows.Tests` (`net9.0-windows`, 22 tests), & `HUDMind.UiTests` (`net9.0-windows` WPF UI Automation E2E, 7 tests).
   - `packaging/winget/` & `native/installer/HUDMind.iss`: WinGet 1.6 manifests + HKCU `.hudmind` file association & optional `CODESIGN_PFX_BASE64` Authenticode signing hook in `release.yml`.
   - `profiles/`: 7 game cartridges compiled into sealed `HUDMind.Vault.bin` (`profiles/*/*.md` filenames are runtime resources—never rename them).
   - `docs/`: All developer/project documentation in bilingual pairs (`*.es.md` and `*.en.md`).
@@ -29,6 +29,7 @@ This file provides immediate architectural, security, testing, and workflow cont
 dotnet build native/HUDMind.sln -c Release
 dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
+dotnet run --project native/HUDMind.UiTests/HUDMind.UiTests.csproj -c Release --no-build
 $p = Start-Process -FilePath ".\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe" -ArgumentList "--smoke-startup" -Wait -PassThru
 if ($p.ExitCode -ne 0) { throw "WPF --smoke-startup failed with exit code $($p.ExitCode)" }
 ```

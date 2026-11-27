@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HUDMind.Windows.Tests", "HU
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HUDMind.Packer", "HUDMind.Packer\HUDMind.Packer.csproj", "{6E4F88E1-3059-49F5-840C-88683795AEFE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HUDMind.UiTests", "HUDMind.UiTests\HUDMind.UiTests.csproj", "{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -97,6 +99,18 @@ Global
 		{6E4F88E1-3059-49F5-840C-88683795AEFE}.Release|x64.Build.0 = Release|Any CPU
 		{6E4F88E1-3059-49F5-840C-88683795AEFE}.Release|x86.ActiveCfg = Release|Any CPU
 		{6E4F88E1-3059-49F5-840C-88683795AEFE}.Release|x86.Build.0 = Release|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Debug|x64.Build.0 = Debug|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Debug|x86.Build.0 = Debug|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Release|Any CPU.Build.0 = Release|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Release|x64.ActiveCfg = Release|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Release|x64.Build.0 = Release|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Release|x86.ActiveCfg = Release|Any CPU
+		{21FDB0D1-B456-41FE-B23B-FF1E2D60CB27}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

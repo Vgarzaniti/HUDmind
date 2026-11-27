@@ -51,6 +51,7 @@ Leé este documento primero antes de modificar código, pruebas, documentación,
 | `native/HUDMind.Packer/` | Herramienta build (`net9.0`) | Sella `profiles/**/*` y `ProtectedAssets/` en `HUDMind.Vault.bin` (`IsPublishable=false`, cero NuGet) |
 | `native/HUDMind.Tests/` | Suite `net9.0` | 64 pruebas unitarias/integración multiplataforma (`Program.cs`) |
 | `native/HUDMind.Windows.Tests/` | Suite `net9.0-windows` | 22 pruebas nativas de WinMM, WASAPI, GSI, puente RCON loopback, WS telemetry, TLS pinning, DPAPI multi-perfil (`crypt32.dll`), pipe IPC instancia única + rutas `.hudmind`, diagnóstico de sistema, HKCU startup, logs, captura, voz, hardening y `KnownFolders` (`Program.cs`) |
+| `native/HUDMind.UiTests/` | Suite E2E WPF UI Automation (`net9.0-windows`) | 7 pruebas E2E reales sobre `HUDMind.Native.exe` aislado (`--data-dir --no-update-check`): asistente 3 pasos, 5 pestañas, idioma ES/EN en vivo, modales (Novedades, Diagnóstico, Perfiles/ID `HM-`), preview Overlay 0% GPU, importación `.hudmind` entre procesos por Named Pipe + descifrado AES-256-GCM y cierre/persistencia limpia (`Program.cs`) |
 | `profiles/` | Cartuchos de juegos | 7 perfiles incluidos (`aoe2_de`, `cs2`, `dota2`, `league_of_legends`, `rob_run`, `rocket_league`, `valorant`) sellados en `HUDMind.Vault.bin` |
 | `docs/` | Documentación bilingüe | Todos los docs tienen par `.es.md` y `.en.md` (`architecture`, `srs`, `test_plan_ieee29119`, `game_profiles_guide`, `versioning_and_releases`, `pull_request_guide`) |
 | `.github/` | CI/CD y gobernanza | `workflows/ci.yml`, `workflows/release.yml`, `PULL_REQUEST_TEMPLATE.md`, `ISSUE_TEMPLATE/*`, `dependabot.yml` |
@@ -74,9 +75,10 @@ Leé este documento primero antes de modificar código, pruebas, documentación,
 # 1. Compilar solución completa (debe pasar con 0 warnings / 0 errors)
 dotnet build native/HUDMind.sln -c Release
 
-# 2. Correr suite Core multiplataforma (64 pruebas) y suite nativa Windows (22 pruebas)
+# 2. Correr suite Core multiplataforma (64 pruebas), nativa Windows (22) y E2E WPF UI Automation (7)
 dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
+dotnet run --project native/HUDMind.UiTests/HUDMind.UiTests.csproj -c Release --no-build
 
 # 3. Smoke test WPF real (debe salir con código 0; usar Start-Process -Wait -PassThru porque es WinExe)
 $p = Start-Process -FilePath ".\native\HUDMind.App\bin\Release\net9.0-windows10.0.19041.0\HUDMind.Native.exe" -ArgumentList "--smoke-startup" -Wait -PassThru

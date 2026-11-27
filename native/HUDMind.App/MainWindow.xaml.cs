@@ -98,14 +98,21 @@ public partial class MainWindow : Window
     private readonly bool _smokeMode;
     private readonly bool _startMinimized;
     private readonly string? _startupArchivePath;
+    private readonly bool _disableStartupUpdateCheck;
     private DispatcherTimer? _toastTimer;
     private bool _overlayDragActive;
 
-    public MainWindow(bool smokeMode = false, bool startMinimized = false, string? startupArchivePath = null)
+    public MainWindow(
+        bool smokeMode = false,
+        bool startMinimized = false,
+        string? startupArchivePath = null,
+        string? customWorkspaceRoot = null,
+        bool disableStartupUpdateCheck = false)
     {
         _smokeMode = smokeMode;
         _startMinimized = startMinimized && !smokeMode;
         _startupArchivePath = _smokeMode ? null : startupArchivePath;
+        _disableStartupUpdateCheck = disableStartupUpdateCheck;
         if (_smokeMode)
         {
             ShowInTaskbar = false;
@@ -120,7 +127,9 @@ public partial class MainWindow : Window
             ShowInTaskbar = false;
         }
 
-        _baseWorkspaceRoot = ConfigRepository.DiscoverWorkspaceRoot();
+        _baseWorkspaceRoot = !string.IsNullOrWhiteSpace(customWorkspaceRoot)
+            ? customWorkspaceRoot
+            : ConfigRepository.DiscoverWorkspaceRoot();
         _userStore = new UserProfileStore(_baseWorkspaceRoot);
         var profileIndex = _userStore.LoadOrInitialize();
         _activeUserProfile = profileIndex.Profiles.First(p => p.ProfileId == profileIndex.ActiveProfileId);
@@ -221,12 +230,12 @@ public partial class MainWindow : Window
         _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(60) };
         _updateTimer.Tick += (_, _) =>
         {
-            if (_config.CheckUpdatesOnStartup && !_coordinator.IsRunning && !_checkingUpdates && !_downloadingUpdate)
+            if (!_disableStartupUpdateCheck && _config.CheckUpdatesOnStartup && !_coordinator.IsRunning && !_checkingUpdates && !_downloadingUpdate)
                 _ = CheckForUpdatesAsync(manual: false);
         };
         _updateTimer.Start();
 
-        if (_config.CheckUpdatesOnStartup)
+        if (!_disableStartupUpdateCheck && _config.CheckUpdatesOnStartup)
             _ = CheckForUpdatesAsync(manual: false);
         if (_config.EnableCompanionHud)
             _ = SyncCompanionHudServerAsync();
