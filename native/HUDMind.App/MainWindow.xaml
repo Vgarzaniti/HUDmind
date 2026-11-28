@@ -58,7 +58,7 @@
                     <DockPanel>
                         <Button x:Name="BtnVersionCheck"
                                 DockPanel.Dock="Left"
-                                Content="v1.7.1"
+                                Content="v1.8.0"
                                 FontSize="10.5"
                                 Padding="9,4"
                                 Background="#09121C"
@@ -371,9 +371,9 @@
                                 </ComboBox>
 
                                 <TextBlock Text="{DynamicResource StrLblPacingShort}" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
-                                <ComboBox x:Name="CmbQuickPacing" Width="148" Margin="0,0,12,4" SelectionChanged="CmbQuickPacing_SelectionChanged" ToolTip="Solo Eventos Clave evita interrupciones de rutina en medio de la acción">
-                                    <ComboBoxItem Content="{DynamicResource StrCmbPacingBalancedShort}" Tag="balanced" />
+                                <ComboBox x:Name="CmbQuickPacing" Width="158" Margin="0,0,12,4" SelectionChanged="CmbQuickPacing_SelectionChanged" ToolTip="Escucha continua en segundo plano: 'Solo si hace falta' calla en jugadas de rutina y solo interviene ante errores, peligros, eventos o F10">
                                     <ComboBoxItem Content="{DynamicResource StrCmbPacingEventShort}" Tag="event_first" />
+                                    <ComboBoxItem Content="{DynamicResource StrCmbPacingBalancedShort}" Tag="balanced" />
                                 </ComboBox>
 
                                 <TextBlock Text="{DynamicResource StrLblRoleShort}" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
@@ -392,7 +392,7 @@
                                 </ComboBox>
 
                                 <TextBlock Text="{DynamicResource StrLblAiEngine}" VerticalAlignment="Center" Foreground="#8EA4BC" FontSize="12" Margin="0,0,6,4" />
-                                <ComboBox x:Name="CmbEngineType" Width="180" Margin="0,0,12,4" ToolTip="Live permite hablar en tiempo real (~0.9s); Turnos analiza jugadas cada pocos segundos">
+                                <ComboBox x:Name="CmbEngineType" Width="180" Margin="0,0,12,4" ToolTip="Live escucha tu voz y mira en flujo continuo (~0.9s); Turnos observa de continuo y consulta IA solo cuando corresponde">
                                     <ComboBoxItem Content="{DynamicResource StrCmbEngineLive}" Tag="live" />
                                     <ComboBoxItem Content="{DynamicResource StrCmbEngineClassic}" Tag="classic" />
                                 </ComboBox>
@@ -923,7 +923,7 @@
                                             </ComboBox>
 
                                             <TextBlock Grid.Row="4" Grid.Column="0" Text="{DynamicResource StrLblLiveAutoFreq}" VerticalAlignment="Center" />
-                                            <ComboBox x:Name="CmbLiveAutoRate" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" ToolTip="Buffer continuo estilo OBS (~10 FPS en RAM · 25s historial): observa todo y predice jugadas incluso sin hablar">
+                                            <ComboBox x:Name="CmbLiveAutoRate" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" ToolTip="Observa continuamente tipo OBS (~10 FPS en RAM · 25s historial). Este ajuste solo limita el tiempo mínimo entre avisos automáticos para evitar spam y errores 429.">
                                                 <ComboBoxItem Content="{DynamicResource StrCmbRateManual}" Tag="0" />
                                                 <ComboBoxItem Content="{DynamicResource StrCmbRate10s}" Tag="10" />
                                                 <ComboBoxItem Content="{DynamicResource StrCmbRate6s}" Tag="6" />
@@ -945,9 +945,9 @@
                                             </ComboBox>
 
                                             <TextBlock Grid.Row="7" Grid.Column="0" Text="{DynamicResource StrLblPacingMode}" VerticalAlignment="Center" />
-                                            <ComboBox x:Name="CmbCoachingPacing" Grid.Row="7" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbCoachingPacing_SelectionChanged" ToolTip="Solo Eventos Clave evita interrupciones por reloj durante la acción intensa y solo avisa ante eventos reales, alertas críticas o F10">
-                                                <ComboBoxItem Content="{DynamicResource StrCmbPacingBalancedFull}" Tag="balanced" />
+                                            <ComboBox x:Name="CmbCoachingPacing" Grid.Row="7" Grid.Column="1" VerticalAlignment="Center" SelectionChanged="CmbCoachingPacing_SelectionChanged" ToolTip="Escucha continua en todo momento: 'Solo si hace falta' evita hablar por hablar y solo interviene ante errores reales, amenazas o F10.">
                                                 <ComboBoxItem Content="{DynamicResource StrCmbPacingEventFull}" Tag="event_first" />
+                                                <ComboBoxItem Content="{DynamicResource StrCmbPacingBalancedFull}" Tag="balanced" />
                                             </ComboBox>
 
                                             <TextBlock Grid.Row="8" Grid.Column="0" Text="{DynamicResource StrLblRoleFull}" VerticalAlignment="Center" />

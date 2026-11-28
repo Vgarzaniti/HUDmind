@@ -684,7 +684,7 @@ public partial class MainWindow : Window
             _ => AppLocalizationService.T("Amigable", "Friendly")
         };
         var pacingTag = _config.IsEventFirstMode
-            ? AppLocalizationService.T(" · Solo Eventos IGL", " · Events Only IGL")
+            ? AppLocalizationService.T(" · Solo si hace falta", " · High-Signal Only")
             : string.Empty;
         return AppLocalizationService.T(
             $"{engine} · Estilo {style}{pacingTag} · 0% GPU pasivo",
@@ -1179,13 +1179,13 @@ public partial class MainWindow : Window
     private void CmbQuickPacing_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncingUi || CmbQuickPacing is null) return;
-        ApplyPacingFromUi(GetSelectedTag(CmbQuickPacing, "balanced"));
+        ApplyPacingFromUi(GetSelectedTag(CmbQuickPacing, "event_first"));
     }
 
     private void CmbCoachingPacing_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_syncingUi || CmbCoachingPacing is null) return;
-        ApplyPacingFromUi(GetSelectedTag(CmbCoachingPacing, "balanced"));
+        ApplyPacingFromUi(GetSelectedTag(CmbCoachingPacing, "event_first"));
     }
 
     private void ApplyPacingFromUi(string pacing)
@@ -1207,8 +1207,8 @@ public partial class MainWindow : Window
         else
             ActiveBanner.Reset(_config.IsTextOnlyMode, BuildActiveBannerSubtitle());
         AppendLog(_config.IsEventFirstMode
-            ? "🎯 Ritmo IGL activo: Solo Eventos Clave (sin interrupciones de rutina)."
-            : "⚡ Ritmo activo: Continuo.");
+            ? "🎯 Escucha continua · Solo si hace falta (silencio salvo error, amenaza o F10)."
+            : "⚡ Escucha continua · Avisos más seguidos.");
     }
 
     private void CmbQuickRole_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -2771,7 +2771,7 @@ public partial class MainWindow : Window
         _config.MemoryMatchWindow = int.TryParse(GetSelectedTag(CmbMemoryWindow, "10"), out int memWin)
             ? PlayerMemoryStore.ClampWindowSize(memWin)
             : PlayerMemoryStore.DefaultWindowSize;
-        _config.CoachingPacingMode = GetSelectedTag(CmbCoachingPacing, "balanced");
+        _config.CoachingPacingMode = GetSelectedTag(CmbCoachingPacing, "event_first");
         _config.PlayerRoleTag = GetSelectedTag(CmbPlayerRole, "auto");
         _config.OverlayStyle = UserConfig.NormalizeOverlayStyle(GetSelectedTag(CmbOverlayStyle, UserConfig.OverlayStyleDiscordPill));
         _config.OverlayCompact = _config.OverlayStyle != UserConfig.OverlayStyleCard;

@@ -49,7 +49,7 @@ Leé este documento primero antes de modificar código, pruebas, documentación,
 | `native/HUDMind.Windows/Audio/` | Audio nativo WinMM / WinRT / WASAPI | `Win32AudioDevices`, `Win32StreamingMicCapture` (16kHz), `Win32StreamingPcmPlayer` (24kHz), `WasapiAudioSceneMonitor` (medidor COM pasivo), `WinRtNaturalVoiceService`, `Win32AudioCue`, `AudioDiagnosticsService` |
 | `native/HUDMind.App/` | UI WPF (`HUDMind.Native.exe`) | `App.xaml.cs` (SoftwareOnly + mutex + pipe IPC + manejador global de crash redactado), `MainWindow` (`MainWindow.DesktopFeatures.cs`: 5 módulos con `📊 Historial`, asistente inicial 3 pasos, diálogo de diagnóstico, i18n ES/EN en vivo, grabador visual de atajos sin hooks globales, reset fábrica, toasts, geometría persistida, perfiles/PIN, OpenRouter PKCE, Gemini 2 clics, `.hudmind`, `UpdateBanner` in-place, QR LAN, `?mode=obs`), `OverlayWindow.xaml/.cs` (click-through + arrastre libre personalizado), `Controls/` (`PersonalAccountDialogs`), `Services/` (`AppLocalizationService`, `HotkeyRecorderHelper`, `CoachEngineCoordinator`), `Win32TrayIcon.cs` |
 | `native/HUDMind.Packer/` | Herramienta build (`net9.0`) | Sella `profiles/**/*` y `ProtectedAssets/` en `HUDMind.Vault.bin` (`IsPublishable=false`, cero NuGet) |
-| `native/HUDMind.Tests/` | Suite `net9.0` | 65 pruebas unitarias/integración multiplataforma (`Program.cs`) |
+| `native/HUDMind.Tests/` | Suite `net9.0` | 66 pruebas unitarias/integración multiplataforma (`Program.cs`) |
 | `native/HUDMind.Windows.Tests/` | Suite `net9.0-windows` | 23 pruebas nativas de WinMM, WASAPI, GSI, puente RCON loopback, WS telemetry, TLS pinning, DPAPI multi-perfil (`crypt32.dll`), pipe IPC instancia única + rutas `.hudmind`, updater directo CWE-78-safe, diagnóstico de sistema, HKCU startup, logs, captura, voz, hardening y `KnownFolders` (`Program.cs`) |
 | `native/HUDMind.UiTests/` | Suite E2E WPF UI Automation (`net9.0-windows`) | 7 pruebas E2E reales sobre `HUDMind.Native.exe` aislado (`--data-dir --no-update-check`): asistente 3 pasos, 5 pestañas, idioma ES/EN en vivo, modales (Novedades, Diagnóstico, Perfiles/ID `HM-`), preview Overlay 0% GPU, importación `.hudmind` entre procesos por Named Pipe + descifrado AES-256-GCM y cierre/persistencia limpia (`Program.cs`) |
 | `profiles/` | Cartuchos de juegos | 7 perfiles incluidos (`aoe2_de`, `cs2`, `dota2`, `league_of_legends`, `rob_run`, `rocket_league`, `valorant`) sellados en `HUDMind.Vault.bin` |
@@ -75,7 +75,7 @@ Leé este documento primero antes de modificar código, pruebas, documentación,
 # 1. Compilar solución completa (debe pasar con 0 warnings / 0 errors)
 dotnet build native/HUDMind.sln -c Release
 
-# 2. Correr suite Core multiplataforma (65 pruebas), nativa Windows (23) y E2E WPF UI Automation (7)
+# 2. Correr suite Core multiplataforma (66 pruebas), nativa Windows (23) y E2E WPF UI Automation (7)
 dotnet run --project native/HUDMind.Tests/HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native/HUDMind.Windows.Tests/HUDMind.Windows.Tests.csproj -c Release --no-build
 dotnet run --project native/HUDMind.UiTests/HUDMind.UiTests.csproj -c Release --no-build

@@ -1502,7 +1502,7 @@ await RunTest("42. Switching games flushes old match cleanly, clears tilt/epoch,
 
     // Part A: Classic CoachOrchestrator game switch + Alt-Tab preservation
     var winDet = new MutableWindowDetector("cs2.exe");
-    var cfg = new UserConfig { MinInferenceIntervalSeconds = 0.05, RuntimeTiltRisk = true };
+    var cfg = new UserConfig { MinInferenceIntervalSeconds = 0.05, RuntimeTiltRisk = true, CoachingPacingMode = "balanced" };
     cfg.SetCommunicationMode("text_only");
     var flushed = new ConcurrentQueue<MatchSessionSnapshot>();
     int csCalls = 0;
@@ -2172,7 +2172,7 @@ await RunTest("48. Coach watches full silent play via dual-tier macro+micro buff
     var stubLive = new StubLiveBackend();
     var stubPlayer = new StubStreamingPlayer();
     var stubMic = new StubStreamingMic();
-    var silentCfg = new UserConfig { LiveAutoCoachSeconds = 0.4, VoiceLanguage = "es", TextLanguage = "es" };
+    var silentCfg = new UserConfig { LiveAutoCoachSeconds = 0.4, VoiceLanguage = "es", TextLanguage = "es", CoachingPacingMode = "balanced" };
     silentCfg.SetCommunicationMode("coach_voice");
     var rlProf = new GameProfile
     {
@@ -2254,7 +2254,7 @@ await RunTest("49. OBS 25s macro motion energy, anti-chop 2400 transient guard, 
 
     // 3) Even when CaptureIfChanged skips frames after frame 1, LatestSample keeps proactive nudges firing & empty turn retries in <=2.5s
     var oneShotBackend = new StubLiveBackend();
-    var silentCfg = new UserConfig { LiveAutoCoachSeconds = 12.0, VoiceLanguage = "es", TextLanguage = "es" };
+    var silentCfg = new UserConfig { LiveAutoCoachSeconds = 12.0, VoiceLanguage = "es", TextLanguage = "es", CoachingPacingMode = "balanced" };
     silentCfg.SetCommunicationMode("coach_voice");
     await using var silentLive = new RealtimeLiveCoachOrchestrator(
         oneShotBackend, silentCfg, [prof], new StubWindowDetector("RocketLeague.exe"),
@@ -2329,7 +2329,7 @@ await RunTest("50. Conversational connectors prevent skipped/cut audio, yield to
 
     // 2) CoachOrchestrator delivers early visualSpike (~0.50x cooldown) instead of dropping it in ConsumerLoopAsync!
     int aiCalls = 0;
-    var spikeCfg = new UserConfig { MinInferenceIntervalSeconds = 1.0, OverlayDurationSeconds = 2.0 };
+    var spikeCfg = new UserConfig { MinInferenceIntervalSeconds = 1.0, OverlayDurationSeconds = 2.0, CoachingPacingMode = "balanced" };
     spikeCfg.SetCommunicationMode("text_only");
     var spikeProf = new GameProfile { DirectoryPath = ".", Manifest = new GameManifest { GameId = "rl", DisplayName = "RL", CooldownSeconds = 5.0, CaptureFps = 2.0, ProcessNames = ["RocketLeague.exe"] } };
     var spikeRouter = new ProviderFailoverRouter(
@@ -2354,7 +2354,7 @@ await RunTest("50. Conversational connectors prevent skipped/cut audio, yield to
     var vadBackend = new StubLiveBackend();
     var vadMic = new StubStreamingMic();
     var vadTime = new ManualTimeProvider(DateTimeOffset.UtcNow);
-    var vadCfg = new UserConfig { LiveAutoCoachSeconds = 8.0, VoiceLanguage = "es", TextLanguage = "es" };
+    var vadCfg = new UserConfig { LiveAutoCoachSeconds = 8.0, VoiceLanguage = "es", TextLanguage = "es", CoachingPacingMode = "balanced" };
     vadCfg.SetCommunicationMode("conversation");
     await using (var vadLive = new RealtimeLiveCoachOrchestrator(
         vadBackend, vadCfg, [spikeProf], new StubWindowDetector("RocketLeague.exe"),
@@ -2404,7 +2404,7 @@ await RunTest("50. Conversational connectors prevent skipped/cut audio, yield to
 
     // 5) MENU phase gate must NOT spin OCR at 10Hz + SessionEpoch drops stale cross-game responses
     var menuSensor = new CountingSensor(new HudSensorSnapshot("MENU", "[TOP] PLAY COMPETITIVE", "", "", 20, true));
-    var menuCfg = new UserConfig { LiveAutoCoachSeconds = 2.0, VoiceLanguage = "es", TextLanguage = "es" };
+    var menuCfg = new UserConfig { LiveAutoCoachSeconds = 2.0, VoiceLanguage = "es", TextLanguage = "es", CoachingPacingMode = "balanced" };
     menuCfg.SetCommunicationMode("coach_voice");
     await using (var menuLive = new RealtimeLiveCoachOrchestrator(
         new StubLiveBackend(), menuCfg, [spikeProf], new StubWindowDetector("RocketLeague.exe"),
@@ -3008,7 +3008,7 @@ await RunTest("55. MeanAbsLumaDelta, CoachOrchestrator post-AI staleness/phase d
         Manifest = new GameManifest { GameId = "valorant", DisplayName = "Valorant", CooldownSeconds = 3.0, CaptureFps = 2.0, ProcessNames = ["VALORANT-Win64-Shipping.exe"] }
     };
     var acct = new ProviderAccount { Id = "p1", Provider = "gemini", Label = "G", Model = "gemini-2.5-flash", ApiKey = "AIzaTest1234567890", Priority = 1, Enabled = true };
-    var cfg = new UserConfig { CoachMode = "auto", EnableOverlay = true, VoiceLanguage = "es", TextLanguage = "es", MinInferenceIntervalSeconds = 0.5 };
+    var cfg = new UserConfig { CoachMode = "auto", EnableOverlay = true, VoiceLanguage = "es", TextLanguage = "es", MinInferenceIntervalSeconds = 0.5, CoachingPacingMode = "balanced" };
     cfg.SetCommunicationMode("text_only");
 
     var dynamicSensor = new MutablePhaseTelemetrySensor("VAL_LOG: Partida en curso");
@@ -3737,6 +3737,77 @@ await RunTest("65. GitHubReleaseUpdateService resolves in-place update paths & c
     return Task.CompletedTask;
 });
 
+// 66. Default Silence-First Coaching: event_first default, zero 2.5s retry spam after NONE, moderate motion <0.72 silence & prompt guards
+await RunTest("66. Silence-First Default: event_first out-of-the-box, no 2.5s NONE retry spam, moderate motion <0.72 stays silent", async () =>
+{
+    // A. Default UserConfig & ResetPreferencesToDefaults() both default to event_first
+    var defCfg = new UserConfig();
+    Assert(defCfg.CoachingPacingMode == "event_first" && defCfg.IsEventFirstMode,
+        $"Default CoachingPacingMode must be event_first (got '{defCfg.CoachingPacingMode}')");
+
+    defCfg.CoachingPacingMode = "balanced";
+    defCfg.ResetPreferencesToDefaults();
+    Assert(defCfg.CoachingPacingMode == "event_first" && defCfg.IsEventFirstMode,
+        $"ResetPreferencesToDefaults must restore CoachingPacingMode=event_first (got '{defCfg.CoachingPacingMode}')");
+
+    // B. Prompts enforce silence-first without filler talk while preserving live native-audio guardrails
+    var rlProf = new GameProfile
+    {
+        DirectoryPath = ".",
+        Manifest = new GameManifest { GameId = "rocket_league", DisplayName = "Rocket League", CooldownSeconds = 0.25, CaptureFps = 6.0, ProcessNames = ["RocketLeague.exe"] }
+    };
+    var liveSysEs = CoachingPersonaBuilder.BuildLiveSystemInstruction(defCfg, rlProf);
+    var liveSysEn = CoachingPersonaBuilder.BuildLiveSystemInstruction(new UserConfig { VoiceLanguage = "en", TextLanguage = "en" }, rlProf);
+    var turnPromptEs = CompactWireProtocol.BuildRealtimePrompt(rlProf, defCfg, "", forceAdvice: false);
+    Assert(liveSysEs.Contains("SILENCIO ANTE TODO", StringComparison.Ordinal) &&
+           liveSysEn.Contains("SILENCE FIRST", StringComparison.Ordinal) &&
+           !liveSysEs.Contains("devolvé NONE", StringComparison.OrdinalIgnoreCase) &&
+           turnPromptEs.Contains("NO HABLES POR HABLAR", StringComparison.Ordinal),
+        $"Silence-first prompt markers missing.\nES={liveSysEs}\nTURN={turnPromptEs}");
+
+    // C. Moderate routine camera motion (0.50 energy < 0.72 event_first threshold) produces 0 AI calls in CoachOrchestrator
+    int classicCalls = 0;
+    var acct = new ProviderAccount { Id = "p66", Provider = "gemini", Label = "G", Model = "gemini-2.5-flash", ApiKey = "AIzaTest66Silence000", Priority = 1, Enabled = true };
+    var classicCfg = new UserConfig { MinInferenceIntervalSeconds = 0.25, EnableOverlay = true, VoiceLanguage = "es", TextLanguage = "es" };
+    classicCfg.SetCommunicationMode("text_only");
+    var router = new ProviderFailoverRouter([acct], a => new CountingAnalyzeProvider(a, () => Interlocked.Increment(ref classicCalls)));
+    var modCap = new ConfigurableMotionStubCapture(hammingBits: 10); // 10/20 = 0.50 motion energy (< 0.72 event_first threshold)
+    await using (var orch = new CoachOrchestrator(
+        classicCfg, [rlProf], router, new StubWindowDetector("RocketLeague.exe"),
+        modCap, new RecordingVoice(), new RecordingOverlay(),
+        testMode: true, forcedGameId: "rocket_league", storyboardComposer: new StubStoryboardComposer()))
+    {
+        await orch.StartAsync();
+        await Task.Delay(750);
+        Assert(Volatile.Read(ref classicCalls) == 0,
+            $"Default event_first CoachOrchestrator must NOT trigger on moderate routine motion (0.50 < 0.72), calls={classicCalls}");
+        await orch.StopAsync();
+    }
+
+    // D. RealtimeLiveCoachOrchestrator in event_first suppresses the 2.5s retryDue follow-up after returning '[NONE]'
+    var stubLive = new StubLiveBackend();
+    var liveCfg = new UserConfig { LiveAutoCoachSeconds = 1.5, VoiceLanguage = "es", TextLanguage = "es" };
+    liveCfg.SetCommunicationMode("coach_voice");
+    var cap = new ConfigurableMotionStubCapture(hammingBits: 64); // 1.0 spike triggers initial check cleanly
+    await using (var live = new RealtimeLiveCoachOrchestrator(
+        stubLive, liveCfg, [rlProf], new StubWindowDetector("RocketLeague.exe"),
+        cap, new StubStreamingPlayer(), new StubStreamingMic(), new RecordingOverlay(),
+        testMode: true, forcedGameId: "rocket_league", storyboardComposer: new StubStoryboardComposer()))
+    {
+        await live.StartAsync();
+        for (int i = 0; i < 60 && stubLive.SentTextTurns < 1; i++) await Task.Delay(30);
+        Assert(stubLive.SentTextTurns == 1, $"Expected initial visual-spike watch turn, got {stubLive.SentTextTurns}");
+
+        // Calm gameplay returns -> model replies '[NONE]' silently -> must stay quiet across >2.6s (NO retryDue timer nudge!)
+        cap.HammingBits = 0;
+        stubLive.EmitTurnComplete("[NONE]");
+        await Task.Delay(2800);
+        Assert(stubLive.SentTextTurns == 1,
+            $"event_first Live coach must remain silent after '[NONE]' without firing 2.5s timer retry (turns={stubLive.SentTextTurns})");
+        await live.StopAsync();
+    }
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 
@@ -4146,6 +4217,31 @@ sealed class HighMotionStubCapture : IScreenCaptureService
     {
         long n = Interlocked.Increment(ref _calls);
         ulong hash = (n % 2 == 0) ? 0x0000000000000000UL : 0xFFFFFFFFFFFFFFFFUL;
+        return (new CapturedFrameData([0xFF, 0xD8, (byte)(n & 0xFF), 0xFF, 0xD9], hash, frameId, 1.0, 1.0, DateTimeOffset.UtcNow, isForced), false);
+    }
+    public void Dispose() { }
+}
+
+sealed class ConfigurableMotionStubCapture(int hammingBits) : IScreenCaptureService
+{
+    private long _calls;
+    private int _hammingBits = hammingBits;
+    public int HammingBits
+    {
+        get => Volatile.Read(ref _hammingBits);
+        set => Volatile.Write(ref _hammingBits, value);
+    }
+    public (CapturedFrameData? Frame, bool SkippedByHash) CaptureIfChanged(
+        int monitorIndex, (int Left, int Top, int Width, int Height)? regionRect,
+        int targetWidth, int targetHeight, int jpegQuality, long frameId,
+        ulong? lastAcceptedHash, int phashThreshold, bool isForced)
+    {
+        long n = Interlocked.Increment(ref _calls);
+        int bits = Math.Clamp(HammingBits, 0, 64);
+        ulong highHash = bits == 64 ? ulong.MaxValue : (bits == 0 ? 0UL : (1UL << bits) - 1UL);
+        ulong hash = (n % 2 == 0) ? 0UL : highHash;
+        if (lastAcceptedHash is ulong prev && PerceptualHasher.HammingDistance(prev, hash) <= phashThreshold && !isForced)
+            return (null, true);
         return (new CapturedFrameData([0xFF, 0xD8, (byte)(n & 0xFF), 0xFF, 0xD9], hash, frameId, 1.0, 1.0, DateTimeOffset.UtcNow, isForced), false);
     }
     public void Dispose() { }

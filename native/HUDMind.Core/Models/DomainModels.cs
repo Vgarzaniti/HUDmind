@@ -274,7 +274,7 @@ public sealed class UserConfig
     public string CoachStyle { get; set; } = "friendly";
 
     [JsonPropertyName("coaching_pacing_mode")]
-    public string CoachingPacingMode { get; set; } = "balanced";
+    public string CoachingPacingMode { get; set; } = "event_first";
 
     [JsonPropertyName("player_role_tag")]
     public string PlayerRoleTag { get; set; } = "auto";

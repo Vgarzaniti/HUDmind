@@ -1079,8 +1079,9 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
         if (!staleEpoch && effectiveSilent)
         {
-            // Proactive turn returned empty/NONE -> enforce dedicated <=2.5s retry delay (immune to spike/multiplier bypass)
-            if (wasProactive && _config.LiveAutoCoachSeconds > 0)
+            // Proactive turn returned empty/NONE -> enforce retry backoff ONLY in periodic balanced mode;
+            // in event_first mode remain silent until a real event, high-action spike, F10, or user speech occurs.
+            if (wasProactive && !_config.IsEventFirstMode && _config.LiveAutoCoachSeconds > 0)
             {
                 double retryDelay = Math.Min(_config.LiveAutoCoachSeconds, 2.5);
                 Interlocked.Exchange(
@@ -1605,7 +1606,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                         }
 
                         double motionEnergy = _session.FrameRingBuffer.ComputeRecentMotionEnergy();
-                        bool visualSpike = motionEnergy >= 0.58 && _session.FrameRingBuffer.MacroCount >= 2;
+                        double liveSpikeThreshold = _config.IsEventFirstMode ? 0.76 : 0.58;
+                        bool visualSpike = motionEnergy >= liveSpikeThreshold && _session.FrameRingBuffer.MacroCount >= 2;
 
                         // Queue natural follow-up strictly for verified tactical alerts occurring mid-utterance (never generic camera pans)
                         if (tactical.TriggerImmediate && autoSec > 0 && !tactical.ShouldSilence &&
@@ -1652,10 +1654,12 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
 
                         bool regularDue = canVoiceTurn && postSpeechReady && !_config.IsEventFirstMode &&
                             (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(scaledAutoSec).Ticks);
-                        double eventFloorSec = visualSpike ? Math.Max(4.2, autoSec * 0.60) : Math.Max(3.5, autoSec * 0.50);
+                        double eventFloorSec = _config.IsEventFirstMode
+                            ? Math.Max(5.5, autoSec * 0.85)
+                            : (visualSpike ? Math.Max(4.2, autoSec * 0.60) : Math.Max(3.5, autoSec * 0.50));
                         bool eventDue = canVoiceTurn && postSpeechReady && (tactical.TriggerImmediate || visualSpike || followUpTopic is not null) &&
                             (lastNudgeTicks == 0 || (nowTicks - lastNudgeTicks) >= TimeSpan.FromSeconds(followUpTopic is not null ? 1.2 : eventFloorSec).Ticks);
-                        bool retryDue = canVoiceTurn && retryAfterTicks > 0 && nowTicks >= retryAfterTicks;
+                        bool retryDue = canVoiceTurn && !_config.IsEventFirstMode && retryAfterTicks > 0 && nowTicks >= retryAfterTicks;
                         bool shouldNudge = (regularDue || eventDue || retryDue) && !tactical.ShouldSilence;
 
                         bool sentAsTurn = false;
@@ -1777,8 +1781,8 @@ public sealed class RealtimeLiveCoachOrchestrator : ICoachEngine
                                                 ? $"{clip.SequenceNote} "
                                                 : string.Empty;
                                             string prompt = isEnEval
-                                                ? $"{seqPrefix}{factNote}{ctxNote}{motionNote}{followUpNote} Live OBS play active. Focus strictly on [NOW] and speak 1 ultra-short predictive adjustment (5-9 words) for the next 1-2s; never narrate old finished plays and never speak 'NONE' aloud."
-                                                : $"{seqPrefix}{factNote}{ctxNote}{motionNote}{followUpNote} Jugada en vivo activa. Mirá [AHORA] y tirá 1 ajuste táctico bien corto (5 a 9 palabras) para los próximos 1-2s; no relates jugadas pasadas ni digas 'NONE'.";
+                                                ? $"{seqPrefix}{factNote}{ctxNote}{motionNote}{followUpNote} Continuous watch active on [NOW]. Speak 1 sharp callout (5-9 words) ONLY if a real mistake, immediate danger, missed resource, or decisive play needs fixing right now; if clean or routine play, remain completely mute (silent '[NONE]', never talk just to fill silence)."
+                                                : $"{seqPrefix}{factNote}{ctxNote}{motionNote}{followUpNote} Escucha continua activa mirando [AHORA]. Tirá 1 ajuste táctico corto (5 a 9 palabras) ÚNICAMENTE si ves un error real, peligro inmediato o jugada decisiva que corregir; si viene bien o es rutina, mantenete totalmente mudo en silencio (respuesta muda '[NONE]', jamás hables porque sí).";
 
                                             _lastPassiveWsHash = captured?.PerceptualHash;
                                             Interlocked.Increment(ref _framesSent);

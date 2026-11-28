@@ -88,8 +88,8 @@ public static class CoachingPersonaBuilder
         if (config.IsEventFirstMode)
         {
             sb.Append(isEn
-                ? " Pacing=EVENT-FIRST IGL: stay silent during routine play; speak ONLY on decisive threats, openings, or player questions."
-                : " Ritmo=SOLO EVENTOS CLAVE (IGL): mantené silencio durante rotaciones de rutina y hablá SOLO ante amenazas o aperturas reales.");
+                ? " Pacing=EVENT-FIRST IGL: continuous watch with zero filler—stay silent (NONE) during clean or routine play and speak ONLY when you detect a genuine mistake, immediate threat, missed resource, or decisive opening."
+                : " Ritmo=SOLO EVENTOS CLAVE (IGL): escucha continua sin relleno—mantené silencio absoluto (NONE) si todo va bien o es rutina y hablá ÚNICAMENTE ante errores claros, peligros reales o ventanas decisivas.");
         }
         var cleanLeaks = SanitizeField(config.RuntimeLeakFocus, 220);
         if (!string.IsNullOrWhiteSpace(cleanLeaks))

@@ -28,19 +28,19 @@ public static class AppReleaseHighlights
         {
             return (
                 $"✨ What's New in HUDMind v{verText}",
+                "• 🎯 Continuous High-Signal Watch (Silence-First Default): HUDMind observes passively in background and speaks ONLY when a genuine mistake, danger, or key timing needs fixing—never filling silence by timer.\n" +
                 "• ⚡ True In-Place Auto-Update (Zero File Dialogs): updates download directly where HUDMind already runs (`SHA-256` verified) and restart cleanly in place.\n" +
                 "• 📦 Double-Click & Drag-Drop `.hudmind`: open or drop encrypted profile backups anywhere in HUDMind to restore settings & memory safely.\n" +
-                "• 🌐 Complete Live ES/EN Interface: every tab, selector, modal dialog, Active Banner badge, and in-game HUD overlay switches cleanly in real time.\n" +
-                "• 🆕 Upgrade Summary & WinGet Ready: automatic release highlights after updating, plus official `winget` manifests and CI Authenticode hook readiness."
+                "• 🌐 Complete Live ES/EN Interface & WinGet Ready: every tab, selector, modal dialog, Active Banner badge, and in-game HUD overlay switches cleanly in real time, plus official `winget` manifests."
             );
         }
 
         return (
             $"✨ Qué hay de nuevo en HUDMind v{verText}",
+            "• 🎯 Escucha Continua · Solo Cuando Hace Falta (Por Defecto): HUDMind observa pasivamente en segundo plano y habla ÚNICAMENTE ante un error real, peligro o ventana clara—sin tirar tips por reloj ni relleno.\n" +
             "• ⚡ Actualización Directa en la Misma Carpeta (Sin Abrir Explorador): baja directo donde ya está HUDMind con verificación `SHA-256` y reinicia listo.\n" +
             "• 📦 Doble clic y Arrastrar `.hudmind`: abrí o soltá tu backup cifrado desde cualquier carpeta de Windows para restaurar perfil, reglas y memoria al instante.\n" +
-            "• 🌐 Interfaz 100% Bilingüe ES/EN en Vivo: todas las pestañas, listas desplegables, diálogos, tarjeta de perfil y cartel HUD sobre el juego cambian al instante sin reiniciar.\n" +
-            "• 🆕 Novedades automáticas y soporte WinGet: resumen visual tras cada actualización, manifiestos listos para `winget` y firma opcional Authenticode en CI."
+            "• 🌐 Interfaz 100% Bilingüe ES/EN en Vivo y WinGet: todas las pestañas, listas, diálogos, tarjeta de perfil y overlay cambian al instante sin reiniciar, con manifiestos listos para `winget`."
         );
     }
 

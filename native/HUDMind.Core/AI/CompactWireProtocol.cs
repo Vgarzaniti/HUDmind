@@ -129,6 +129,12 @@ public static class CompactWireProtocol
                 ? "MANUAL REQUEST (F10): the player explicitly asked for one tactical read of this exact moment.\n"
                 : "SOLICITUD MANUAL (F10): el jugador pidió una lectura táctica clara de esta situación exacta ahora.\n");
         }
+        else
+        {
+            sb.Append(isEn
+                ? "SILENCE UNLESS NEEDED: if play is clean/routine and nothing genuinely important needs fixing right now, use NONE (stay completely silent).\n"
+                : "NO HABLES POR HABLAR: si la jugada es de rutina o viene bien sin error ni peligro real, devolvé NONE en silencio (dejá vacío el consejo).\n");
+        }
 
         sb.Append(isEn
             ? "STRICT single-line format: PHASE|what you see in 6-9 words|H/M/L/NONE|crisp micro-callout <=8 words (empty if NONE)"
@@ -196,6 +202,12 @@ public static class CompactWireProtocol
             sb.Append(isEn
                 ? "MANUAL F10: give the best tactical read based ONLY on the verified sensor data.\n"
                 : "F10 MANUAL: entregá la mejor lectura basada SOLO en los datos de sensores disponibles.\n");
+        }
+        else
+        {
+            sb.Append(isEn
+                ? "SILENCE UNLESS NEEDED: if telemetry looks routine/healthy, output NONE cleanly.\n"
+                : "NO HABLES POR HABLAR: si los sensores están estables sin alerta ni error real, devolvé NONE.\n");
         }
 
         sb.Append(isEn
