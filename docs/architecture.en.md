@@ -1,6 +1,6 @@
 > 🌐 **Idioma / Language:** [🇪🇸 Español](architecture.es.md) | **[🇺🇸 English](architecture.en.md)**
 
-# Technical Architecture — HUDMind Native v1.7.0 (ISO/IEC/IEEE 42010)
+# Technical Architecture — HUDMind Native v1.7.1 (ISO/IEC/IEEE 42010)
 
 This document describes the modular architecture of **HUDMind Native** on **.NET 9**, its strict separation between pure core logic, the Win32 layer, and the WPF UI, its polymorphic coaching engines, and its Architecture Decision Records (ADRs).
 

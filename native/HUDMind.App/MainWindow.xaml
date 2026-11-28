@@ -58,7 +58,7 @@
                     <DockPanel>
                         <Button x:Name="BtnVersionCheck"
                                 DockPanel.Dock="Left"
-                                Content="v1.7.0"
+                                Content="v1.7.1"
                                 FontSize="10.5"
                                 Padding="9,4"
                                 Background="#09121C"
@@ -269,7 +269,7 @@
                                 Margin="0,0,6,0"
                                 Click="BtnDownloadUpdate_Click" />
                         <Button x:Name="BtnLaunchUpdate"
-                                Content="▶ Abrir nuevo .exe"
+                                Content="⚡ Instalar y Reiniciar"
                                 Background="#0284C7"
                                 BorderBrush="#22D3EE"
                                 Foreground="#FFFFFF"
@@ -277,12 +277,6 @@
                                 Margin="0,0,6,0"
                                 Visibility="Collapsed"
                                 Click="BtnLaunchUpdate_Click" />
-                        <Button x:Name="BtnOpenUpdateFolder"
-                                Content="📂 Carpeta"
-                                Padding="10,5"
-                                Margin="0,0,6,0"
-                                Visibility="Collapsed"
-                                Click="BtnOpenUpdateFolder_Click" />
                         <Button x:Name="BtnOpenReleasePage"
                                 Content="🌐 Ver en GitHub"
                                 Padding="10,5"
