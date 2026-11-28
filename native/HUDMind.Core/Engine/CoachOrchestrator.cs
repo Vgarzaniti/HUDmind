@@ -692,7 +692,8 @@ public sealed class CoachOrchestrator : ICoachEngine
                     double tacticalEarlyCd = Math.Max(2.2, EffectiveCooldown(profile) * 0.45);
                     double spikeEarlyCd = Math.Max(2.8, EffectiveCooldown(profile) * 0.50);
                     double motionEnergy = _session.FrameRingBuffer.ComputeRecentMotionEnergy();
-                    bool visualSpike = motionEnergy >= 0.42 && _session.FrameRingBuffer.MacroCount >= 2;
+                    double classicSpikeThreshold = _config.IsEventFirstMode ? 0.72 : 0.42;
+                    bool visualSpike = motionEnergy >= classicSpikeThreshold && _session.FrameRingBuffer.MacroCount >= 2;
 
                     bool tacticalReady = tactical.TriggerImmediate &&
                         _stateMachine.CanAnalyze(tacticalEarlyCd, _config.MinInferenceIntervalSeconds);

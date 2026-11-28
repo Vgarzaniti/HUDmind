@@ -19,7 +19,7 @@
   - `🎙 Charla`: micrófono en vivo (**Mic Abierto con supresión de eco** o **Push-to-Talk** por tecla) + voz del coach.
   - `🔊 Solo voz del coach`: micrófono apagado, el coach te habla y podés escribir por chat.
   - `💬 Solo texto`: 100% silencioso, solo chat escrito y overlay.
-- **Calibración por Nivel / Rango, Rol Activo, Modo Eventos Clave e Historial de Fugas:** adapta profundidad y vocabulario desde *Principiante* hasta *Pro / GC / Radiant / Faceit 10* en Español o Inglés, permite elegir tu rol en partida (`1v1`, `2v2/3v3`, `Entry`, `AWP`, `Anchor/IGL`, `Jungla`, etc.), operar en **Ritmo Solo Eventos Clave** (silencio IGL durante acción intensa, feedback por intentos en `training`, alertas locales `<5 ms` determinísticas y tarjetas breves en tiempo muerto), y medir fugas repetidas (**Hoy vs Anterior** en `logs/leaks.json`).
+- **Calibración por Nivel / Rango, Rol Activo, Escucha Continua · Solo Cuando Hace Falta e Historial de Fugas:** adapta profundidad y vocabulario desde *Principiante* hasta *Pro / GC / Radiant / Faceit 10* en Español o Inglés, permite elegir tu rol en partida (`1v1`, `2v2/3v3`, `Entry`, `AWP`, `Anchor/IGL`, `Jungla`, etc.), opera por defecto en **Escucha Continua · Solo Cuando Hace Falta (`event_first`)** (silencio absoluto sin relleno ni disparos por reloj durante juego limpio, alertas locales `<5 ms` determinísticas, feedback por intentos en `training` y tarjetas breves en tiempo muerto), y mide fugas repetidas (**Hoy vs Anterior** en `logs/leaks.json`).
 - **Cuentas Locales Personales ($0 Servidor) + Conexión IA en 1–2 Clics:** creá o alterná perfiles independientes en la misma PC con **identificador único irrepetible alfanumérico (`HM-XXXX-XXXX-XXXX`)**, avatar, color, juego favorito, bloqueo opcional por **PIN (PBKDF2-SHA256)** y backups portables cifrados **AES-256-GCM (`.hudmind`)** con **apertura por doble clic en Windows o arrastrando a la ventana**; conectá tu IA sin saber programar con **OpenRouter OAuth PKCE en 1 clic** o **asistente guiado Gemini Live en 2 clics**.
 - **Audio Hardware Flexible, Tray y Sistema Overlay Híbrido (0% GPU):** selector de micrófono y salida de audio WinMM, prueba de micrófono con medición RMS, minimización a **Bandeja del Sistema (Win32 `Shell_NotifyIconW`)** con **reactivación de instancia única por Named Pipe**, inicio opcional con Windows (`--minimized`, **desactivado por defecto**), overlay **PerMonitorV2** transparente estilo Discord con re-assert `WS_EX_TOPMOST`, **arrastre libre en pantalla (`📌 Mover Overlay`)** y auto-seguimiento del monitor activo (3 modos: *Solo texto flotante*, *Cápsula* y *Tarjeta*, opacidad `0%–95%` con texto nítido 0% GPU, mini-feed `1–3` mensajes, indicador PTT/ondas en vivo y Quick-Chat `F7` sin Alt-Tab), **Companion Web HUD** por HTTP SSE (2º monitor, **QR en 0% GPU** para abrir en celular por Wi-Fi LAN con token `?k=` o URL transparente **`?mode=obs`** para OBS Browser Source), **puente HUD RCON local** asistido (`127.0.0.1`) para pantalla completa exclusiva, pestaña **`📊 Historial`** (lector Markdown integrado + barras visuales CPU de fugas), **asistente de bienvenida en 3 pasos**, **cartel automático "Qué hay de nuevo"** al actualizar, **diagnóstico del sistema (`🩺 Diagnóstico`)**, **GUI completa ES/EN en vivo** (pestañas, combos, overlay y diálogos), **grabador visual de teclas**, **guardián global de errores con logs redactados**, persistencia de ventana, toasts no bloqueantes, manifiestos `packaging/winget/` y botón **`📊 Resumen Partida`** al finalizar.
 
@@ -91,7 +91,7 @@ En la página de **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/lat
 # 1. Compilar solución completa (0 warnings / 0 errors)
 dotnet build native\HUDMind.sln -c Release
 
-# 2. Suite Core multiplataforma (65 pruebas) + suite nativa Windows (23) + E2E WPF UI (7) + smoke WPF
+# 2. Suite Core multiplataforma (66 pruebas) + suite nativa Windows (23) + E2E WPF UI (7) + smoke WPF
 dotnet run --project native\HUDMind.Tests\HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native\HUDMind.Windows.Tests\HUDMind.Windows.Tests.csproj -c Release --no-build
 dotnet run --project native\HUDMind.UiTests\HUDMind.UiTests.csproj -c Release --no-build
@@ -146,7 +146,7 @@ También podés iniciar directamente con [HUDMind.bat](HUDMind.bat).
 │   ├── HUDMind.Windows/            # GDI Capture, WinMM Audio/Devices, WinRT Natural TTS + OneCore, GSI, OCR, InPlaceUpdater, KnownFolders
 │   ├── HUDMind.App/                # UI WPF (0% GPU), PerMonitorV2 Overlay, Tray Icon Win32 y Updater In-Place
 │   ├── HUDMind.Packer/             # Compilador build-time del vault AES-256-GCM (Perfiles + ProtectedAssets -> Vault.bin)
-│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (65 casos)
+│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (66 casos)
 │   ├── HUDMind.Windows.Tests/      # Suite Win32, WASAPI, GSI, puente RCON, WS, TLS, DPAPI, IPC, Updater, Diagnóstico, Startup, Audio & KnownFolders (23 casos)
 │   └── HUDMind.UiTests/            # Suite E2E WPF UI Automation sobre HUDMind.Native.exe aislado (7 casos)
 ├── packaging/winget/               # Manifiestos WinGet 1.6 listos para publicación

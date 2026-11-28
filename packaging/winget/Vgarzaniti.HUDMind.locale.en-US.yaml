@@ -1,5 +1,5 @@
 PackageIdentifier: Vgarzaniti.HUDMind
-PackageVersion: 1.7.1
+PackageVersion: 1.8.0
 PackageLocale: en-US
 Publisher: Vgarzaniti
 PublisherUrl: https://github.com/Vgarzaniti/HUDmind
@@ -23,6 +23,6 @@ Tags:
   - ai-coach
   - overlay
   - dotnet
-ReleaseNotesUrl: https://github.com/Vgarzaniti/HUDmind/releases/tag/v1.7.1
+ReleaseNotesUrl: https://github.com/Vgarzaniti/HUDmind/releases/tag/v1.8.0
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0
