@@ -51,6 +51,20 @@ public sealed record UpdateDownloadResult(
     string Message
 );
 
+public enum InPlaceUpdateKind
+{
+    PortableSelfReplace,
+    SilentSetupInstaller,
+    LaunchInstaller
+}
+
+public sealed record InPlaceUpdatePlan(
+    string StagedFilePath,
+    string? TargetExePath,
+    InPlaceUpdateKind UpdateKind,
+    bool UsesCurrentDirectory
+);
+
 /// <summary>
 /// Checks GitHub Releases for newer HUDMind binaries and downloads release assets
 /// through an SSRF-hardened, redirect-validated, SHA-256-verifying pipeline.
@@ -147,6 +161,197 @@ public sealed partial class GitHubReleaseUpdateService
         {
             return false;
         }
+    }
+
+    public static string SanitizeTagForFileName(string? rawTag)
+    {
+        if (string.IsNullOrWhiteSpace(rawTag))
+            return "latest";
+
+        var cleaned = new string(rawTag.Trim()
+            .Select(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-' ? c : '_')
+            .ToArray())
+            .Trim('.', '_');
+
+        while (cleaned.Contains("..", StringComparison.Ordinal))
+            cleaned = cleaned.Replace("..", ".", StringComparison.Ordinal);
+
+        return string.IsNullOrWhiteSpace(cleaned) ? "latest" : cleaned;
+    }
+
+    public static bool CanWriteDirectory(string? directoryPath)
+    {
+        var safeDir = TryNormalizeSafeLocalDirPath(directoryPath);
+        if (safeDir is null)
+            return false;
+
+        try
+        {
+            Directory.CreateDirectory(safeDir);
+            if ((File.GetAttributes(safeDir) & FileAttributes.ReparsePoint) != 0)
+                return false;
+
+            var probe = Path.Combine(safeDir, $".hudmind-writecheck.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
+            File.WriteAllBytes(probe, []);
+            File.Delete(probe);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Computes an automatic, zero-file-dialog destination for downloaded updates:
+    /// portable binaries download alongside the running executable and stage for in-place swap;
+    /// Setup-installed binaries download to a local updates staging folder for silent in-place upgrade.
+    /// </summary>
+    public static InPlaceUpdatePlan ResolveInPlaceUpdatePlan(
+        string? currentProcessPath,
+        string? baseDirectory,
+        string fallbackWorkspaceRoot,
+        string tagName,
+        ReleaseAssetInfo asset,
+        Func<string?, bool>? canWriteDirectoryOverride = null)
+    {
+        ArgumentNullException.ThrowIfNull(asset);
+        if (string.IsNullOrWhiteSpace(fallbackWorkspaceRoot))
+            throw new ArgumentException("Fallback workspace root cannot be empty.", nameof(fallbackWorkspaceRoot));
+
+        var canWrite = canWriteDirectoryOverride ?? CanWriteDirectory;
+        bool isInstalledSetup = IsInstalledSetupDirectory(baseDirectory);
+        bool isSetupAsset = asset.Name.Contains("setup", StringComparison.OrdinalIgnoreCase) ||
+            asset.Name.Contains("installer", StringComparison.OrdinalIgnoreCase);
+
+        string safeTag = SanitizeTagForFileName(tagName);
+        string? fullTargetExe = TryNormalizeSafeLocalExePath(currentProcessPath);
+        string? exeDir = fullTargetExe is not null
+            ? Path.GetDirectoryName(fullTargetExe)
+            : TryNormalizeSafeLocalDirPath(baseDirectory);
+        bool appDirWritable = canWrite(exeDir);
+
+        var safeUpdatesDir = Path.GetFullPath(Path.Combine(fallbackWorkspaceRoot, "updates"));
+        string safeAssetFile = SanitizeFileName(asset.Name);
+
+        if (isInstalledSetup && isSetupAsset)
+        {
+            var setupDir = appDirWritable && exeDir is not null
+                ? Path.GetFullPath(Path.Combine(exeDir, "updates"))
+                : safeUpdatesDir;
+            var setupPath = Path.GetFullPath(Path.Combine(setupDir, $"HUDMind-Setup-{safeTag}.exe"));
+            return new InPlaceUpdatePlan(setupPath, fullTargetExe, InPlaceUpdateKind.SilentSetupInstaller, appDirWritable);
+        }
+
+        if (!isSetupAsset && fullTargetExe is not null && appDirWritable && exeDir is not null)
+        {
+            var baseExeName = Path.GetFileNameWithoutExtension(fullTargetExe);
+            var stagedPath = Path.GetFullPath(Path.Combine(exeDir, $".{baseExeName}.update-{safeTag}.staged.exe"));
+            return new InPlaceUpdatePlan(stagedPath, fullTargetExe, InPlaceUpdateKind.PortableSelfReplace, UsesCurrentDirectory: true);
+        }
+
+        var fallbackName = safeAssetFile.Contains(safeTag, StringComparison.OrdinalIgnoreCase)
+            ? safeAssetFile
+            : $"{Path.GetFileNameWithoutExtension(safeAssetFile)}-{safeTag}.exe";
+        var fallbackPath = Path.GetFullPath(Path.Combine(safeUpdatesDir, fallbackName));
+        var kind = !isSetupAsset && fullTargetExe is not null && appDirWritable
+            ? InPlaceUpdateKind.PortableSelfReplace
+            : (isSetupAsset && isInstalledSetup ? InPlaceUpdateKind.SilentSetupInstaller : InPlaceUpdateKind.LaunchInstaller);
+        return new InPlaceUpdatePlan(fallbackPath, fullTargetExe, kind, UsesCurrentDirectory: false);
+    }
+
+    /// <summary>
+    /// Deletes temporary staged updater binaries and abandoned download files safely.
+    /// </summary>
+    public static int CleanupStagedUpdateArtifacts(params string?[] directories)
+    {
+        int deleted = 0;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var rawDir in directories)
+        {
+            var dir = TryNormalizeSafeLocalDirPath(rawDir);
+            if (dir is null || !Directory.Exists(dir) || !seen.Add(dir))
+                continue;
+
+            try
+            {
+                if ((File.GetAttributes(dir) & FileAttributes.ReparsePoint) != 0)
+                    continue;
+
+                bool isDedicatedUpdatesSubdir = string.Equals(
+                    Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+                    "updates",
+                    StringComparison.OrdinalIgnoreCase);
+
+                foreach (var file in Directory.EnumerateFiles(dir))
+                {
+                    var name = Path.GetFileName(file);
+                    bool isTempArtifact =
+                        name.Contains(".update-", StringComparison.OrdinalIgnoreCase) &&
+                        name.EndsWith(".staged.exe", StringComparison.OrdinalIgnoreCase);
+                    bool isDownloadTmp =
+                        name.Contains(".download.", StringComparison.OrdinalIgnoreCase) &&
+                        name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase);
+                    bool isOldCachedInstaller = isDedicatedUpdatesSubdir &&
+                        name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+
+                    if (!isTempArtifact && !isDownloadTmp && !isOldCachedInstaller)
+                        continue;
+
+                    if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                        continue;
+
+                    File.Delete(file);
+                    deleted++;
+                }
+            }
+            catch
+            {
+                // Best-effort cleanup of locked or protected update staging files
+            }
+        }
+
+        return deleted;
+    }
+
+    private static string? TryNormalizeSafeLocalDirPath(string? rawPath)
+    {
+        if (string.IsNullOrWhiteSpace(rawPath))
+            return null;
+
+        try
+        {
+            var trimmed = rawPath.Trim().Trim('"');
+            if (!Path.IsPathRooted(trimmed) || trimmed.StartsWith(@"\\", StringComparison.Ordinal))
+                return null;
+            if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) || uri.IsUnc)
+                return null;
+            if (trimmed.Split(['\\', '/'], StringSplitOptions.RemoveEmptyEntries).Any(s => s == ".."))
+                return null;
+            return Path.GetFullPath(trimmed);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TryNormalizeSafeLocalExePath(string? rawPath)
+    {
+        var full = TryNormalizeSafeLocalDirPath(rawPath);
+        if (full is null || !full.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            return null;
+        return full;
+    }
+
+    private static string SanitizeFileName(string? rawName)
+    {
+        var name = Path.GetFileName((rawName ?? string.Empty).Trim());
+        if (string.IsNullOrWhiteSpace(name))
+            return "HUDMind-update.exe";
+        var cleaned = new string(name.Select(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-' ? c : '_').ToArray());
+        return cleaned.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? cleaned : $"{cleaned}.exe";
     }
 
     public static Version NormalizeVersion(Version v) =>
@@ -601,7 +806,7 @@ public sealed partial class GitHubReleaseUpdateService
             req.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
         }
         if (_http.DefaultRequestHeaders.UserAgent.Count == 0)
-            req.Headers.UserAgent.ParseAdd("HUDMind-Native/1.7.0");
+            req.Headers.UserAgent.ParseAdd("HUDMind-Native/1.7.1");
         return req;
     }
 

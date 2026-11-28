@@ -1,5 +1,5 @@
 PackageIdentifier: Vgarzaniti.HUDMind
-PackageVersion: 1.7.0
+PackageVersion: 1.7.1
 Platform:
   - Windows.Desktop
 MinimumOSVersion: 10.0.19041.0
@@ -14,7 +14,7 @@ FileExtensions:
   - hudmind
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/Vgarzaniti/HUDmind/releases/download/v1.7.0/HUDMind-Setup-win-x64.exe
+    InstallerUrl: https://github.com/Vgarzaniti/HUDmind/releases/download/v1.7.1/HUDMind-Setup-win-x64.exe
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
 ManifestType: installer
 ManifestVersion: 1.6.0

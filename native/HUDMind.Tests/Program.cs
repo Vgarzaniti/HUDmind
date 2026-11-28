@@ -3652,6 +3652,91 @@ await RunTest("64. AppReleaseHighlights detects upgrades, guards .hudmind paths 
     return Task.CompletedTask;
 });
 
+// 65. GitHubReleaseUpdateService in-place download planning & staged artifact cleanup (no SaveFileDialog / Downloads clutter)
+await RunTest("65. GitHubReleaseUpdateService resolves in-place update paths & cleans staged artifacts safely", () =>
+{
+    var tmp = Path.Combine(Path.GetTempPath(), $"hudmind_upd_t65_{Guid.NewGuid():N}");
+    var portableDir = Path.Combine(tmp, "portable");
+    var setupDir = Path.Combine(tmp, "installed");
+    var fallbackDir = Path.Combine(tmp, "appdata");
+    Directory.CreateDirectory(portableDir);
+    Directory.CreateDirectory(setupDir);
+    Directory.CreateDirectory(fallbackDir);
+
+    try
+    {
+        var currentPortableExe = Path.Combine(portableDir, "HUDMind.Native.exe");
+        File.WriteAllBytes(currentPortableExe, [0x4D, 0x5A]);
+
+        var standaloneAsset = new ReleaseAssetInfo(
+            "HUDMind.Native-Standalone-win-x64.exe",
+            "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.8.0/HUDMind.Native-Standalone-win-x64.exe",
+            90_000_000,
+            "application/octet-stream");
+        var setupAsset = new ReleaseAssetInfo(
+            "HUDMind-Setup-win-x64.exe",
+            "https://github.com/Vgarzaniti/HUDmind/releases/download/v1.8.0/HUDMind-Setup-win-x64.exe",
+            85_000_000,
+            "application/octet-stream");
+
+        // 1) Portable writable dir: downloads directly into current executable's folder as hidden-dot staged binary
+        var portablePlan = GitHubReleaseUpdateService.ResolveInPlaceUpdatePlan(
+            currentPortableExe,
+            portableDir,
+            fallbackDir,
+            "v1.8.0",
+            standaloneAsset,
+            _ => true);
+        Assert(portablePlan.UpdateKind == InPlaceUpdateKind.PortableSelfReplace &&
+               portablePlan.UsesCurrentDirectory &&
+               string.Equals(Path.GetDirectoryName(portablePlan.StagedFilePath), Path.GetFullPath(portableDir), StringComparison.OrdinalIgnoreCase) &&
+               Path.GetFileName(portablePlan.StagedFilePath).Equals(".HUDMind.Native.update-v1.8.0.staged.exe", StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(portablePlan.TargetExePath, Path.GetFullPath(currentPortableExe), StringComparison.OrdinalIgnoreCase),
+            $"Unexpected portable plan: {portablePlan}");
+
+        // 2) Installed Setup directory (unins000.exe present) + read-only install folder fallback
+        File.WriteAllBytes(Path.Combine(setupDir, "unins000.exe"), [0x4D, 0x5A]);
+        var setupExe = Path.Combine(setupDir, "HUDMind.Native.exe");
+        var setupPlan = GitHubReleaseUpdateService.ResolveInPlaceUpdatePlan(
+            setupExe,
+            setupDir,
+            fallbackDir,
+            "../v1.8.0",
+            setupAsset,
+            _ => false);
+        Assert(setupPlan.UpdateKind == InPlaceUpdateKind.SilentSetupInstaller &&
+               !setupPlan.UsesCurrentDirectory &&
+               setupPlan.StagedFilePath.StartsWith(Path.GetFullPath(Path.Combine(fallbackDir, "updates")), StringComparison.OrdinalIgnoreCase) &&
+               !setupPlan.StagedFilePath.Contains("..", StringComparison.Ordinal) &&
+               Path.GetFileName(setupPlan.StagedFilePath).StartsWith("HUDMind-Setup-", StringComparison.Ordinal),
+            $"Unexpected setup fallback plan: {setupPlan}");
+
+        // 3) Stale artifact cleanup removes only temporary updater artifacts and leaves active executable intact
+        var staleStaged = Path.Combine(portableDir, ".HUDMind.Native.update-v1.7.0.staged.exe");
+        var staleTmp = Path.Combine(portableDir, ".HUDMind.Native.update-v1.7.0.staged.exe.download.123.tmp");
+        var updatesSub = Path.Combine(fallbackDir, "updates");
+        Directory.CreateDirectory(updatesSub);
+        var staleSetup = Path.Combine(updatesSub, "HUDMind-Setup-v1.7.0.exe");
+        File.WriteAllBytes(staleStaged, [1]);
+        File.WriteAllBytes(staleTmp, [2]);
+        File.WriteAllBytes(staleSetup, [3]);
+
+        int deleted = GitHubReleaseUpdateService.CleanupStagedUpdateArtifacts(portableDir, updatesSub);
+        Assert(deleted == 3 &&
+               File.Exists(currentPortableExe) &&
+               !File.Exists(staleStaged) &&
+               !File.Exists(staleTmp) &&
+               !File.Exists(staleSetup),
+            $"Cleanup count={deleted}; active exe must survive while staged files are removed");
+    }
+    finally
+    {
+        try { Directory.Delete(tmp, recursive: true); } catch { }
+    }
+
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nRESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

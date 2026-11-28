@@ -28,19 +28,19 @@ public static class AppReleaseHighlights
         {
             return (
                 $"✨ What's New in HUDMind v{verText}",
+                "• ⚡ True In-Place Auto-Update (Zero File Dialogs): updates download directly where HUDMind already runs (`SHA-256` verified) and restart cleanly in place.\n" +
                 "• 📦 Double-Click & Drag-Drop `.hudmind`: open or drop encrypted profile backups anywhere in HUDMind to restore settings & memory safely.\n" +
                 "• 🌐 Complete Live ES/EN Interface: every tab, selector, modal dialog, Active Banner badge, and in-game HUD overlay switches cleanly in real time.\n" +
-                "• 🆕 Upgrade Summary & WinGet Ready: automatic release highlights after updating, plus official `winget` manifests and CI Authenticode hook readiness.\n" +
-                "• 📌 v1.6 Desktop Polish Built-In: free draggable overlay (`📌 Move Overlay`), `📊 History` Markdown reader + CPU leak progress bars, 3-step Setup Wizard, `🩺 Diagnostics`, visual focus hotkey recorder, named-pipe bring-to-front, and redacted crash logs."
+                "• 🆕 Upgrade Summary & WinGet Ready: automatic release highlights after updating, plus official `winget` manifests and CI Authenticode hook readiness."
             );
         }
 
         return (
             $"✨ Qué hay de nuevo en HUDMind v{verText}",
+            "• ⚡ Actualización Directa en la Misma Carpeta (Sin Abrir Explorador): baja directo donde ya está HUDMind con verificación `SHA-256` y reinicia listo.\n" +
             "• 📦 Doble clic y Arrastrar `.hudmind`: abrí o soltá tu backup cifrado desde cualquier carpeta de Windows para restaurar perfil, reglas y memoria al instante.\n" +
             "• 🌐 Interfaz 100% Bilingüe ES/EN en Vivo: todas las pestañas, listas desplegables, diálogos, tarjeta de perfil y cartel HUD sobre el juego cambian al instante sin reiniciar.\n" +
-            "• 🆕 Novedades automáticas y soporte WinGet: resumen visual tras cada actualización, manifiestos listos para `winget` y firma opcional Authenticode en CI.\n" +
-            "• 📌 Base Desktop v1.6 incluida: overlay movible libre (`📌 Mover Overlay`), pestaña `📊 Historial` con barras de progreso de fugas, asistente de 3 pasos, `🩺 Diagnóstico`, grabador visual de atajos y recuperación de errores redactada."
+            "• 🆕 Novedades automáticas y soporte WinGet: resumen visual tras cada actualización, manifiestos listos para `winget` y firma opcional Authenticode en CI."
         );
     }
 

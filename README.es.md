@@ -80,7 +80,7 @@ En la página de **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/lat
 
 ### 4. Cómo actualizar y desinstalar
 
-- **Actualizar en 1 clic:** HUDMind verifica GitHub Releases al abrir (y cada 60 min en reposo), descarga la nueva versión en la carpeta que elijas *(por defecto tu carpeta de Descargas)*, valida el hash contra **`SHA256SUMS.txt`** y, si usás la versión instalada con Setup (`unins000.exe`), aplica la actualización silenciosa y reabre la app automáticamente (`⚡ Instalar y Reiniciar`).
+- **Actualizar directo donde ya está (sin abrir carpetas):** HUDMind verifica GitHub Releases al abrir (y cada 60 min en reposo), descarga la nueva versión directamente en tu carpeta actual o caché de actualizaciones sin abrir cuadros de "Guardar como", valida el hash **`SHA256SUMS.txt`** y aplica el reemplazo automático reiniciando la app (`⚡ Instalar y Reiniciar` o `🔄 Reemplazar y Reiniciar`).
 - **Desinstalar:** desde **Configuración de Windows → Aplicaciones → HUDMind → Desinstalar** (o ejecutando `%LOCALAPPDATA%\Programs\HUDMind\unins000.exe`). Para borrar también tu configuración guardada y reseñas, eliminá `%LOCALAPPDATA%\HUDMind\`.
 
 ---
@@ -91,7 +91,7 @@ En la página de **[Releases](https://github.com/Vgarzaniti/HUDmind/releases/lat
 # 1. Compilar solución completa (0 warnings / 0 errors)
 dotnet build native\HUDMind.sln -c Release
 
-# 2. Suite Core multiplataforma (64 pruebas) + suite nativa Windows (22) + E2E WPF UI (7) + smoke WPF
+# 2. Suite Core multiplataforma (65 pruebas) + suite nativa Windows (23) + E2E WPF UI (7) + smoke WPF
 dotnet run --project native\HUDMind.Tests\HUDMind.Tests.csproj -c Release --no-build
 dotnet run --project native\HUDMind.Windows.Tests\HUDMind.Windows.Tests.csproj -c Release --no-build
 dotnet run --project native\HUDMind.UiTests\HUDMind.UiTests.csproj -c Release --no-build
@@ -143,11 +143,11 @@ También podés iniciar directamente con [HUDMind.bat](HUDMind.bat).
 ├── native/
 │   ├── HUDMind.sln                 # Solución .NET 9
 │   ├── HUDMind.Core/               # Modelos, Config/SSRF/Redaction, Embedded Profiles, Updates, Wire Protocol, Motores
-│   ├── HUDMind.Windows/            # GDI Capture, WinMM Audio/Devices, WinRT Natural TTS + OneCore, GSI, OCR, KnownFolders
-│   ├── HUDMind.App/                # UI WPF (0% GPU), PerMonitorV2 Overlay, Tray Icon Win32 y Banner de Updates
+│   ├── HUDMind.Windows/            # GDI Capture, WinMM Audio/Devices, WinRT Natural TTS + OneCore, GSI, OCR, InPlaceUpdater, KnownFolders
+│   ├── HUDMind.App/                # UI WPF (0% GPU), PerMonitorV2 Overlay, Tray Icon Win32 y Updater In-Place
 │   ├── HUDMind.Packer/             # Compilador build-time del vault AES-256-GCM (Perfiles + ProtectedAssets -> Vault.bin)
-│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (64 casos)
-│   ├── HUDMind.Windows.Tests/      # Suite Win32, WASAPI, GSI, puente RCON, WS, TLS, DPAPI, IPC, Diagnóstico, Startup, Audio & KnownFolders (22 casos)
+│   ├── HUDMind.Tests/              # Suite de pruebas Core multiplataforma (65 casos)
+│   ├── HUDMind.Windows.Tests/      # Suite Win32, WASAPI, GSI, puente RCON, WS, TLS, DPAPI, IPC, Updater, Diagnóstico, Startup, Audio & KnownFolders (23 casos)
 │   └── HUDMind.UiTests/            # Suite E2E WPF UI Automation sobre HUDMind.Native.exe aislado (7 casos)
 ├── packaging/winget/               # Manifiestos WinGet 1.6 listos para publicación
 ├── profiles/                       # Perfiles de juegos y prompts tácticos

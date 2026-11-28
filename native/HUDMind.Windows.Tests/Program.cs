@@ -894,6 +894,41 @@ await RunTest("W22. SingleInstancePipeServer forwards long .hudmind IMPORT path 
         $"Expected exact IMPORT path round-trip (got '{(done == received.Task ? await received.Task : "TIMEOUT")}')");
 });
 
+// W23. InPlaceUpdaterLauncher guards unsafe paths & passes swap targets safely via environment variables
+await RunTest("W23. InPlaceUpdaterLauncher validates local paths & builds CWE-78-safe swap ProcessStartInfo", () =>
+{
+    var tmpDir = Path.Combine(Path.GetTempPath(), $"hudmind_w23_{Guid.NewGuid():N}", "Dir With 'Quotes' & Spaces");
+    Directory.CreateDirectory(tmpDir);
+    try
+    {
+        var stagedExe = Path.Combine(tmpDir, ".HUDMind.Native.update-v1.8.0.staged.exe");
+        var targetExe = Path.Combine(tmpDir, "HUDMind.Native.exe");
+        File.WriteAllBytes(stagedExe, [0x4D, 0x5A]);
+        File.WriteAllBytes(targetExe, [0x4D, 0x5A]);
+
+        Assert(!InPlaceUpdaterLauncher.IsSafeLocalExePath(@"\\attacker\share\evil.exe") &&
+               !InPlaceUpdaterLauncher.IsSafeLocalExePath(Path.Combine(tmpDir, "not_an_exe.txt")) &&
+               !InPlaceUpdaterLauncher.TryBuildPortableSwapStartInfo(1234, stagedExe, stagedExe, out _, out _),
+            "Must reject UNC paths, non-exe files, and self-identical staged/target paths");
+
+        bool built = InPlaceUpdaterLauncher.TryBuildPortableSwapStartInfo(4321, stagedExe, targetExe, out var psi, out var err);
+        Assert(built && psi is not null &&
+               psi.CreateNoWindow &&
+               !psi.UseShellExecute &&
+               psi.ArgumentList.Count > 0 &&
+               !psi.ArgumentList.Any(a => a.Contains(tmpDir, StringComparison.OrdinalIgnoreCase)) &&
+               string.Equals(psi.Environment["HUDMIND_UPD_PID"], "4321", StringComparison.Ordinal) &&
+               string.Equals(psi.Environment["HUDMIND_UPD_SRC"], Path.GetFullPath(stagedExe), StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(psi.Environment["HUDMIND_UPD_DST"], Path.GetFullPath(targetExe), StringComparison.OrdinalIgnoreCase),
+            $"Failed building CWE-78-safe ProcessStartInfo (built={built}, err={err})");
+    }
+    finally
+    {
+        try { Directory.Delete(Path.GetDirectoryName(tmpDir)!, recursive: true); } catch { }
+    }
+    return Task.CompletedTask;
+});
+
 Console.WriteLine($"\nWINDOWS SUITE RESULT: {passed} passed, {failed} failed.");
 Environment.Exit(failed > 0 ? 1 : 0);
 

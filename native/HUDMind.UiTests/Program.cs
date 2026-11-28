@@ -20,6 +20,8 @@ internal static class Program
         var tempRoot = Path.Combine(Path.GetTempPath(), $"hudmind-e2e-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
         var exePath = UiAutomationDriver.LocateAppExecutable();
+        var exeVerInfo = FileVersionInfo.GetVersionInfo(exePath);
+        var expectedAppVersion = $"{exeVerInfo.ProductMajorPart}.{exeVerInfo.ProductMinorPart}.{exeVerInfo.ProductBuildPart}";
         Process? primaryProc = null;
 
         var results = new List<(string Name, bool Passed, string? Error)>();
@@ -137,13 +139,13 @@ internal static class Program
                 UiAutomationDriver.Invoke(UiAutomationDriver.WaitForElement(mainWin, "BtnWhatsNew"));
                 var whatsNewWin = UiAutomationDriver.WaitForWindow(pid, "HUDMindWhatsNewDialog", mainWin);
                 UiAutomationDriver.AssertTrue(
-                    whatsNewWin.Current.Name.Contains("1.7.0", StringComparison.Ordinal),
-                    $"Expected What's New dialog title to mention '1.7.0', got '{whatsNewWin.Current.Name}'");
+                    whatsNewWin.Current.Name.Contains(expectedAppVersion, StringComparison.Ordinal),
+                    $"Expected What's New dialog title to mention '{expectedAppVersion}', got '{whatsNewWin.Current.Name}'");
                 var bodyEl = UiAutomationDriver.WaitForElement(whatsNewWin, "TxtWhatsNewBody");
                 UiAutomationDriver.WaitForNonEmptyText(
                     bodyEl,
                     t => t.Contains(".hudmind", StringComparison.OrdinalIgnoreCase) && t.Contains("WinGet", StringComparison.OrdinalIgnoreCase),
-                    "What's New v1.7.0 notes");
+                    $"What's New v{expectedAppVersion} notes");
                 UiAutomationDriver.Invoke(UiAutomationDriver.WaitForElement(whatsNewWin, "BtnWhatsNewOk"));
                 UiAutomationDriver.WaitUntilWindowGone(pid, "HUDMindWhatsNewDialog", mainWin);
 
@@ -196,7 +198,7 @@ internal static class Program
                 var restoredConfig = new UserConfig
                 {
                     HasCompletedOnboarding = true,
-                    LastSeenAppVersion = "1.7.0",
+                    LastSeenAppVersion = expectedAppVersion,
                     TextLanguage = "es",
                     VoiceLanguage = "es",
                     CheckUpdatesOnStartup = false,
@@ -265,8 +267,8 @@ internal static class Program
                 var cfg = repo.LoadUserConfig();
                 UiAutomationDriver.AssertTrue(cfg.HasCompletedOnboarding, "Expected HasCompletedOnboarding=true persisted.");
                 UiAutomationDriver.AssertTrue(
-                    string.Equals(cfg.LastSeenAppVersion, "1.7.0", StringComparison.Ordinal),
-                    $"Expected LastSeenAppVersion='1.7.0', got '{cfg.LastSeenAppVersion}'");
+                    string.Equals(cfg.LastSeenAppVersion, expectedAppVersion, StringComparison.Ordinal),
+                    $"Expected LastSeenAppVersion='{expectedAppVersion}', got '{cfg.LastSeenAppVersion}'");
                 UiAutomationDriver.AssertTrue(
                     cfg.WindowWidth is >= 920,
                     $"Expected persisted WindowWidth >= 920, got {cfg.WindowWidth}");

@@ -82,6 +82,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _updateCts;
     private AppUpdateInfo? _availableUpdate;
     private string? _downloadedUpdatePath;
+    private InPlaceUpdatePlan? _downloadedUpdatePlan;
     private string? _dismissedUpdateTag;
     private bool _checkingUpdates;
     private bool _downloadingUpdate;
@@ -202,6 +203,9 @@ public partial class MainWindow : Window
         BindInitialUi();
         WireDesktopFeatureHandlers();
         RestoreWindowGeometryFromConfig();
+        var (appVer, _) = GitHubReleaseUpdateService.GetCurrentAppVersion();
+        if (BtnVersionCheck is not null)
+            BtnVersionCheck.Content = $"v{GitHubReleaseUpdateService.FormatVersion(appVer)}";
         Loaded += MainWindow_Loaded;
         StateChanged += MainWindow_StateChanged;
         Closing += MainWindow_Closing;
@@ -221,6 +225,9 @@ public partial class MainWindow : Window
             _ = Dispatcher.BeginInvoke(Close);
             return;
         }
+        GitHubReleaseUpdateService.CleanupStagedUpdateArtifacts(
+            Path.GetDirectoryName(Environment.ProcessPath),
+            Path.Combine(_baseWorkspaceRoot, "updates"));
         if (_startMinimized || (_config.MinimizeToTray && WindowState == WindowState.Minimized))
         {
             WindowState = WindowState.Minimized;
@@ -3018,11 +3025,13 @@ public partial class MainWindow : Window
     {
         _availableUpdate = update;
         _downloadedUpdatePath = null;
+        _downloadedUpdatePlan = null;
 
         UpdateBanner.Background = new SolidColorBrush(MediaColor.FromRgb(0x0C, 0x4A, 0x6E));
         UpdateBanner.BorderBrush = new SolidColorBrush(MediaColor.FromRgb(0x38, 0xBD, 0xF8));
-        TxtUpdateBannerTitle.Text =
-            $"🚀 Nueva actualización disponible: {update.TagName} (tenés v{GitHubReleaseUpdateService.FormatVersion(update.CurrentVersion)})";
+        TxtUpdateBannerTitle.Text = AppLocalizationService.T(
+            $"🚀 Nueva actualización disponible: {update.TagName} (tenés v{GitHubReleaseUpdateService.FormatVersion(update.CurrentVersion)})",
+            $"🚀 Update available: {update.TagName} (current v{GitHubReleaseUpdateService.FormatVersion(update.CurrentVersion)})");
 
         var notesSummary = GitHubReleaseUpdateService.SummarizeReleaseNotes(update.ReleaseNotes);
         if (update.PreferredAsset is not null)
@@ -3031,13 +3040,15 @@ public partial class MainWindow : Window
                 ? $" ({update.PreferredAsset.SizeBytes / (1024.0 * 1024.0):F1} MB)"
                 : string.Empty;
             TxtUpdateBannerDetails.Text = string.IsNullOrEmpty(notesSummary)
-                ? $"{update.PreferredAsset.Name}{sizeMb} · Tocá 'Descargar actualización' para bajar el nuevo .exe."
+                ? AppLocalizationService.T(
+                    $"{update.PreferredAsset.Name}{sizeMb} · Se descarga directo donde ya está HUDMind (sin abrir Explorador).",
+                    $"{update.PreferredAsset.Name}{sizeMb} · Downloads directly in-place (no file picker).")
                 : $"{update.PreferredAsset.Name}{sizeMb} · {notesSummary}";
         }
         else
         {
             TxtUpdateBannerDetails.Text = string.IsNullOrEmpty(notesSummary)
-                ? "Tocá 'Descargar actualización' para abrir la release oficial en GitHub."
+                ? AppLocalizationService.T("Tocá 'Descargar desde GitHub' para ver la release oficial.", "Click 'Open GitHub Release' to view official downloads.")
                 : notesSummary;
         }
 
@@ -3045,15 +3056,12 @@ public partial class MainWindow : Window
         UpdateProgressBar.Visibility = Visibility.Collapsed;
         UpdateProgressBar.Value = 0;
 
-        bool isSetupUpdate = update.PreferredAsset is not null &&
-            update.PreferredAsset.Name.Contains("setup", StringComparison.OrdinalIgnoreCase);
         BtnDownloadUpdate.Content = update.PreferredAsset is not null
-            ? (isSetupUpdate ? "⬇ Descargar e Instalar" : "⬇ Descargar actualización")
-            : "⬇ Descargar desde GitHub";
+            ? AppLocalizationService.T("⬇ Actualizar aquí", "⬇ Update Here")
+            : AppLocalizationService.T("⬇ Ver en GitHub", "⬇ Download on GitHub");
         BtnDownloadUpdate.Visibility = Visibility.Visible;
         BtnDownloadUpdate.IsEnabled = true;
         BtnLaunchUpdate.Visibility = Visibility.Collapsed;
-        BtnOpenUpdateFolder.Visibility = Visibility.Collapsed;
         UpdateBanner.Visibility = Visibility.Visible;
 
         BtnVersionCheck.Content = $"⬆ {update.TagName}";
@@ -3073,34 +3081,14 @@ public partial class MainWindow : Window
         }
 
         var asset = _availableUpdate.PreferredAsset;
-        var baseName = Path.GetFileNameWithoutExtension(asset.Name);
-        var suggestedName = asset.Name.Contains(_availableUpdate.TagName, StringComparison.OrdinalIgnoreCase)
-            ? asset.Name
-            : $"{baseName}-{_availableUpdate.TagName}.exe";
+        var plan = GitHubReleaseUpdateService.ResolveInPlaceUpdatePlan(
+            Environment.ProcessPath,
+            AppContext.BaseDirectory,
+            _baseWorkspaceRoot,
+            _availableUpdate.TagName,
+            asset);
 
-        var dlg = new Microsoft.Win32.SaveFileDialog
-        {
-            Title = $"Guardar HUDMind {_availableUpdate.TagName}",
-            InitialDirectory = KnownFolders.GetDownloadsDirectory(),
-            FileName = suggestedName,
-            Filter = "Ejecutable Windows (*.exe)|*.exe",
-            DefaultExt = ".exe",
-            AddExtension = true
-        };
-        if (dlg.ShowDialog(this) != true)
-            return;
-
-        var currentExe = Environment.ProcessPath;
-        if (!string.IsNullOrEmpty(currentExe) &&
-            string.Equals(Path.GetFullPath(dlg.FileName), Path.GetFullPath(currentExe), StringComparison.OrdinalIgnoreCase))
-        {
-            System.Windows.MessageBox.Show(
-                "Windows no permite sobrescribir el .exe que está ejecutándose ahora. Guardalo con otro nombre o en Descargas.",
-                "HUDMind · Actualizaciones",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return;
-        }
+        GitHubReleaseUpdateService.CleanupStagedUpdateArtifacts(Path.GetDirectoryName(plan.StagedFilePath));
 
         _downloadingUpdate = true;
         BtnDownloadUpdate.IsEnabled = false;
@@ -3109,7 +3097,9 @@ public partial class MainWindow : Window
         UpdateProgressBar.Visibility = Visibility.Visible;
         UpdateProgressBar.IsIndeterminate = asset.SizeBytes <= 0;
         UpdateProgressBar.Value = 0;
-        TxtUpdateBannerDetails.Text = $"Iniciando descarga de {asset.Name}...";
+        TxtUpdateBannerDetails.Text = AppLocalizationService.T(
+            $"Descargando {asset.Name} donde ya está HUDMind...",
+            $"Downloading {asset.Name} in-place...");
 
         try
         {
@@ -3125,20 +3115,22 @@ public partial class MainWindow : Window
                     double pct = Math.Clamp(p.BytesReceived * 100.0 / p.TotalBytes.Value, 0, 100);
                     UpdateProgressBar.IsIndeterminate = false;
                     UpdateProgressBar.Value = pct;
-                    TxtUpdateBannerDetails.Text =
-                        $"Descargando {asset.Name}: {p.BytesReceived / (1024.0 * 1024.0):F1} / {p.TotalBytes.Value / (1024.0 * 1024.0):F1} MB ({pct:F0}%)";
+                    TxtUpdateBannerDetails.Text = AppLocalizationService.T(
+                        $"Descargando actualización en el equipo: {p.BytesReceived / (1024.0 * 1024.0):F1} / {p.TotalBytes.Value / (1024.0 * 1024.0):F1} MB ({pct:F0}%)",
+                        $"Downloading update in-place: {p.BytesReceived / (1024.0 * 1024.0):F1} / {p.TotalBytes.Value / (1024.0 * 1024.0):F1} MB ({pct:F0}%)");
                 }
                 else
                 {
                     UpdateProgressBar.IsIndeterminate = true;
-                    TxtUpdateBannerDetails.Text =
-                        $"Descargando {asset.Name}: {p.BytesReceived / (1024.0 * 1024.0):F1} MB...";
+                    TxtUpdateBannerDetails.Text = AppLocalizationService.T(
+                        $"Descargando actualización en el equipo: {p.BytesReceived / (1024.0 * 1024.0):F1} MB...",
+                        $"Downloading update in-place: {p.BytesReceived / (1024.0 * 1024.0):F1} MB...");
                 }
             });
 
             var result = await _updateService.DownloadAssetAsync(
                 asset,
-                dlg.FileName,
+                plan.StagedFilePath,
                 _availableUpdate.ChecksumAsset,
                 progress,
                 _updateCts.Token);
@@ -3150,19 +3142,23 @@ public partial class MainWindow : Window
             if (result.Success)
             {
                 _downloadedUpdatePath = result.FilePath;
+                _downloadedUpdatePlan = plan;
                 UpdateBanner.Background = new SolidColorBrush(MediaColor.FromRgb(0x06, 0x4E, 0x3B));
                 UpdateBanner.BorderBrush = new SolidColorBrush(MediaColor.FromRgb(0x10, 0xB9, 0x81));
-                TxtUpdateBannerTitle.Text = $"✅ Actualización {_availableUpdate.TagName} lista para usar";
+                TxtUpdateBannerTitle.Text = AppLocalizationService.T(
+                    $"✅ Actualización {_availableUpdate.TagName} lista en tu carpeta actual",
+                    $"✅ Update {_availableUpdate.TagName} staged in-place");
                 TxtUpdateBannerDetails.Text = result.Sha256Verified
-                    ? $"Guardado en {result.FilePath} · Integridad SHA-256 verificada."
-                    : $"Guardado en {result.FilePath}.";
-                bool isSetupExe = asset.Name.Contains("setup", StringComparison.OrdinalIgnoreCase);
+                    ? AppLocalizationService.T("SHA-256 verificado · Tocá reiniciar para reemplazar esta versión sin abrir carpetas.", "SHA-256 verified · Click restart to replace the current binary in-place.")
+                    : AppLocalizationService.T("Descarga lista · Tocá reiniciar para aplicar esta actualización aquí mismo.", "Download complete · Click restart to apply this update in-place.");
                 BtnDownloadUpdate.Visibility = Visibility.Collapsed;
-                BtnLaunchUpdate.Content = isSetupExe && GitHubReleaseUpdateService.IsInstalledSetupDirectory()
-                    ? "⚡ Instalar y Reiniciar"
-                    : "▶ Abrir nuevo .exe";
+                BtnLaunchUpdate.Content = plan.UpdateKind switch
+                {
+                    InPlaceUpdateKind.SilentSetupInstaller => AppLocalizationService.T("⚡ Instalar y Reiniciar", "⚡ Install & Restart"),
+                    InPlaceUpdateKind.PortableSelfReplace => AppLocalizationService.T("🔄 Reemplazar y Reiniciar", "🔄 Update & Restart"),
+                    _ => AppLocalizationService.T("▶ Instalar actualización", "▶ Install Update")
+                };
                 BtnLaunchUpdate.Visibility = Visibility.Visible;
-                BtnOpenUpdateFolder.Visibility = Visibility.Visible;
                 AppendLog($"✅ {result.Message} ({result.FilePath})");
             }
             else
@@ -3177,7 +3173,7 @@ public partial class MainWindow : Window
             if (!_shutdownComplete)
             {
                 UpdateProgressBar.Visibility = Visibility.Collapsed;
-                TxtUpdateBannerDetails.Text = "Descarga cancelada.";
+                TxtUpdateBannerDetails.Text = AppLocalizationService.T("Descarga cancelada.", "Download canceled.");
                 BtnDownloadUpdate.IsEnabled = true;
             }
         }
@@ -3219,9 +3215,14 @@ public partial class MainWindow : Window
             if (wasRunning)
                 ApplyStoppedUiState();
             (System.Windows.Application.Current as App)?.ReleaseSingleInstanceMutex();
-            bool runSilentSetup = Path.GetFileName(_downloadedUpdatePath).Contains("setup", StringComparison.OrdinalIgnoreCase) &&
-                                  GitHubReleaseUpdateService.IsInstalledSetupDirectory();
-            if (runSilentSetup)
+
+            var kind = _downloadedUpdatePlan?.UpdateKind
+                ?? (Path.GetFileName(_downloadedUpdatePath).Contains("setup", StringComparison.OrdinalIgnoreCase) &&
+                    GitHubReleaseUpdateService.IsInstalledSetupDirectory()
+                        ? InPlaceUpdateKind.SilentSetupInstaller
+                        : InPlaceUpdateKind.LaunchInstaller);
+
+            if (kind == InPlaceUpdateKind.SilentSetupInstaller)
             {
                 var psi = new ProcessStartInfo(_downloadedUpdatePath) { UseShellExecute = false };
                 psi.ArgumentList.Add("/SILENT");
@@ -3230,6 +3231,24 @@ public partial class MainWindow : Window
                 psi.ArgumentList.Add("/CLOSEAPPLICATIONS");
                 psi.ArgumentList.Add("/relaunch=1");
                 Process.Start(psi);
+            }
+            else if (kind == InPlaceUpdateKind.PortableSelfReplace &&
+                     !string.IsNullOrWhiteSpace(_downloadedUpdatePlan?.TargetExePath))
+            {
+                if (!InPlaceUpdaterLauncher.TryLaunchPortableSwap(
+                        Environment.ProcessId,
+                        _downloadedUpdatePath,
+                        _downloadedUpdatePlan.TargetExePath,
+                        out var swapError))
+                {
+                    throw new InvalidOperationException(
+                        string.IsNullOrWhiteSpace(swapError) ? "No se pudo iniciar el reemplazo directo del ejecutable." : swapError);
+                }
+                AppendLog("🔄 Aplicando reemplazo directo en la carpeta actual...");
+            }
+            else if (kind == InPlaceUpdateKind.PortableSelfReplace)
+            {
+                throw new InvalidOperationException("No se pudo iniciar el reemplazo directo del ejecutable.");
             }
             else
             {
@@ -3240,24 +3259,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             BtnLaunchUpdate.IsEnabled = true;
-            AppendLog($"⚠ No se pudo abrir la nueva versión: {SecretRedactor.Redact(ex.Message)}");
-        }
-    }
-
-    private void BtnOpenUpdateFolder_Click(object sender, RoutedEventArgs e)
-    {
-        if (string.IsNullOrWhiteSpace(_downloadedUpdatePath) || !File.Exists(_downloadedUpdatePath))
-            return;
-
-        try
-        {
-            var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
-            psi.ArgumentList.Add($"/select,{_downloadedUpdatePath}");
-            Process.Start(psi);
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"⚠ No se pudo abrir carpeta de descarga: {SecretRedactor.Redact(ex.Message)}");
+            AppendLog($"⚠ No se pudo aplicar la actualización: {SecretRedactor.Redact(ex.Message)}");
         }
     }
 
